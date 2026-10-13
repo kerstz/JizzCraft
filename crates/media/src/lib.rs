@@ -1,7 +1,9 @@
 //! Thumbnails, codec probing and (soon) the GStreamer player.
 //! Everything here is local-file only: no network element is ever created.
 
+pub mod integrity;
 pub mod player;
+pub mod preview;
 pub mod probe;
 pub mod service;
 pub mod thumbs;
