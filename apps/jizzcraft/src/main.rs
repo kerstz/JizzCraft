@@ -19,11 +19,14 @@ OPTIONS:
   --seconds <N>             bench duration (default 30)
   --bench-gst-play          also measure gst-play-1.0 on the same file
   --assume-adult            (screenshots only) skip the age gate without saving
+  --portable                keep database, config and cache in ./jizzcraft-data next to the executable
+  --home <DIR>              keep database, config and cache under DIR
   -h, --help                show this help
 
 ENV:
   JIZZCRAFT_KNOW=2          double the word \"know\" in the headline
   JIZZCRAFT_DEBUG=1         log full paths (off by default)
+  JIZZCRAFT_HOME=<DIR>      same as --home
 ";
 
 fn main() -> eframe::Result {
@@ -65,6 +68,16 @@ fn main() -> eframe::Result {
             "--seconds" => bench_secs = args.next().and_then(|v| v.parse().ok()).unwrap_or(30),
             "--bench-gst-play" => bench_gst = true,
             "--assume-adult" => assume_adult = true,
+            "--portable" => {
+                if let Some(h) = jizzcraft_core::paths::portable_home() {
+                    jizzcraft_core::paths::set_home(h);
+                }
+            }
+            "--home" => {
+                if let Some(d) = args.next() {
+                    jizzcraft_core::paths::set_home(PathBuf::from(d));
+                }
+            }
             "-h" | "--help" => {
                 print!("{HELP}");
                 return Ok(());
@@ -74,6 +87,10 @@ fn main() -> eframe::Result {
                 std::process::exit(2);
             }
         }
+    }
+    // Flags win: the home is set once, so the environment only fills the gap.
+    if let Some(h) = jizzcraft_core::paths::home_from_env() {
+        jizzcraft_core::paths::set_home(h);
     }
     if let Some(file) = bench_file {
         if bench_gst {
