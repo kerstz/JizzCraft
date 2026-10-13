@@ -29,6 +29,16 @@ pub struct PlayerView {
     scrubbing: bool,
     pub fullscreen: bool,
     last_mouse: Instant,
+    /// Library row this player shows (None for `--bench`).
+    pub media_id: Option<i64>,
+    /// Duration known from the library, until the pipeline reports its own.
+    pub duration_hint: Option<u64>,
+    /// A play has been counted in the history.
+    pub counted: bool,
+    pub ended_flushed: bool,
+    pub last_write: Instant,
+    /// Where playback was resumed from, and when (for the HUD chip).
+    pub resumed: Option<(Duration, Instant)>,
 }
 
 impl PlayerView {
@@ -44,6 +54,12 @@ impl PlayerView {
             scrubbing: false,
             fullscreen: false,
             last_mouse: Instant::now(),
+            media_id: None,
+            duration_hint: None,
+            counted: false,
+            ended_flushed: false,
+            last_write: Instant::now(),
+            resumed: None,
         }
     }
 
@@ -225,6 +241,25 @@ impl PlayerView {
                 }
             }
             PlayState::Ended => {}
+        }
+        if let Some((at, when)) = self.resumed {
+            if when.elapsed() < Duration::from_secs(5) && !discreet {
+                let secs = at.as_secs();
+                let text = format!(
+                    "RESUMED {:02}:{:02}:{:02} · HOME RESTARTS",
+                    secs / 3600,
+                    (secs / 60) % 60,
+                    secs % 60
+                );
+                let galley = painter.layout_job(theme::hud(&text, TEXT));
+                let pos = video_area.left_top() + vec2(16.0, 16.0);
+                let chip = Rect::from_min_size(pos, galley.size() + vec2(16.0, 10.0));
+                painter.rect_filled(chip, CornerRadius::ZERO, BG.gamma_multiply(0.85));
+                painter.galley(pos + vec2(8.0, 5.0), galley, TEXT);
+                ui.ctx().request_repaint_after(Duration::from_millis(500));
+            } else if when.elapsed() >= Duration::from_secs(5) {
+                self.resumed = None;
+            }
         }
         if state == PlayState::Ended {
             let r = Rect::from_center_size(video_area.center(), vec2(140.0, 36.0));
