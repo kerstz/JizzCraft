@@ -11,9 +11,12 @@ use jizzcraft_core::scan::ScanReport;
 use jizzcraft_core::{
     Db, Filter, HasLibrary, Media, MediaKind, Registry, Stats, paths, register_core,
 };
+use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -84,6 +87,22 @@ enum JobMsg {
     Folder(Option<PathBuf>),
 }
 
+const MAX_TEXTURES: usize = 256;
+
+struct ThumbTex {
+    full: TextureHandle,
+    blur: TextureHandle,
+    size: [f32; 2],
+    used: u64,
+}
+
+#[derive(Clone, Copy)]
+enum ThumbState<'a> {
+    Ready(&'a ThumbTex),
+    Loading,
+    Failed,
+}
+
 /// Window of the current list kept in memory (never the whole library).
 #[derive(Default)]
 struct Page {
@@ -116,11 +135,16 @@ pub struct JizzApp {
     show_docs: bool,
     queue: Vec<(String, Value)>,
 
+    thumbs: ThumbService,
+    textures: HashMap<i64, ThumbTex>,
+    thumb_failed: HashSet<i64>,
+    meta_tried: HashSet<i64>,
     peach: TextureHandle,
     viewer_icon: TextureHandle,
     last_title: String,
     frame_no: u64,
     screenshot_sent: bool,
+    idle_frames: u32,
 }
 
 impl HasLibrary for JizzApp {
@@ -178,11 +202,19 @@ impl JizzApp {
             toasts: Vec::new(),
             show_docs: false,
             queue: Vec::new(),
+            thumbs: {
+                let ctx = cc.egui_ctx.clone();
+                ThumbService::new(paths::cache_dir(), Arc::new(move || ctx.request_repaint()))
+            },
+            textures: HashMap::new(),
+            thumb_failed: HashSet::new(),
+            meta_tried: HashSet::new(),
             peach: load_icon(&cc.egui_ctx, "peach", PEACH_PNG),
             viewer_icon: load_icon(&cc.egui_ctx, "viewer", VIEWER_PNG),
             last_title: String::new(),
             frame_no: 0,
             screenshot_sent: false,
+            idle_frames: 0,
             opts,
         };
         app.refresh();
@@ -335,6 +367,47 @@ impl JizzApp {
         }
     }
 
+    /// Upload finished thumbnails (bounded per frame) and store probed metadata.
+    fn poll_thumbs(&mut self, ctx: &egui::Context) {
+        let mut meta_changed = false;
+        for _ in 0..8 {
+            let Some(done) = self.thumbs.try_recv() else {
+                break;
+            };
+            if let Some(meta) = &done.meta
+                && self.db.set_meta(done.id, meta).is_ok()
+            {
+                meta_changed = true;
+            }
+            match done.thumb {
+                Ok(t) => {
+                    let tex = upload_thumb(ctx, done.id, &t, self.frame_no);
+                    self.textures.insert(done.id, tex);
+                }
+                Err(_) => {
+                    self.thumb_failed.insert(done.id);
+                }
+            }
+        }
+        if meta_changed {
+            self.generation += 1;
+        }
+        if self.textures.len() > MAX_TEXTURES {
+            let mut by_age: Vec<(u64, i64)> =
+                self.textures.iter().map(|(id, t)| (t.used, *id)).collect();
+            by_age.sort_unstable();
+            for (_, id) in by_age
+                .into_iter()
+                .take(self.textures.len() - MAX_TEXTURES + 32)
+            {
+                self.textures.remove(&id);
+            }
+        }
+        if self.thumbs.is_busy() {
+            ctx.request_repaint_after(Duration::from_millis(60));
+        }
+    }
+
     fn drain_queue(&mut self) {
         for (name, args) in std::mem::take(&mut self.queue) {
             self.run(&name, args);
@@ -386,7 +459,6 @@ impl JizzApp {
         let Some(path) = self.opts.screenshot.clone() else {
             return;
         };
-        self.frame_no += 1;
         ctx.request_repaint();
         let shot = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
@@ -405,7 +477,16 @@ impl JizzApp {
                 _ => eprintln!("screenshot failed"),
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if !self.screenshot_sent && self.frame_no > 12 && self.busy == 0 {
+        } else if !self.screenshot_sent
+            && self.frame_no > 12
+            && self.busy == 0
+            && !self.thumbs.is_busy()
+        {
+            // Let the last uploaded textures reach the screen before shooting.
+            self.idle_frames += 1;
+            if self.idle_frames < 6 {
+                return;
+            }
             self.screenshot_sent = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
@@ -590,6 +671,10 @@ impl JizzApp {
         let discreet = self.discreet();
         let mut open: Option<usize> = None;
         let mut select: Option<i64> = None;
+        let mut wanted: Vec<Request> = Vec::new();
+        let hide_all = discreet;
+        let share_safe = self.cfg.screen_share_safe;
+        let frame_no = self.frame_no;
 
         egui::ScrollArea::vertical()
             .auto_shrink(false)
@@ -610,7 +695,37 @@ impl JizzApp {
                             else {
                                 break;
                             };
-                            let resp = draw_tile(ui, m, self.selected == Some(m.id), discreet);
+                            let state = match self.textures.get_mut(&m.id) {
+                                Some(t) => {
+                                    t.used = frame_no;
+                                    ThumbState::Ready(&*t)
+                                }
+                                None if self.thumb_failed.contains(&m.id) || m.missing => {
+                                    ThumbState::Failed
+                                }
+                                None => {
+                                    wanted.push(Request {
+                                        id: m.id,
+                                        path: m.path.clone(),
+                                        kind: m.kind,
+                                        size: m.size,
+                                        mtime: m.mtime,
+                                        need_meta: m.kind == MediaKind::Video
+                                            && m.duration_ms.is_none()
+                                            && !self.meta_tried.contains(&m.id),
+                                    });
+                                    ThumbState::Loading
+                                }
+                            };
+                            let resp = draw_tile(
+                                ui,
+                                m,
+                                self.selected == Some(m.id),
+                                hide_all,
+                                share_safe,
+                                state,
+                                frame_no,
+                            );
                             if resp.clicked() {
                                 select = Some(m.id);
                             }
@@ -621,6 +736,7 @@ impl JizzApp {
                     });
                 }
             });
+        self.thumbs.set_wanted(wanted);
         if let Some(id) = select {
             self.selected = Some(id);
         }
@@ -772,7 +888,9 @@ impl JizzApp {
 impl eframe::App for JizzApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.frame_no += 1;
         self.poll_jobs();
+        self.poll_thumbs(&ctx);
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);
 
@@ -895,28 +1013,76 @@ fn headline(know: u32, _discreet: bool) -> egui::text::LayoutJob {
     job
 }
 
-fn draw_tile(ui: &mut Ui, m: &Media, selected: bool, discreet: bool) -> egui::Response {
+fn draw_tile(
+    ui: &mut Ui,
+    m: &Media,
+    selected: bool,
+    discreet: bool,
+    share_safe: bool,
+    state: ThumbState<'_>,
+    frame_no: u64,
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(TILE_W, TILE_H), Sense::click());
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::same(1), RAISED);
-    // Placeholder body until a thumbnail exists.
     let body = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - 36.0));
+    let inner = body.shrink(1.0);
     p.rect_filled(
-        body.shrink(1.0),
+        inner,
         CornerRadius::ZERO,
         Color32::from_rgb(0x18, 0x1b, 0x1f),
     );
-    p.text(
-        body.center(),
-        Align2::CENTER_CENTER,
-        if m.missing { "MISSING" } else { m.kind.label() },
-        FontId::new(10.0, FontFamily::Monospace),
-        if m.missing {
-            DANGER
-        } else {
-            HAIRLINE.gamma_multiply(2.2)
-        },
-    );
+    match state {
+        ThumbState::Ready(t) => {
+            // Discreet / screen-share-safe: blurred until hovered (discreet: always).
+            let blur = discreet || (share_safe && !resp.hovered());
+            let tex = if blur { &t.blur } else { &t.full };
+            // "Cover" fit: crop the long side so the tile is always filled.
+            let (tw, th) = (t.size[0], t.size[1]);
+            let tile_aspect = inner.width() / inner.height();
+            let img_aspect = tw / th;
+            let uv = if img_aspect > tile_aspect {
+                let w = tile_aspect / img_aspect;
+                Rect::from_min_max(
+                    egui::pos2((1.0 - w) / 2.0, 0.0),
+                    egui::pos2((1.0 + w) / 2.0, 1.0),
+                )
+            } else {
+                let h = img_aspect / tile_aspect;
+                Rect::from_min_max(
+                    egui::pos2(0.0, (1.0 - h) / 2.0),
+                    egui::pos2(1.0, (1.0 + h) / 2.0),
+                )
+            };
+            p.image(tex.id(), inner, uv, Color32::WHITE);
+        }
+        ThumbState::Loading => {
+            // Subtle pulse while the thumbnail is being generated.
+            let t = (frame_no as f32 * 0.08).sin() * 0.5 + 0.5;
+            let a = (10.0 + 18.0 * t) as u8;
+            p.rect_filled(inner, CornerRadius::ZERO, Color32::from_white_alpha(a));
+            p.text(
+                body.center(),
+                Align2::CENTER_CENTER,
+                "…",
+                FontId::new(14.0, FontFamily::Monospace),
+                HAIRLINE.gamma_multiply(2.2),
+            );
+        }
+        ThumbState::Failed => {
+            p.text(
+                body.center(),
+                Align2::CENTER_CENTER,
+                if m.missing { "MISSING" } else { "NO PREVIEW" },
+                FontId::new(10.0, FontFamily::Monospace),
+                if m.missing {
+                    DANGER
+                } else {
+                    HAIRLINE.gamma_multiply(2.2)
+                },
+            );
+        }
+    }
     // Type badge.
     let badge = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(40.0, 16.0));
     p.rect_filled(badge, CornerRadius::same(1), BG);
@@ -940,6 +1106,14 @@ fn draw_tile(ui: &mut Ui, m: &Media, selected: bool, discreet: bool) -> egui::Re
             "★",
             FontId::new(14.0, FontFamily::Proportional),
             ACCENT,
+        );
+    }
+    if m.missing {
+        p.rect_stroke(
+            body.shrink(1.0),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, DANGER),
+            StrokeKind::Inside,
         );
     }
     // Caption: name + duration or resolution.
@@ -986,6 +1160,19 @@ fn draw_tile(ui: &mut Ui, m: &Media, selected: bool, discreet: bool) -> egui::Re
         );
     }
     resp
+}
+
+fn upload_thumb(ctx: &egui::Context, id: i64, t: &Thumb, used: u64) -> ThumbTex {
+    let mk = |name: String, r: &jizzcraft_media::service::Rgba| {
+        let img = egui::ColorImage::from_rgba_unmultiplied([r.w as usize, r.h as usize], &r.data);
+        ctx.load_texture(name, img, egui::TextureOptions::LINEAR)
+    };
+    ThumbTex {
+        full: mk(format!("thumb-{id}"), &t.full),
+        blur: mk(format!("blur-{id}"), &t.blur),
+        size: [t.full.w as f32, t.full.h as f32],
+        used,
+    }
 }
 
 pub fn fmt_size(bytes: u64) -> String {
