@@ -41,6 +41,8 @@ pub struct Options {
     pub tab: Option<String>,
     /// Open the n-th item of the current list on startup.
     pub open_index: Option<u64>,
+    /// Commands to run once the startup import (if any) has finished.
+    pub commands: Vec<(String, Value)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,9 +87,38 @@ struct Toast {
 enum JobMsg {
     Scan(Result<(i64, ScanReport), String>),
     Folder(Option<PathBuf>),
+    Image {
+        token: u64,
+        result: Result<egui::ColorImage, String>,
+    },
 }
 
 const MAX_TEXTURES: usize = 256;
+/// Largest side uploaded to the GPU for the viewer (wgpu default limit is 8192+).
+const MAX_VIEW_SIDE: u32 = 8192;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Zoom {
+    Fit,
+    Scale(f32),
+}
+
+struct ImageView {
+    /// Position in the filtered list.
+    index: u64,
+    name: String,
+    token: u64,
+    tex: Option<TextureHandle>,
+    size: [u32; 2],
+    error: Option<String>,
+    zoom: Zoom,
+    pan: egui::Vec2,
+}
+
+enum View {
+    Library,
+    Image(Box<ImageView>),
+}
 
 struct ThumbTex {
     full: TextureHandle,
@@ -120,6 +151,8 @@ pub struct JizzApp {
     persist_cfg: bool,
     opts: Options,
 
+    view: View,
+    view_token: u64,
     tab: Tab,
     search: String,
     selected: Option<i64>,
@@ -185,6 +218,8 @@ impl JizzApp {
             registry: Rc::new(registry),
             cfg,
             persist_cfg,
+            view: View::Library,
+            view_token: 0,
             tab: opts
                 .tab
                 .as_deref()
@@ -220,6 +255,13 @@ impl JizzApp {
         app.refresh();
         if let Some(dir) = app.opts.import.clone() {
             app.start_scan(Some(dir));
+        } else {
+            if let Some(idx) = app.opts.open_index {
+                app.open_index(idx);
+            }
+            for (name, args) in std::mem::take(&mut app.opts.commands) {
+                app.queue.push((name, args));
+            }
         }
         Ok(app)
     }
@@ -302,6 +344,62 @@ impl JizzApp {
         }
     }
 
+    /// Open the item at `index` of the current list: images in the viewer.
+    fn open_index(&mut self, index: u64) {
+        if index >= self.total {
+            return;
+        }
+        self.ensure_page(index, index + 1);
+        let Some(m) = self
+            .page
+            .items
+            .get((index - self.page.offset) as usize)
+            .cloned()
+        else {
+            return;
+        };
+        self.selected = Some(m.id);
+        if m.missing {
+            self.toast(ToastKind::Error, "File is missing on disk");
+            return;
+        }
+        match m.kind {
+            MediaKind::Image => {
+                self.view_token += 1;
+                let token = self.view_token;
+                self.view = View::Image(Box::new(ImageView {
+                    index,
+                    name: m.name.clone(),
+                    token,
+                    tex: None,
+                    size: [0, 0],
+                    error: None,
+                    zoom: Zoom::Fit,
+                    pan: egui::Vec2::ZERO,
+                }));
+                let tx = self.tx.clone();
+                let ctx = self.ctx.clone();
+                let path = m.path.clone();
+                std::thread::spawn(move || {
+                    let result = decode_for_view(&path);
+                    let _ = tx.send(JobMsg::Image { token, result });
+                    ctx.request_repaint();
+                });
+            }
+            MediaKind::Video => {
+                self.toast(ToastKind::Info, "Video player: next slice");
+            }
+        }
+    }
+
+    fn step_view(&mut self, delta: i64) {
+        let View::Image(iv) = &self.view else { return };
+        let next = iv.index as i64 + delta;
+        if next >= 0 && (next as u64) < self.total {
+            self.open_index(next as u64);
+        }
+    }
+
     fn start_scan(&mut self, dir: Option<PathBuf>) {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
@@ -341,6 +439,24 @@ impl JizzApp {
             match msg {
                 JobMsg::Folder(Some(dir)) => self.start_scan(Some(dir)),
                 JobMsg::Folder(None) => {}
+                JobMsg::Image { token, result } => {
+                    if let View::Image(iv) = &mut self.view
+                        && iv.token == token
+                    {
+                        match result {
+                            Ok(img) => {
+                                iv.size = [img.size[0] as u32, img.size[1] as u32];
+                                let opts = egui::TextureOptions {
+                                    magnification: egui::TextureFilter::Nearest,
+                                    minification: egui::TextureFilter::Linear,
+                                    ..Default::default()
+                                };
+                                iv.tex = Some(self.ctx.load_texture("viewer-image", img, opts));
+                            }
+                            Err(e) => iv.error = Some(e),
+                        }
+                    }
+                }
                 JobMsg::Scan(res) => {
                     self.busy = self.busy.saturating_sub(1);
                     match res {
@@ -359,6 +475,12 @@ impl JizzApp {
                             };
                             self.toast(kind, text);
                             self.refresh();
+                            if let Some(idx) = self.opts.open_index.take() {
+                                self.open_index(idx);
+                            }
+                            for (name, args) in std::mem::take(&mut self.opts.commands) {
+                                self.queue.push((name, args));
+                            }
                         }
                         Err(e) => self.toast(ToastKind::Error, format!("Import failed: {e}")),
                     }
@@ -432,6 +554,45 @@ impl JizzApp {
                 s.consume_shortcut(&rescan),
             )
         });
+        if matches!(self.view, View::Image(_)) && !ctx.egui_wants_keyboard_input() {
+            use egui::Key;
+            let (esc, left, right, k0, k1, plus, minus, star) = ctx.input(|i| {
+                (
+                    i.key_pressed(Key::Escape),
+                    i.key_pressed(Key::ArrowLeft),
+                    i.key_pressed(Key::ArrowRight),
+                    i.key_pressed(Key::Num0),
+                    i.key_pressed(Key::Num1),
+                    i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals),
+                    i.key_pressed(Key::Minus),
+                    i.key_pressed(Key::S),
+                )
+            });
+            if esc {
+                self.push("viewer.close", json!({}));
+            }
+            if left {
+                self.push("viewer.step", json!({ "delta": -1 }));
+            }
+            if right {
+                self.push("viewer.step", json!({ "delta": 1 }));
+            }
+            if k0 {
+                self.push("viewer.zoom", json!({ "mode": "fit" }));
+            }
+            if k1 {
+                self.push("viewer.zoom", json!({ "mode": "actual" }));
+            }
+            if plus {
+                self.push("viewer.zoom", json!({ "mode": "in" }));
+            }
+            if minus {
+                self.push("viewer.zoom", json!({ "mode": "out" }));
+            }
+            if star && let Some(id) = self.selected {
+                self.push("media.favorite.toggle", json!({ "id": id }));
+            }
+        }
         if b {
             self.push("app.boss_key", json!({}));
         }
@@ -559,7 +720,15 @@ impl JizzApp {
                     } else {
                         "JIZZCRAFT"
                     };
-                    let crumb = format!("01 / {brand} / {}", self.tab.label());
+                    let mut crumb = format!("01 / {brand} / {}", self.tab.label());
+                    if let View::Image(iv) = &self.view {
+                        let name = if self.cfg.discreet {
+                            "…"
+                        } else {
+                            iv.name.as_str()
+                        };
+                        crumb += &format!(" / {name}  [{}/{}]", iv.index + 1, self.total);
+                    }
                     widgets::mono_label(ui, &crumb, TEXT_DIM);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if self.stats.total > 0 {
@@ -640,7 +809,9 @@ impl JizzApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG))
             .show(ui, |ui| {
-                if self.stats.total == 0 {
+                if matches!(self.view, View::Image(_)) {
+                    self.image_view(ui);
+                } else if self.stats.total == 0 {
                     self.empty_state(ui);
                 } else if self.total == 0 {
                     self.no_results(ui);
@@ -742,6 +913,119 @@ impl JizzApp {
         }
         if let Some(idx) = open {
             self.push("media.open", json!({ "index": idx }));
+        }
+    }
+
+    fn image_view(&mut self, ui: &mut Ui) {
+        let rect = ui.max_rect();
+        let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, CornerRadius::ZERO, BG);
+        let View::Image(iv) = &mut self.view else {
+            return;
+        };
+
+        match (&iv.tex, &iv.error) {
+            (_, Some(e)) => {
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    format!("CANNOT DISPLAY THIS IMAGE\n{}", e.to_uppercase()),
+                    FontId::new(12.0, FontFamily::Monospace),
+                    DANGER,
+                );
+            }
+            (None, None) => {
+                widgets::grid_background(&painter, rect);
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "LOADING…",
+                    FontId::new(12.0, FontFamily::Monospace),
+                    TEXT_DIM,
+                );
+            }
+            (Some(tex), None) => {
+                let img = vec2(iv.size[0] as f32, iv.size[1] as f32);
+                let fit = (rect.width() / img.x).min(rect.height() / img.y);
+                let cur = match iv.zoom {
+                    Zoom::Fit => fit,
+                    Zoom::Scale(z) => z,
+                };
+                // Wheel zooms around the cursor; ctrl+wheel / pinch too.
+                let (scroll, pinch, hover) = ui.input(|i| {
+                    (
+                        i.smooth_scroll_delta.y,
+                        i.zoom_delta(),
+                        i.pointer.hover_pos(),
+                    )
+                });
+                let mut zoom = cur;
+                if resp.hovered() {
+                    zoom = (cur * pinch * (scroll * 0.0025).exp()).clamp(0.02, 40.0);
+                }
+                if (zoom - cur).abs() > f32::EPSILON {
+                    let center = rect.center() + iv.pan;
+                    let anchor = hover.unwrap_or(rect.center());
+                    let d = (anchor - center) / cur;
+                    iv.pan = anchor - d * zoom - rect.center();
+                    iv.zoom = Zoom::Scale(zoom);
+                }
+                if resp.dragged() {
+                    iv.pan += resp.drag_delta();
+                    if iv.zoom == Zoom::Fit {
+                        iv.zoom = Zoom::Scale(cur);
+                    }
+                }
+                if resp.double_clicked() {
+                    iv.pan = egui::Vec2::ZERO;
+                    iv.zoom = if iv.zoom == Zoom::Fit {
+                        Zoom::Scale(1.0)
+                    } else {
+                        Zoom::Fit
+                    };
+                }
+                // Keep the image from being dragged out of the viewport.
+                let z = match iv.zoom {
+                    Zoom::Fit => fit,
+                    Zoom::Scale(z) => z,
+                };
+                let max = ((img * z - rect.size()) / 2.0).max(egui::Vec2::ZERO);
+                iv.pan = egui::vec2(iv.pan.x.clamp(-max.x, max.x), iv.pan.y.clamp(-max.y, max.y));
+                if iv.zoom == Zoom::Fit {
+                    iv.pan = egui::Vec2::ZERO;
+                }
+                let shown = Rect::from_center_size(rect.center() + iv.pan, img * z);
+                painter.image(
+                    tex.id(),
+                    shown,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                // HUD.
+                let label = match iv.zoom {
+                    Zoom::Fit => format!("FIT · {}×{}", iv.size[0], iv.size[1]),
+                    Zoom::Scale(z) => format!("{:.0}% · {}×{}", z * 100.0, iv.size[0], iv.size[1]),
+                };
+                let hud = Rect::from_min_size(
+                    egui::pos2(rect.left() + S, rect.bottom() - 28.0 - S),
+                    vec2(label.chars().count() as f32 * 8.2 + 20.0, 28.0),
+                );
+                painter.rect_filled(hud, CornerRadius::same(1), PANEL);
+                painter.rect_stroke(
+                    hud,
+                    CornerRadius::same(1),
+                    theme::hairline(),
+                    StrokeKind::Inside,
+                );
+                painter.text(
+                    hud.center(),
+                    Align2::CENTER_CENTER,
+                    label,
+                    FontId::new(11.0, FontFamily::Monospace),
+                    TEXT,
+                );
+            }
         }
     }
 
@@ -957,13 +1241,46 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
     });
     reg.register("media.open", "Open a media item: {index}", |app, args| {
         if let Some(idx) = args.get("index").and_then(Value::as_u64) {
-            app.ensure_page(idx, idx + 1);
-            if let Some(m) = app.page.items.get((idx - app.page.offset) as usize) {
-                app.selected = Some(m.id);
-            }
+            app.open_index(idx);
         }
         Ok(json!({}))
     });
+    reg.register("viewer.close", "Back to the library", |app, _| {
+        app.view = View::Library;
+        Ok(json!({}))
+    });
+    reg.register(
+        "viewer.step",
+        "Previous / next item: {delta}",
+        |app, args| {
+            let d = args.get("delta").and_then(Value::as_i64).unwrap_or(1);
+            app.step_view(d);
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "viewer.zoom",
+        "Zoom: {mode: fit|actual|in|out}",
+        |app, args| {
+            if let View::Image(iv) = &mut app.view {
+                let cur = match iv.zoom {
+                    Zoom::Scale(z) => z,
+                    Zoom::Fit => 1.0,
+                };
+                match args.get("mode").and_then(Value::as_str) {
+                    Some("fit") => {
+                        iv.zoom = Zoom::Fit;
+                        iv.pan = egui::Vec2::ZERO;
+                    }
+                    Some("actual") => iv.zoom = Zoom::Scale(1.0),
+                    Some("in") => iv.zoom = Zoom::Scale((cur * 1.25).min(40.0)),
+                    Some("out") => iv.zoom = Zoom::Scale((cur / 1.25).max(0.02)),
+                    _ => {}
+                }
+            }
+            Ok(json!({}))
+        },
+    );
     reg.register("app.discreet.toggle", "Toggle discreet mode", |app, _| {
         app.cfg.discreet = !app.cfg.discreet;
         app.save_cfg();
@@ -1173,6 +1490,38 @@ fn upload_thumb(ctx: &egui::Context, id: i64, t: &Thumb, used: u64) -> ThumbTex 
         size: [t.full.w as f32, t.full.h as f32],
         used,
     }
+}
+
+/// Full-resolution decode for the viewer (EXIF orientation applied, capped to
+/// the GPU texture limit). Runs on a worker thread.
+fn decode_for_view(path: &std::path::Path) -> Result<egui::ColorImage, String> {
+    use image::ImageDecoder;
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| format!("cannot open: {e}"))?
+        .with_guessed_format()
+        .map_err(|e| format!("cannot read: {e}"))?;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|e| format!("unsupported format: {e}"))?;
+    let orientation = decoder.orientation().ok();
+    let mut img =
+        image::DynamicImage::from_decoder(decoder).map_err(|e| format!("decode failed: {e}"))?;
+    if let Some(o) = orientation {
+        img.apply_orientation(o);
+    }
+    if img.width().max(img.height()) > MAX_VIEW_SIDE {
+        img = img.resize(
+            MAX_VIEW_SIDE,
+            MAX_VIEW_SIDE,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        rgba.as_raw(),
+    ))
 }
 
 pub fn fmt_size(bytes: u64) -> String {

@@ -1528,6 +1528,7 @@ dependencies = [
  "jizzcraft-core",
  "jizzcraft-media",
  "jizzcraft-ui",
+ "serde_json",
 ]
 
 [[package]]

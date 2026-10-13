@@ -14,6 +14,7 @@ OPTIONS:
   --db <FILE>               use this library database
   --tab <NAME>              library | images | videos | favorites
   --open <N>                open the N-th item of the list at startup
+  --cmd <NAME[=JSON]>       run a registry command after startup (repeatable)
   --assume-adult            (screenshots only) skip the age gate without saving
   -h, --help                show this help
 
@@ -42,6 +43,18 @@ fn main() -> eframe::Result {
             "--db" => opts.db_path = args.next().map(PathBuf::from),
             "--tab" => opts.tab = args.next(),
             "--open" => opts.open_index = args.next().and_then(|v| v.parse().ok()),
+            "--cmd" => {
+                // name or name={"json":"args"}
+                let raw = args.next().unwrap_or_default();
+                let (name, json) = raw.split_once('=').unwrap_or((raw.as_str(), "{}"));
+                match serde_json::from_str(json) {
+                    Ok(v) => opts.commands.push((name.to_owned(), v)),
+                    Err(e) => {
+                        eprintln!("--cmd: bad JSON arguments: {e}");
+                        std::process::exit(2);
+                    }
+                }
+            }
             "--assume-adult" => assume_adult = true,
             "-h" | "--help" => {
                 print!("{HELP}");
