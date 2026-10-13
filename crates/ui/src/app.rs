@@ -20,6 +20,7 @@ use jizzcraft_media::player::{PlayState, Player};
 use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
 mod sidebar;
+mod tools;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -101,6 +102,11 @@ enum JobMsg {
         result: Result<egui::ColorImage, String>,
     },
     Meta(i64, jizzcraft_core::MediaMeta),
+    /// A maintenance job finished: one-line summary or error.
+    Done {
+        label: &'static str,
+        result: Result<String, String>,
+    },
 }
 
 const MAX_TEXTURES: usize = 256;
@@ -272,6 +278,7 @@ impl JizzApp {
         let mut registry = Registry::new();
         register_core::<JizzApp>(&mut registry);
         register_ui_commands(&mut registry);
+        tools::register_tool_commands(&mut registry);
 
         let mut app = JizzApp {
             ctx: cc.egui_ctx.clone(),
@@ -817,6 +824,15 @@ impl JizzApp {
                         }
                     }
                 }
+                JobMsg::Done { label, result } => {
+                    self.busy = self.busy.saturating_sub(1);
+                    match result {
+                        Ok(t) => self.toast(ToastKind::Info, format!("{label}: {t}")),
+                        Err(e) if e == "cancelled" => {}
+                        Err(e) => self.toast(ToastKind::Error, format!("{label} failed: {e}")),
+                    }
+                    self.refresh();
+                }
                 JobMsg::Scan(res) => {
                     self.busy = self.busy.saturating_sub(1);
                     match res {
@@ -1196,6 +1212,13 @@ impl JizzApp {
                                 self.push("inspector.toggle", json!({}));
                             }
                             if self.stats.total > 0 {
+                                let mut chosen = Vec::new();
+                                ui.menu_button(theme::hud("Library", MUTED), |ui| {
+                                    chosen = self.tools_menu(ui);
+                                });
+                                for (name, args) in chosen {
+                                    self.push(name, args);
+                                }
                                 if widgets::toggle_chip(ui, "Save view", false)
                                     .on_hover_text("Ctrl+S")
                                     .clicked()

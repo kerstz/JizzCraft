@@ -1589,6 +1589,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "jizzcraft-core",
+ "jizzcraft-media",
  "serde_json",
 ]
 
