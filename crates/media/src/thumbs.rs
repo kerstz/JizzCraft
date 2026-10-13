@@ -98,6 +98,8 @@ pub(crate) fn open_paused(src: &Path, max_side: u32) -> Result<Paused, String> {
     };
 
     let pipeline = gst::Pipeline::new();
+    // A refusal arrives as an error on the bus, like any other failure.
+    let _ = crate::guard::watch(pipeline.upcast_ref());
     let dec = gst::ElementFactory::make("uridecodebin")
         .property("uri", &uri)
         .build()
@@ -210,6 +212,9 @@ pub(crate) fn wait_async_done(bus: &gst::Bus, secs: u64) -> Result<(), String> {
         match msg.view() {
             MessageView::AsyncDone(_) => return Ok(()),
             MessageView::Error(e) => {
+                if e.error().message() == crate::guard::REFUSED {
+                    return Err(crate::guard::REFUSED.into());
+                }
                 return Err(missing.unwrap_or_else(|| format!("decode error: {}", e.error())));
             }
             MessageView::Element(_) => {

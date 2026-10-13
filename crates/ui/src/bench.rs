@@ -147,12 +147,15 @@ impl Report {
 }
 
 /// Baseline: play the same file with `gst-play-1.0` for `secs` and sample its
-/// CPU and RSS. The file path is passed as an argument, never through a shell.
+/// CPU and RSS. The file goes in as a canonical `file://` URI argument, never
+/// through a shell. `gst-play-1.0` is an external tool: JizzCraft's network
+/// guard does not apply to it.
 pub fn gst_play_baseline(file: &std::path::Path, secs: u32) -> Result<(f64, (f64, f64)), String> {
+    let uri = jizzcraft_media::file_uri(file)?;
     let mut child = std::process::Command::new("gst-play-1.0")
         .arg("--no-interactive")
         .arg("--quiet")
-        .arg(file)
+        .arg(uri)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

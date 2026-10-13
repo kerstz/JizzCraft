@@ -499,7 +499,7 @@ impl PlayerView {
                 &format!("{rate:.2}x"),
                 (rate - 1.0).abs() > 0.01,
             )
-            .on_hover_text("Playback speed (click to cycle, Backspace resets)")
+            .on_hover_text("Playback speed (click to cycle)")
             .clicked()
             {
                 self.actions

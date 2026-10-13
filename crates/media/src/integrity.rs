@@ -23,7 +23,9 @@ pub enum CheckMode {
 pub type Class = &'static str;
 
 pub fn classify_error(msg: &str) -> Class {
-    if msg.contains("missing GStreamer") {
+    if msg == crate::guard::REFUSED {
+        "remote-media"
+    } else if msg.contains("missing GStreamer") {
         "missing-plugin"
     } else if msg.contains("timed out") {
         "timeout"
@@ -82,6 +84,7 @@ fn check_video(path: &Path, mode: CheckMode, cancel: &AtomicBool) -> Result<(), 
                 .property("uri", &uri)
                 .build()
                 .map_err(|_| "missing-plugin")?;
+            let _ = crate::guard::watch(pb.downcast_ref::<gst::Bin>().ok_or("decode-error")?);
             for prop in ["video-sink", "audio-sink"] {
                 let sink = gst::ElementFactory::make("fakesink")
                     .property("sync", false)
@@ -98,6 +101,7 @@ fn check_video(path: &Path, mode: CheckMode, cancel: &AtomicBool) -> Result<(), 
             pb.set_state(gst::State::Playing)
                 .map_err(|_| "decode-error")?;
             let deadline = Instant::now() + Duration::from_secs(15 * 60);
+            let mut missing: Option<String> = None;
             let result = loop {
                 if cancel.load(Ordering::Relaxed) {
                     break Ok(());
@@ -107,14 +111,27 @@ fn check_video(path: &Path, mode: CheckMode, cancel: &AtomicBool) -> Result<(), 
                 }
                 let Some(msg) = bus.timed_pop_filtered(
                     gst::ClockTime::from_mseconds(100),
-                    &[gst::MessageType::Eos, gst::MessageType::Error],
+                    &[
+                        gst::MessageType::Eos,
+                        gst::MessageType::Error,
+                        gst::MessageType::Element,
+                    ],
                 ) else {
                     continue;
                 };
-                break match msg.view() {
-                    gst::MessageView::Eos(_) => Ok(()),
-                    _ => Err("decode-error"),
-                };
+                match msg.view() {
+                    gst::MessageView::Eos(_) => break Ok(()),
+                    gst::MessageView::Error(e) => {
+                        let own = e.error().message().to_owned();
+                        let text = if own == crate::guard::REFUSED {
+                            own
+                        } else {
+                            missing.unwrap_or(own)
+                        };
+                        break Err(classify_error(&text));
+                    }
+                    _ => missing = crate::describe_missing_plugin(&msg).or(missing),
+                }
             };
             drop(guard);
             result
