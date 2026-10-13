@@ -58,6 +58,30 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 
 ![Discreet mode](docs/screenshots/discreet.png)
 
+### Organise without touching your files
+
+- **Ratings and hiding.** 0–5 stars, and a reversible *hide* that is only a database flag.
+- **Views.** Built-in views (Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers), saved views of any filter, and a folder tree with counts.
+- **Inbox triage.** Review new imports one at a time: keep, hide, favorite, undo. Nothing is ever deleted.
+- **Moves are recognised.** A fingerprint (size plus the first and last 64 KiB) lets a renamed or moved file keep its favorite, rating, history and markers.
+- **Shuffle, random pick and slideshow** that never repeat or skip while paging.
+
+![Inbox triage](docs/screenshots/triage.png)
+
+### A player that remembers
+
+- **Resume and history**, with a pause switch, a clear button and a setting that hides history in the UI. History is aggregate (count, last played, resume point), never an event log.
+- **Speed (0.25×–4×)** with pitch preserved, **frame step**, **A-B loop**, **markers** with timeline ticks and next/previous jumps.
+- **Scrub previews** on the timeline, decoded on demand into a cache and blurred in discreet and share-safe modes.
+- **Autoplay-next** with a three-second countdown that Esc cancels.
+
+![Ratings in the inspector](docs/screenshots/rating.png)
+
+### Maintenance and portability
+
+- **Integrity check**: quick or full decode test, plus an opt-in checksum that flags silent corruption.
+- **Backup** (`VACUUM INTO`, never overwrites), **metadata export/import** keyed by fingerprint (names and history are opt-in), and **portable mode** (`--portable`, `--home`, `JIZZCRAFT_HOME`).
+
 ## Everything in the box
 
 | Area | What you get |
@@ -68,8 +92,8 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 | Images | PNG, JPEG, WebP, GIF, BMP |
 | Videos | whatever your GStreamer can decode (MP4/H.264, WebM/VP8/VP9, MKV, …) |
 | Inspector | name, path, type, size, resolution, duration, codec, added date |
-| Shortcuts | `Ctrl+O` import · `Ctrl+R` rescan · `Space` play/pause · `←`/`→` seek ±5 s or prev/next image · `↑`/`↓` volume · `M` mute · `F` fullscreen · `S` favorite · `Esc` back |
-| Privacy | 18+ age gate, boss key, discreet mode, share-safe mode |
+| Shortcuts | `?` lists every binding (generated from one table). Library: arrows move, `Enter` opens, `/` search, `1`–`4` tabs, `S` favorite, `R` random, `T` slideshow, `V` triage, `X` hide, `Ctrl+S` save view, `Ctrl+B` sidebar, `Alt+0`–`5` rate. Player: `Space`, `←`/`→` ±5 s, `-`/`+` speed, `L` loop, `,`/`.` frame step, `K` marker, `N` next marker. A left-hand preset keeps everything on `WASD`. Digits and left-hand keys match the physical key, so they work on AZERTY |
+| Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network |
 
 ## Built for agents
 
@@ -81,6 +105,11 @@ jizzcraft-cli query --type video --name holiday --json
 jizzcraft-cli fav 42 --json
 jizzcraft-cli query --fav --json      # same favorites the app shows
 jizzcraft-cli stats --json
+jizzcraft-cli rate 42 5 && jizzcraft-cli query --min-rating 4 --sort rating --desc --json
+jizzcraft-cli query --view inbox --json     # built-in and saved views
+jizzcraft-cli fingerprint --all && jizzcraft-cli check --full --checksum
+jizzcraft-cli export meta.json && jizzcraft-cli import meta.json --dry-run
+jizzcraft-cli run history.list '{"limit":10}'   # any registered command
 jizzcraft-cli commands                # list registered commands
 
 # drive the desktop app
@@ -96,7 +125,7 @@ crates/core    model, SQLite (versioned schema + migrations), scan, command regi
 crates/media   thumbnails, codec probing, GStreamer player
 crates/ui      egui app: Craft theme, grid, viewer, player, inspector
 apps/jizzcraft       desktop app (eframe + wgpu)
-apps/jizzcraft-cli   CLI on the same registry
+apps/jizzcraft-cli   CLI on the same registry (`run <command>` reaches all of it)
 xtask          fixtures, icons, README screenshots
 ```
 
@@ -178,6 +207,9 @@ cargo xtask screenshots       # render README images through the app itself
 - Your media is never modified, moved or deleted. Thumbnails are written to the XDG cache directory only.
 - No shell commands are ever built from file names. Paths are passed as arguments to APIs.
 - Full paths and file names are not logged unless `JIZZCRAFT_DEBUG=1`.
+- Ratings, hidden flags, history and markers live only in the library database. No sidecar files are written, and exports leave out names and history unless you ask.
+- Watch history can be paused, cleared (and truncated out of the WAL file) or hidden in the UI; the boss key hides it too.
+- Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
 - The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are not encrypted (an encrypted vault is on the roadmap).
 
 ## Parody disclaimer
