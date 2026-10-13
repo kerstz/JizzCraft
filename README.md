@@ -13,7 +13,7 @@ Your library, in a native app written entirely in Rust. Open source, offline, an
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3a3a3a?style=flat-square)
 ![Status](https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square)
 
-> "100% Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer, which is C.
+> "100% Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
 
 > [!NOTE]
 > JizzCraft is a **parody project**. It is not affiliated with, endorsed by or connected to the ArtCraft team or the Crafting Apps. See [Parody disclaimer](#parody-disclaimer).
@@ -25,20 +25,20 @@ Your library, in a native app written entirely in Rust. Open source, offline, an
 - 🎛️ **Familiar by design.** If you know a file browser, you already know JizzCraft: a top bar, a grid, an inspector. Open a folder, see your files.
 - ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs. A left-hand preset keeps everything on `WASD` for one-handed use.
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
-- 🔒 **Private by default.** No account, no telemetry, no network access, ever. A boss key, a discreet mode and a screen-share-safe mode are built in.
+- 🔒 **Private by default.** No account, no telemetry, no network connections: GStreamer's network-capable elements are switched off inside the app, so even a streaming playlist renamed to `.mp4` is refused, not fetched. A boss key, a discreet mode and a screen-share-safe mode are built in.
 - 🤖 **Agent-ready.** One registry of named commands drives the menus, the shortcuts and a JSON CLI.
 
 ## Features
 
 ### A library that stays out of your way
 
-Import a folder (native dialog), and JizzCraft indexes images and videos recursively. It never follows symlinks, never touches your files, and keeps a file that went missing flagged instead of silently dropping it. Search by filename, filter All / Images / Videos / Favorites, sort by name, date added, size or duration, and rescan on demand. No ads, no account, nothing to log into.
+Import a folder (native dialog), and JizzCraft indexes images and videos recursively. Symbolic links inside the folder are skipped, your files are only read (never modified, moved or deleted), and a file that went missing stays flagged instead of silently dropped. Search by filename, filter All / Images / Videos / Favorites, sort by name, date added, size, duration, rating or play history, and rescan on demand. No ads, no account, nothing to log into.
 
 ![Empty state](docs/screenshots/empty.png)
 
 ### Thumbnails, cached outside your folders
 
-Images are downscaled to about 320 px in a background pool. Videos go through a dedicated GStreamer pipeline (`uridecodebin → videoconvert → videoscale → appsink`), paused and seeked to about 10 %. Everything lands in the XDG cache dir, keyed by a hash of path + size + mtime.
+Images are downscaled to about 320 px in a background pool. Videos go through a dedicated GStreamer pipeline (`uridecodebin → videoconvert → videoscale → appsink`), paused and seeked to about 10 %. Everything lands in the XDG cache dir (or the portable home), keyed by a hash of path + size + mtime.
 
 ### Image viewer
 
@@ -60,18 +60,18 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 
 ### Organise without touching your files
 
-- **Ratings and hiding.** 0–5 stars, and a reversible *hide* that is only a database flag.
-- **Views.** Built-in views (Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers), saved views of any filter, and a folder tree with counts.
-- **Inbox triage.** Review new imports one at a time: keep, hide, favorite, undo. Nothing is ever deleted.
-- **Moves are recognised.** A fingerprint (size plus the first and last 64 KiB) lets a renamed or moved file keep its favorite, rating, history and markers.
-- **Shuffle, random pick and slideshow** that never repeat or skip while paging.
+- **Ratings and hiding.** 0–5 stars (`Alt+0`–`Alt+5` or the inspector), and a reversible *hide* that is only a database flag.
+- **Views.** Built-in views (Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers), saved views of any filter (*Save view*), and a folder tree with counts.
+- **Inbox triage.** Review new imports one at a time: keep, hide, favorite, undo. Nothing is ever deleted. Start it with `jizzcraft --cmd triage.start` (no button yet).
+- **Moves are recognised.** Once files are fingerprinted (*Library → Fingerprint files*, or `jizzcraft-cli fingerprint`), a renamed or moved file keeps its favorite, rating, history and markers at the next rescan. The fingerprint is the size plus the first and last 64 KiB.
+- **Shuffle** (a stable order that never repeats or skips while paging), plus a **random pick** and a **slideshow** available as commands (`view.random`, `view.slideshow`).
 
 ![Inbox triage](docs/screenshots/triage.png)
 
 ### A player that remembers
 
 - **Resume and history**, with a pause switch, a clear button and a setting that hides history in the UI. History is aggregate (count, last played, resume point), never an event log.
-- **Speed (0.25×–4×)** with pitch preserved, **frame step**, **A-B loop**, **markers** with timeline ticks and next/previous jumps.
+- **Speed** from the player bar (cycles 0.5×–2×; `player.speed` accepts 0.25×–4×), pitch preserved when `scaletempo` (gst-plugins-good) is installed. **A-B loop** from the player bar. **Markers** show as timeline ticks and in the inspector (click to seek, × to remove). Adding markers, jumping between them and **frame step** are commands for now (`markers.add`, `player.marker.jump`, `player.frame`).
 - **Scrub previews** on the timeline, decoded on demand into a cache and blurred in discreet and share-safe modes.
 - **Autoplay-next** with a three-second countdown that Esc cancels.
 
@@ -92,8 +92,8 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 | Images | PNG, JPEG, WebP, GIF, BMP |
 | Videos | whatever your GStreamer can decode (MP4/H.264, WebM/VP8/VP9, MKV, …) |
 | Inspector | name, path, type, size, resolution, duration, codec, added date |
-| Shortcuts | `?` lists every binding (generated from one table). Library: arrows move, `Enter` opens, `/` search, `1`–`4` tabs, `S` favorite, `R` random, `T` slideshow, `V` triage, `X` hide, `Ctrl+S` save view, `Ctrl+B` sidebar, `Alt+0`–`5` rate. Player: `Space`, `←`/`→` ±5 s, `-`/`+` speed, `L` loop, `,`/`.` frame step, `K` marker, `N` next marker. A left-hand preset keeps everything on `WASD`. Digits and left-hand keys match the physical key, so they work on AZERTY |
-| Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network |
+| Shortcuts | `?` lists every binding (generated from one table). Anywhere: `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Alt+0`–`5` rate. Library: arrows move, `Enter` opens, `Home`/`End`, `/` search, `1`–`4` tabs, `S` favorite. Viewer: `←`/`→`, `0` fit, `1` 100 %, `+`/`-` zoom, `X` hide. Player: `Space`, `←`/`→` ±5 s, `↑`/`↓` volume, `M` mute, `F` fullscreen, `Page Up`/`Page Down` previous/next, `Home` restart. Triage: `→` keep, `↓` hide, `↑` favorite, `←` undo. A left-hand preset keeps everything on `WASD`. Digits and left-hand keys match the physical key, so they work on AZERTY. Shuffle, saved views, speed, A-B loop and autoplay are on-screen controls; random pick, slideshow, triage, frame step and markers have no shortcut yet |
+| Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network connections |
 
 ## Built for agents
 
@@ -114,6 +114,7 @@ jizzcraft-cli commands                # list registered commands
 
 # drive the desktop app
 jizzcraft --import ~/Videos --cmd 'view.filter={"tab":"Videos"}' --cmd 'media.open={"index":0}'
+jizzcraft --cmd triage.start          # commands without a button or shortcut yet
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the conventions agents (and humans) should follow.
@@ -130,12 +131,15 @@ xtask          fixtures, icons, README screenshots
 ```
 
 - **Engine first.** `core` has no UI and no GStreamer dependency.
+- **Local by construction.** Pipelines only get `file://` URIs. At start-up, GStreamer's network-capable elements (HTTP/RTSP/UDP/… sources, HLS/DASH/Smooth Streaming/SDP demuxers) are taken out of the app's own plugin registry, and every pipeline is watched for anything that slips through (`crates/media/src/guard.rs`; the system registry is untouched). `crates/media/tests/network.rs` feeds HLS and DASH playlists disguised as videos to every decode path and asserts that a local listener receives zero connections.
 - **The UI thread never touches the pipeline.** A control thread builds, drives and tears down GStreamer; the UI reads atomics and takes the newest ref-counted `gst::Sample` from a one-slot mailbox.
 - **Pacing by the clock.** `appsink` runs with `max-buffers=1 drop=true sync=true`.
 - **No async runtime.** `std::thread` and channels.
 - **Performance, measured.** `jizzcraft --bench <file> --seconds 30 --bench-gst-play`. Results in [`docs/bench.md`](docs/bench.md): no dropped frames on 1080p30, 1080p60 and 4K30 H.264, **but 3 to 6 times the CPU of `gst-play-1.0`** because the MVP does RGBA conversion on the CPU. A YUV→RGB shader is on the [roadmap](ROADMAP.md).
 
 ## Get started
+
+Rust 1.95 or newer (the minimum of egui 0.36; developed with 1.98), GStreamer with development headers, and a GPU driver: Vulkan is the tested backend (wgpu's OpenGL ES fallback is compiled in but untested).
 
 ### Dependencies (Arch / CachyOS)
 
@@ -144,6 +148,22 @@ sudo pacman -S --needed rust gstreamer gst-plugins-base gst-plugins-good \
   gst-plugins-bad gst-plugins-ugly gst-libav vulkan-icd-loader \
   xdg-desktop-portal xdg-desktop-portal-gtk
 # plus a Vulkan driver for your GPU, e.g. vulkan-radeon, vulkan-intel or nvidia-utils
+```
+
+### Dependencies (Debian / Ubuntu, Fedora)
+
+```sh
+# Debian / Ubuntu (the CI job uses this list)
+sudo apt install build-essential pkg-config libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav libvulkan1 mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk
+
+# Fedora (untested; H.264 needs RPM Fusion's gstreamer1-libav)
+sudo dnf install gcc pkgconf-pkg-config gstreamer1-devel gstreamer1-plugins-base-devel \
+  gstreamer1-plugins-base-tools gstreamer1-plugins-good gstreamer1-plugins-bad-free \
+  gstreamer1-plugins-ugly-free vulkan-loader mesa-vulkan-drivers \
+  xdg-desktop-portal xdg-desktop-portal-gtk
 ```
 
 ### Build and run
@@ -181,9 +201,11 @@ cargo xtask screenshots       # render README images through the app itself
 
 **"missing GStreamer plugin: …"** — install the plugin sets listed above (`gst-plugins-good/bad/ugly`, `gst-libav`). The error names what is missing. Check with `gst-inspect-1.0 avdec_h264`.
 
-**Black window or wgpu error at startup** — you need a working Vulkan driver (`vulkaninfo` should list your GPU). Install the right `vulkan-*` package for your hardware.
+**"refused: this file refers to network media…"** — the file is a streaming playlist (HLS, DASH, Smooth Streaming) or SDP description, not a video. JizzCraft does not follow the URLs inside it, by design; installing plugins will not change that.
 
-**Wayland** — JizzCraft runs natively on Wayland. If your compositor misbehaves, try X11 with `WINIT_UNIX_BACKEND=x11 jizzcraft`. The folder chooser uses the XDG desktop portal: make sure `xdg-desktop-portal` and a backend for your desktop are running.
+**Black window or wgpu error at startup** — check your Vulkan driver (`vulkaninfo` should list your GPU) and install the right `vulkan-*` package for your hardware. Vulkan is the only backend that has been tested.
+
+**Wayland** — JizzCraft runs natively on Wayland. If your compositor misbehaves, try X11 (XWayland) with `WAYLAND_DISPLAY= jizzcraft`. The folder chooser uses the XDG desktop portal: make sure `xdg-desktop-portal` and a backend for your desktop are running.
 
 **Playback stutters on 4K** — see the [benchmark notes](docs/bench.md); software colour conversion is the bottleneck in this MVP.
 
@@ -194,17 +216,17 @@ cargo xtask screenshots       # render README images through the app itself
 > [!IMPORTANT]
 > JizzCraft is **early alpha**. Here is what is true today.
 >
-> **Verified**: library scan/search/favorites/persistence (automated tests and CLI round trips), thumbnails for images and videos (tests + screenshots), image viewer and player rendering (screenshots), player state machine — play, pause, seek, coalesced scrubbing, EOS and replay, error reporting (integration tests on a real GStreamer pipeline), playback benchmarks on one machine (H.264, VA-API, AMD GPU, Wayland).
+> **Verified by automated tests**: library scan/search/favorites/persistence, schema migration, ratings, hide/inbox, history settings, markers, filters, saved views, folder tree, stable shuffle, fingerprint relink and merge, backup and metadata export/import, bit-rot detection, "the engine never touches media" (hashes a tree before and after every command); image and video thumbnails, scrub previews, integrity checks; the player state machine on a real GStreamer pipeline (play, pause, seek, coalesced scrubbing, EOS and replay, speed, frame step, A-B loop, errors); the network guard (zero connections from playlists disguised as videos); keymap invariants (no duplicate chords, physical keys on AZERTY). CLI examples above were run end to end. Playback benchmarks on one machine (H.264, VA-API, AMD GPU, Wayland).
 >
-> **Only checked through commands and screenshots, not by hand**: mouse wheel zoom, drag-panning, timeline dragging, keyboard shortcuts, fullscreen, boss-key minimize behaviour under different compositors, the native folder dialog.
+> **Only checked through commands and screenshots, not by hand**: mouse wheel zoom, drag-panning, timeline dragging, keyboard shortcuts, fullscreen, boss-key minimize behaviour under different compositors, the native folder dialog, the sidebar, triage, the player bar chips, autoplay-next, slideshow.
 >
-> **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; AVIF images are not decoded; tested on one Linux machine only.
+> **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only.
 
 ## Privacy guarantees
 
-- No accounts, telemetry, analytics, cloud sync, ads or network requests. The player only accepts local file paths.
+- No accounts, telemetry, analytics, cloud sync, ads or network connections. The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
 - No scraping, no downloaders, no external feeds.
-- Your media is never modified, moved or deleted. Thumbnails are written to the XDG cache directory only.
+- Your media is never modified, moved or deleted. Thumbnails and previews are written to the XDG cache directory (or the portable home) only.
 - No shell commands are ever built from file names. Paths are passed as arguments to APIs.
 - Full paths and file names are not logged unless `JIZZCRAFT_DEBUG=1`.
 - Ratings, hidden flags, history and markers live only in the library database. No sidecar files are written, and exports leave out names and history unless you ask.
@@ -212,12 +234,16 @@ cargo xtask screenshots       # render README images through the app itself
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
 - The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are not encrypted (an encrypted vault is on the roadmap).
 
+## Contributing and security
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). Report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
+
 ## Parody disclaimer
 
-JizzCraft started as a joke imitating the "Crafting Apps" family (PhotoCraft, FilmCraft, LightCraft…). It is a parody and is **not affiliated with, endorsed by or connected to the ArtCraft team**. It reuses README conventions only: no code, assets, logos or wordmarks from those projects. App ID: `org.jizzcraft.JizzCraft`.
+JizzCraft started as a joke imitating the "Crafting Apps" family (PhotoCraft, FilmCraft, LightCraft…). It is a parody and is **not affiliated with, endorsed by or connected to the ArtCraft team**. The name, the README layout and the look of the interface imitate that family; the code, assets, icons, logos and wordmark are this project's own, and nothing was copied from those projects. App ID: `org.jizzcraft.JizzCraft`.
 
 ## License and credits
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
-Fonts (Archivo, Inter, JetBrains Mono, all OFL) and other credits are listed in [`ATTRIBUTION.md`](ATTRIBUTION.md). The peach icon was drawn for this project.
+Fonts (Archivo, Inter, JetBrains Mono, all OFL) and other credits, including the licences of third-party libraries, are listed in [`ATTRIBUTION.md`](ATTRIBUTION.md). The peach icon was drawn for this project.

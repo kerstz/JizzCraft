@@ -5,12 +5,14 @@
   <summary>Private, offline media viewer and library manager</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
-  <developer id="org.jizzcraft"><name>The JizzCraft contributors</name></developer>
+  <developer id="org.jizzcraft"><name>JizzCraft contributors</name></developer>
+  <url type="homepage">https://github.com/kerstz/JizzCraft</url>
+  <url type="bugtracker">https://github.com/kerstz/JizzCraft/issues</url>
   <description>
     <p>
-      JizzCraft is a parody project: a private, offline-first viewer and library
+      JizzCraft is a parody project: a private, offline viewer and library
       manager for local images and videos, written in Rust. No accounts, no
-      telemetry, no network access.
+      telemetry, no network connections.
     </p>
     <p>
       Not affiliated with or endorsed by the ArtCraft team.

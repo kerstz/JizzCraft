@@ -7,7 +7,7 @@ Rust (egui/eframe + wgpu, GStreamer, SQLite). It is a parody project.
 
 ```
 crates/core    model, SQLite, scan, command registry. No UI, no GStreamer.
-crates/media   thumbnails, codec probing, GStreamer player.
+crates/media   thumbnails, codec probing, GStreamer player, network guard.
 crates/ui      egui app: theme, grid, viewer, player, inspector.
 apps/jizzcraft       desktop app          apps/jizzcraft-cli   CLI
 xtask          fixtures, icons, screenshots
@@ -54,6 +54,10 @@ Add behaviour as a command first, UI second.
 
 - **Never** modify, move or delete user media. Thumbnails go to the XDG cache dir.
 - **No network** of any kind. No remote URLs in the player. No telemetry.
+  GStreamer only gets `file://` URIs from `jizzcraft_media::file_uri`; call
+  `jizzcraft_media::init()` before building any pipeline (it removes
+  network-capable elements from the process registry) and pass every new
+  pipeline to `guard::watch`. `tests/network.rs` must stay at zero connections.
 - **No shell** built from filenames. Pass paths as argv or through the APIs.
 - **No full paths or filenames in logs** unless `JIZZCRAFT_DEBUG=1`.
 - Tests, fixtures and screenshots are **100 % SFW and synthetic**. Never commit
