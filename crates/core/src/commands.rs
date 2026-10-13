@@ -3,7 +3,7 @@
 //! language. The registry is generic over its context so the UI can register
 //! its own commands (`player.toggle`, `app.boss_key`…) next to the core ones.
 
-use crate::db::{Db, Filter};
+use crate::db::{Db, Filter, SortKey};
 use crate::error::{Error, Result};
 use crate::model::MediaKind;
 use crate::scan;
@@ -102,7 +102,7 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     });
     reg.register(
         MEDIA_QUERY,
-        "Query media: {fav?, kind?, name?, include_missing?, limit?, offset?}",
+        "Query media: {fav?, kind?, name?, sort?: name|added|size|duration, desc?, include_missing?, limit?, offset?}",
         |c, a| {
             let f = filter_from_args(&a)?;
             let items = c.db().query(&f)?;
@@ -144,7 +144,15 @@ fn filter_from_args(a: &Value) -> Result<Filter> {
             Some(MediaKind::parse(s).ok_or_else(|| Error::Invalid(format!("unknown kind `{s}`")))?)
         }
     };
+    let sort = match a.get("sort").and_then(Value::as_str) {
+        None => SortKey::default(),
+        Some(s) => {
+            SortKey::parse(s).ok_or_else(|| Error::Invalid(format!("unknown sort `{s}`")))?
+        }
+    };
     Ok(Filter {
+        sort,
+        desc: a.get("desc").and_then(Value::as_bool).unwrap_or(false),
         kind,
         favorites: a.get("fav").and_then(Value::as_bool).unwrap_or(false),
         name: a.get("name").and_then(Value::as_str).map(str::to_owned),

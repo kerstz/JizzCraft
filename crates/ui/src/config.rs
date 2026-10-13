@@ -12,6 +12,11 @@ pub struct Config {
     pub screen_share_safe: bool,
     pub inspector_open: bool,
     pub volume: Option<f32>,
+    /// Keep every key under the left hand (WASD preset).
+    pub left_hand: bool,
+    /// Last sort: key name and direction.
+    pub sort: Option<String>,
+    pub sort_desc: bool,
 }
 
 pub fn path() -> PathBuf {

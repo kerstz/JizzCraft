@@ -171,3 +171,49 @@ fn registry_roundtrip() {
             .is_err()
     );
 }
+
+#[test]
+fn sort_keys_and_direction() {
+    use jizzcraft_core::SortKey;
+    let tmp = tempfile::tempdir().unwrap();
+    png(&tmp.path().join("b.png"), 8, 8);
+    png(&tmp.path().join("a.png"), 64, 64);
+    png(&tmp.path().join("c.png"), 32, 32);
+    let mut db = Db::open_in_memory().unwrap();
+    scan::import_folder(&mut db, tmp.path()).unwrap();
+
+    let names =
+        |f: Filter| -> Vec<String> { db.query(&f).unwrap().into_iter().map(|m| m.name).collect() };
+    assert_eq!(names(Filter::default()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(
+        names(Filter {
+            desc: true,
+            ..Default::default()
+        }),
+        ["c.png", "b.png", "a.png"]
+    );
+    // Larger pixel area → larger file for this generator.
+    let by_size = names(Filter {
+        sort: SortKey::Size,
+        desc: true,
+        ..Default::default()
+    });
+    assert_eq!(by_size.first().map(String::as_str), Some("a.png"));
+    assert_eq!(SortKey::parse("DURATION"), Some(SortKey::Duration));
+    assert_eq!(SortKey::parse("nope"), None);
+
+    let mut reg: Registry<Db> = Registry::new();
+    register_core(&mut reg);
+    let out = reg
+        .run(
+            &mut db,
+            "media.query",
+            json!({ "sort": "size", "desc": true }),
+        )
+        .unwrap();
+    assert_eq!(out["items"][0]["name"], "a.png");
+    assert!(
+        reg.run(&mut db, "media.query", json!({ "sort": "'; DROP TABLE" }))
+            .is_err()
+    );
+}

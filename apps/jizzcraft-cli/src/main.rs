@@ -51,6 +51,12 @@ enum Cmd {
         include_missing: bool,
         #[arg(long)]
         limit: Option<u64>,
+        /// Sort key: name, added, size or duration.
+        #[arg(long, default_value = "name")]
+        sort: String,
+        /// Descending order.
+        #[arg(long)]
+        desc: bool,
     },
     /// Toggle the favorite flag of a media id.
     Fav { id: i64 },
@@ -107,8 +113,15 @@ fn run(cli: &Cli) -> Result<(), String> {
             name,
             include_missing,
             limit,
+            sort,
+            desc,
         } => {
-            let mut a = json!({ "fav": fav, "include_missing": include_missing });
+            let mut a = json!({
+                "fav": fav,
+                "include_missing": include_missing,
+                "sort": sort,
+                "desc": desc,
+            });
             if let Some(k) = kind {
                 a["kind"] = json!(match k {
                     TypeArg::Image => "image",
