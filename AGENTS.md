@@ -35,6 +35,21 @@ One registry of named commands (`library.import`, `library.rescan`,
 `app.boss_key`, `app.left_hand.toggle`, …). Menus, shortcuts, the CLI and `--cmd NAME=JSON` all call it.
 Add behaviour as a command first, UI second.
 
+## Rules for user data
+
+- **Schema is append-only.** New columns and tables go in a new entry of
+  `MIGRATIONS`; Rust backfills are keyed by target version in `post_migrate`.
+  Never edit an old entry (a test freezes the v1 SQL).
+- **Filter values reach SQL only as bound parameters.** Sort keys and filter
+  keys are whitelisted (`SortKey`, `ALLOWED_KEYS`).
+- **Anything slow is a job** with its own connection, a cancel flag and one
+  toast with counts. Never names in toasts or logs.
+- **Key bindings live in `crates/ui/src/keys.rs` only.** The docs window is
+  generated from that table. Digits and left-hand letters match physical keys.
+- **User data is database-only.** Ratings, hidden flags, history and markers
+  must not write sidecar files or touch media. `engine_never_touches_media`
+  hashes a tree before and after every command; keep it passing.
+
 ## Rules
 
 - **Never** modify, move or delete user media. Thumbnails go to the XDG cache dir.
