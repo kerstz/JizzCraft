@@ -96,6 +96,7 @@ enum JobMsg {
         token: u64,
         result: Result<egui::ColorImage, String>,
     },
+    Meta(i64, jizzcraft_core::MediaMeta),
 }
 
 const MAX_TEXTURES: usize = 256;
@@ -180,6 +181,8 @@ pub struct JizzApp {
     textures: HashMap<i64, ThumbTex>,
     thumb_failed: HashSet<i64>,
     meta_tried: HashSet<i64>,
+    icon_peach: Arc<egui::IconData>,
+    icon_viewer: Arc<egui::IconData>,
     peach: TextureHandle,
     viewer_icon: TextureHandle,
     last_title: String,
@@ -192,6 +195,17 @@ impl HasLibrary for JizzApp {
     fn db(&mut self) -> &mut Db {
         &mut self.db
     }
+}
+
+fn window_icon(bytes: &[u8]) -> Arc<egui::IconData> {
+    let img = image::load_from_memory(bytes)
+        .expect("bundled icon decodes")
+        .to_rgba8();
+    Arc::new(egui::IconData {
+        width: img.width(),
+        height: img.height(),
+        rgba: img.into_raw(),
+    })
 }
 
 fn load_icon(ctx: &egui::Context, name: &str, bytes: &[u8]) -> TextureHandle {
@@ -254,6 +268,8 @@ impl JizzApp {
             textures: HashMap::new(),
             thumb_failed: HashSet::new(),
             meta_tried: HashSet::new(),
+            icon_peach: window_icon(PEACH_PNG),
+            icon_viewer: window_icon(VIEWER_PNG),
             peach: load_icon(&cc.egui_ctx, "peach", PEACH_PNG),
             viewer_icon: load_icon(&cc.egui_ctx, "viewer", VIEWER_PNG),
             last_title: String::new(),
@@ -404,6 +420,16 @@ impl JizzApp {
                 });
             }
             MediaKind::Video => {
+                if m.duration_ms.is_none() {
+                    let (tx, ctx, path, id) =
+                        (self.tx.clone(), self.ctx.clone(), m.path.clone(), m.id);
+                    std::thread::spawn(move || {
+                        if let Ok(meta) = jizzcraft_media::probe::probe(&path) {
+                            let _ = tx.send(JobMsg::Meta(id, meta));
+                            ctx.request_repaint();
+                        }
+                    });
+                }
                 let name = m.name.clone();
                 self.open_player(Some(index), name, &m.path);
             }
@@ -486,6 +512,11 @@ impl JizzApp {
             match msg {
                 JobMsg::Folder(Some(dir)) => self.start_scan(Some(dir)),
                 JobMsg::Folder(None) => {}
+                JobMsg::Meta(id, meta) => {
+                    if self.db.set_meta(id, &meta).is_ok() {
+                        self.generation += 1;
+                    }
+                }
                 JobMsg::Image { token, result } => {
                     if let View::Image(iv) = &mut self.view
                         && iv.token == token
@@ -640,6 +671,13 @@ impl JizzApp {
                 self.push("media.favorite.toggle", json!({ "id": id }));
             }
         }
+        if matches!(self.view, View::Library)
+            && !ctx.egui_wants_keyboard_input()
+            && ctx.input(|i| i.key_pressed(egui::Key::S))
+            && let Some(id) = self.selected
+        {
+            self.push("media.favorite.toggle", json!({ "id": id }));
+        }
         if matches!(self.view, View::Player(_)) && !ctx.egui_wants_keyboard_input() {
             use egui::Key;
             let k = ctx.input(|i| {
@@ -719,6 +757,12 @@ impl JizzApp {
             "JizzCraft"
         };
         if self.last_title != title {
+            let icon = if self.discreet() {
+                &self.icon_viewer
+            } else {
+                &self.icon_peach
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(icon.clone())));
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.into()));
             self.last_title = title.into();
         }
@@ -868,6 +912,12 @@ impl JizzApp {
                         if widgets::toggle_chip(ui, "Discreet", self.discreet()).clicked() {
                             self.push("app.discreet.toggle", json!({}));
                         }
+                        if widgets::toggle_chip(ui, "Share-safe", self.cfg.screen_share_safe)
+                            .on_hover_text("Blur every thumbnail until hovered")
+                            .clicked()
+                        {
+                            self.push("app.share_safe.toggle", json!({}));
+                        }
                         // Whatever the nav tabs leave over, up to 220 px.
                         let w = (ui.available_width() - S).clamp(72.0, 220.0);
                         let resp = ui.add_sized(
@@ -968,7 +1018,8 @@ impl JizzApp {
                 };
                 widgets::kv(ui, "Name", if discreet { "—" } else { &m.name });
                 let path = m.path.to_string_lossy();
-                widgets::kv(ui, "Path", if discreet { "hidden" } else { &path });
+                let hide_path = discreet || self.opts.screenshot.is_some();
+                widgets::kv(ui, "Path", if hide_path { "hidden" } else { &path });
                 widgets::kv(ui, "Type", m.kind.label());
                 widgets::kv(ui, "Size", &fmt_size(m.size));
                 widgets::kv(
@@ -1038,6 +1089,7 @@ impl JizzApp {
         let discreet = self.discreet();
         let mut open: Option<usize> = None;
         let mut select: Option<i64> = None;
+        let mut fav_toggle: Option<i64> = None;
         let mut wanted: Vec<Request> = Vec::new();
         let hide_all = discreet;
         let share_safe = self.cfg.screen_share_safe;
@@ -1084,7 +1136,7 @@ impl JizzApp {
                                     ThumbState::Loading
                                 }
                             };
-                            let resp = draw_tile(
+                            let (resp, star) = draw_tile(
                                 ui,
                                 m,
                                 self.selected == Some(m.id),
@@ -1093,7 +1145,9 @@ impl JizzApp {
                                 state,
                                 frame_no,
                             );
-                            if resp.clicked() {
+                            if star {
+                                fav_toggle = Some(m.id);
+                            } else if resp.clicked() {
                                 select = Some(m.id);
                             }
                             if resp.double_clicked() {
@@ -1104,6 +1158,9 @@ impl JizzApp {
                 }
             });
         self.thumbs.set_wanted(wanted);
+        if let Some(id) = fav_toggle {
+            self.push("media.favorite.toggle", json!({ "id": id }));
+        }
         if let Some(id) = select {
             self.selected = Some(id);
         }
@@ -1304,6 +1361,52 @@ impl JizzApp {
         });
     }
 
+    /// 18+ gate, shown until confirmed (persisted in the config).
+    fn age_gate(&mut self, ui: &mut Ui) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BG))
+            .show(ui, |ui| {
+                let rect = ui.max_rect();
+                let p = ui.painter().clone();
+                widgets::grid_background(&p, rect);
+                widgets::corner_crosshairs(&p, rect, 16.0);
+                widgets::ruler(&p, rect);
+                let col = Rect::from_center_size(rect.center(), vec2(640.0_f32.min(rect.width() - 96.0), 320.0));
+                ui.scope_builder(UiBuilder::new().max_rect(col), |ui| {
+                    ui.spacing_mut().item_spacing = vec2(S * 2.0, S * 2.0);
+                    ui.horizontal(|ui| {
+                        widgets::badge(ui, "18", 28.0);
+                        widgets::mono_label(ui, "Age check", TEXT_DIM);
+                    });
+                    ui.label(
+                        egui::RichText::new("You must be 18 or older.")
+                            .font(FontId::new(44.0, theme::title_family()))
+                            .color(Color32::WHITE),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "This application is for adults only and manages local media. \
+                                 Nothing leaves this machine. By continuing you confirm that you are at least 18 years old.",
+                            )
+                            .size(13.0)
+                            .color(TEXT_DIM),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(S);
+                    ui.horizontal(|ui| {
+                        if widgets::button_solid(ui, "I am 18 or older").clicked() {
+                            self.push("app.age.confirm", json!({}));
+                        }
+                        if widgets::button_outline(ui, "Exit").clicked() {
+                            self.push("app.quit", json!({}));
+                        }
+                    });
+                });
+            });
+    }
+
     fn toasts_ui(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         self.toasts.retain(|t| t.until > now);
@@ -1373,6 +1476,14 @@ impl eframe::App for JizzApp {
         self.poll_thumbs(&ctx);
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);
+
+        if !self.cfg.age_confirmed {
+            self.age_gate(ui);
+            self.toasts_ui(&ctx);
+            self.drain_queue();
+            self.drive_screenshot(&ctx);
+            return;
+        }
 
         let t0 = Instant::now();
         if let (View::Player(pv), Some(rs)) = (&mut self.view, &self.render_state) {
@@ -1560,6 +1671,24 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         }
         Ok(json!({}))
     });
+    reg.register(
+        "app.share_safe.toggle",
+        "Blur thumbnails until hovered",
+        |app, _| {
+            app.cfg.screen_share_safe = !app.cfg.screen_share_safe;
+            app.save_cfg();
+            Ok(json!({ "screen_share_safe": app.cfg.screen_share_safe }))
+        },
+    );
+    reg.register("app.age.confirm", "Confirm the 18+ age gate", |app, _| {
+        app.cfg.age_confirmed = true;
+        app.save_cfg();
+        Ok(json!({}))
+    });
+    reg.register("app.quit", "Quit the application", |app, _| {
+        app.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        Ok(json!({}))
+    });
     reg.register("app.discreet.toggle", "Toggle discreet mode", |app, _| {
         app.cfg.discreet = !app.cfg.discreet;
         app.save_cfg();
@@ -1627,8 +1756,13 @@ fn draw_tile(
     share_safe: bool,
     state: ThumbState<'_>,
     frame_no: u64,
-) -> egui::Response {
+) -> (egui::Response, bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(TILE_W, TILE_H), Sense::click());
+    let star_rect = Rect::from_center_size(rect.right_top() + vec2(-14.0, 16.0), vec2(24.0, 24.0));
+    let star_clicked = resp.clicked()
+        && ui
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| star_rect.contains(p));
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::same(1), RAISED);
     let body = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - 36.0));
@@ -1705,13 +1839,13 @@ fn draw_tile(
         FontId::new(9.0, FontFamily::Monospace),
         TEXT_DIM,
     );
-    if m.favorite {
+    if m.favorite || resp.hovered() {
         p.text(
-            rect.right_top() + vec2(-10.0, 14.0),
+            star_rect.center(),
             Align2::CENTER_CENTER,
-            "★",
+            if m.favorite { "★" } else { "☆" },
             FontId::new(14.0, FontFamily::Proportional),
-            ACCENT,
+            if m.favorite { ACCENT } else { TEXT_DIM },
         );
     }
     if m.missing {
@@ -1765,7 +1899,7 @@ fn draw_tile(
             StrokeKind::Outside,
         );
     }
-    resp
+    (resp, star_clicked)
 }
 
 fn upload_thumb(ctx: &egui::Context, id: i64, t: &Thumb, used: u64) -> ThumbTex {

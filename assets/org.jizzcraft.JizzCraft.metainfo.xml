@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.jizzcraft.JizzCraft</id>
+  <name>JizzCraft</name>
+  <summary>Private, offline media viewer and library manager</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <developer id="org.jizzcraft"><name>The JizzCraft contributors</name></developer>
+  <description>
+    <p>
+      JizzCraft is a parody project: a private, offline-first viewer and library
+      manager for local images and videos, written in Rust. No accounts, no
+      telemetry, no network access.
+    </p>
+    <p>
+      Not affiliated with or endorsed by the ArtCraft team.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.jizzcraft.JizzCraft.desktop</launchable>
+  <provides><binary>jizzcraft</binary></provides>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+  </categories>
+  <content_rating type="oars-1.1">
+    <content_attribute id="sex-nudity">intense</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-10-13"/>
+  </releases>
+</component>

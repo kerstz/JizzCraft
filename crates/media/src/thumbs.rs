@@ -11,7 +11,7 @@ use image::{DynamicImage, ImageDecoder, RgbImage, imageops::FilterType};
 use std::path::{Path, PathBuf};
 
 pub const THUMB_MAX: u32 = 320;
-const BLUR_W: u32 = 24;
+const BLUR_W: u32 = 10;
 const SCHEMA: &str = "thumb-v1";
 
 pub fn cache_key(path: &Path, size: u64, mtime: i64) -> String {

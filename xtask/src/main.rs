@@ -15,7 +15,9 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|| PathBuf::from("fixtures"));
             fixtures(&out)
         }
-        _ => Err("usage: cargo xtask fixtures [OUT_DIR]".into()),
+        Some("icons") => icons(),
+        Some("screenshots") => screenshots(),
+        _ => Err("usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots".into()),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -111,6 +113,9 @@ fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
         "videotestsrc".into(),
         format!("num-buffers={frames}"),
         "pattern=ball".into(),
+        // Craft palette: raised-surface background, accent-blue ball.
+        "background-color=0xff1e2327".into(),
+        "foreground-color=0xff7aa2f7".into(),
         "!".into(),
         format!(
             "video/x-raw,width={},height={},framerate={}/1",
@@ -316,5 +321,152 @@ fn fixtures(out: &Path) -> Result<(), String> {
         println!("ok");
     }
     println!("fixtures written to {}", out.display());
+    Ok(())
+}
+
+/// Rasterise the SVG icons to hicolor PNGs with resvg.
+fn icons() -> Result<(), String> {
+    use resvg::{tiny_skia, usvg};
+    const SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
+    let jobs = [
+        ("assets/icons/jizzcraft.svg", "org.jizzcraft.JizzCraft"),
+        ("assets/icons/viewer.svg", "org.jizzcraft.JizzCraft.viewer"),
+    ];
+    for (svg, name) in jobs {
+        let data = std::fs::read(svg).map_err(|e| format!("{svg}: {e}"))?;
+        let tree = usvg::Tree::from_data(&data, &usvg::Options::default())
+            .map_err(|e| format!("{svg}: {e}"))?;
+        for size in SIZES {
+            let mut pixmap = tiny_skia::Pixmap::new(size, size).ok_or("pixmap")?;
+            let scale = size as f32 / tree.size().width();
+            resvg::render(
+                &tree,
+                tiny_skia::Transform::from_scale(scale, scale),
+                &mut pixmap.as_mut(),
+            );
+            let dir = PathBuf::from(format!("assets/icons/hicolor/{size}x{size}/apps"));
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            pixmap
+                .save_png(dir.join(format!("{name}.png")))
+                .map_err(|e| e.to_string())?;
+        }
+        println!("icons: {name} ({} sizes)", SIZES.len());
+    }
+    // Embedded in the binary (window + empty state).
+    let peach = std::fs::read("assets/icons/hicolor/512x512/apps/org.jizzcraft.JizzCraft.png")
+        .map_err(|e| e.to_string())?;
+    std::fs::write("assets/icons/jizzcraft-512.png", peach).map_err(|e| e.to_string())?;
+    let viewer =
+        std::fs::read("assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.viewer.png")
+            .map_err(|e| e.to_string())?;
+    std::fs::write("assets/icons/viewer-256.png", viewer).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// README screenshots: rendered by the app itself (`--screenshot`) on the
+/// synthetic fixtures, with a throw-away library and config.
+fn screenshots() -> Result<(), String> {
+    if !Path::new("fixtures/images").exists() {
+        return Err("run `cargo xtask fixtures` first".into());
+    }
+    let st = Command::new("cargo")
+        .args(["build", "--release", "-p", "jizzcraft"])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("build failed".into());
+    }
+    let out = PathBuf::from("docs/screenshots");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let tmp = PathBuf::from("target/xtask-screenshots");
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let bin = "target/release/jizzcraft";
+
+    struct Shot {
+        file: &'static str,
+        args: Vec<&'static str>,
+        fresh_db: bool,
+        adult: bool,
+    }
+    let shots = [
+        Shot {
+            file: "gate.png",
+            args: vec![],
+            fresh_db: true,
+            adult: false,
+        },
+        Shot {
+            file: "empty.png",
+            args: vec![],
+            fresh_db: true,
+            adult: true,
+        },
+        Shot {
+            file: "library.png",
+            args: vec!["--import", "fixtures"],
+            fresh_db: true,
+            adult: true,
+        },
+        Shot {
+            file: "viewer.png",
+            args: vec![
+                "--import",
+                "fixtures/images",
+                "--tab",
+                "images",
+                "--open",
+                "17",
+            ],
+            fresh_db: true,
+            adult: true,
+        },
+        Shot {
+            file: "player.png",
+            args: vec![
+                "--import",
+                "fixtures/videos",
+                "--tab",
+                "videos",
+                "--open",
+                "1",
+                "--cmd",
+                "player.seek={\"pos\":12}",
+            ],
+            fresh_db: true,
+            adult: true,
+        },
+        Shot {
+            file: "discreet.png",
+            args: vec![
+                "--import",
+                "fixtures/images",
+                "--cmd",
+                "app.discreet.toggle",
+            ],
+            fresh_db: true,
+            adult: true,
+        },
+    ];
+    for s in shots {
+        let db = tmp.join(format!("{}.db", s.file));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", db.display()));
+        }
+        let _ = s.fresh_db;
+        let mut cmd = Command::new(bin);
+        cmd.arg("--db")
+            .arg(&db)
+            .args(&s.args)
+            .arg("--screenshot")
+            .arg(out.join(s.file));
+        if s.adult {
+            cmd.arg("--assume-adult");
+        }
+        let st = cmd.status().map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err(format!("screenshot {} failed", s.file));
+        }
+        println!("screenshot: {}", s.file);
+    }
     Ok(())
 }

@@ -135,3 +135,16 @@ fn garbage_file_errors_without_hanging() {
     wait_until("error", 10, || p.state() == PlayState::Error);
     assert!(p.error().is_some());
 }
+
+#[test]
+fn seek_requested_before_preroll_is_applied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("s.webm");
+    make_video(&src, 150); // 5 s
+    let p = Player::open(&src, 0.5, wake());
+    p.seek(Duration::from_secs(3), true); // immediately, pipeline not prerolled yet
+    wait_until("frame", 10, || p.take_frame().is_some());
+    wait_until("seek landed", 10, || {
+        p.position() >= Duration::from_millis(2900) && !p.is_seeking()
+    });
+}
