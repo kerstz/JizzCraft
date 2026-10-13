@@ -13,6 +13,10 @@ Date: 2026-10-13. Release build. Window 30 s after 1.5 s warm-up.
 
 CPU is a percentage of one core, process-wide (decoder threads included).
 
+The baseline runs the external `gst-play-1.0` on a canonical `file://` URI. It
+is a separate program, so JizzCraft's network guard does not apply to it: only
+benchmark files you created yourself (`cargo xtask fixtures`).
+
 ## Reading the numbers honestly
 
 - Playback is smooth and correctly paced on all three clips: no dropped frames,
