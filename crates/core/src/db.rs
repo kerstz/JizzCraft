@@ -8,7 +8,8 @@ use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-/// Each entry migrates from version `index` to `index + 1`. Append only.
+/// Each entry migrates from version `index` to `index + 1`. SQL is append-only;
+/// Rust backfills are keyed by target version in `post_migrate`.
 const MIGRATIONS: &[&str] = &[
     // v1
     "CREATE TABLE folders (
@@ -39,12 +40,53 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX media_fav  ON media(favorite) WHERE favorite = 1;
     CREATE INDEX media_name ON media(name_lc, id);
     CREATE INDEX media_folder ON media(folder_id);",
+    // v2: ratings, history, hidden/inbox, fingerprints, integrity, markers,
+    // saved views, settings. Rust backfill for `dir` runs in `post_migrate`.
+    "ALTER TABLE media ADD COLUMN dir            BLOB;
+    ALTER TABLE media ADD COLUMN rating         INTEGER NOT NULL DEFAULT 0 CHECK (rating BETWEEN 0 AND 5);
+    ALTER TABLE media ADD COLUMN resume_ms      INTEGER CHECK (resume_ms IS NULL OR resume_ms >= 0);
+    ALTER TABLE media ADD COLUMN play_count     INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE media ADD COLUMN last_played_at INTEGER;
+    ALTER TABLE media ADD COLUMN hidden         INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE media ADD COLUMN inbox          INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE media ADD COLUMN fp             BLOB;
+    ALTER TABLE media ADD COLUMN checksum       BLOB;
+    ALTER TABLE media ADD COLUMN checked_at     INTEGER;
+    ALTER TABLE media ADD COLUMN damaged        INTEGER NOT NULL DEFAULT 0 CHECK (damaged IN (0,1,2));
+    ALTER TABLE media ADD COLUMN check_note     TEXT;
+    UPDATE media SET inbox = 0;
+    CREATE TABLE markers (
+        id         INTEGER PRIMARY KEY,
+        media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        pos_ms     INTEGER NOT NULL CHECK (pos_ms >= 0),
+        label      TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        UNIQUE (media_id, pos_ms)
+    );
+    CREATE INDEX markers_media ON markers(media_id, pos_ms);
+    CREATE TABLE saved_views (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        spec       TEXT NOT NULL,
+        position   INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+    INSERT INTO settings(key, value) VALUES ('history.enabled','1'), ('resume.enabled','1');
+    CREATE INDEX media_dir    ON media(dir, name_lc, id);
+    CREATE INDEX media_fp     ON media(fp) WHERE fp IS NOT NULL;
+    CREATE INDEX media_size   ON media(size, kind);
+    CREATE INDEX media_rating ON media(rating) WHERE rating > 0;
+    CREATE INDEX media_played ON media(last_played_at) WHERE last_played_at IS NOT NULL;
+    CREATE INDEX media_hidden ON media(hidden) WHERE hidden = 1;
+    CREATE INDEX media_inbox  ON media(inbox) WHERE inbox = 1;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const COLS: &str = "id, path, name, kind, size, mtime, width, height, duration_ms, codec, \
-                    added_at, missing, favorite";
+                    added_at, missing, favorite, rating, resume_ms, play_count, \
+                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp";
 
 /// Sort key for library queries. Mapped to SQL through a fixed whitelist.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -118,6 +160,21 @@ pub fn blob_to_path(b: Vec<u8>) -> PathBuf {
     PathBuf::from(OsString::from_vec(b))
 }
 
+/// Parent directory of `p` as raw bytes (empty when there is none).
+pub fn parent_blob(p: &Path) -> Vec<u8> {
+    p.parent().map(path_to_blob).unwrap_or_default()
+}
+
+/// `fp1:<32 hex>` form of a 16-byte quick fingerprint.
+pub fn fp_string(fp: &[u8]) -> String {
+    let mut s = String::with_capacity(4 + fp.len() * 2);
+    s.push_str("fp1:");
+    for b in fp {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 pub fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -139,6 +196,10 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Db> {
         conn.pragma_update(None, "foreign_keys", true)?;
+        // Background jobs open their own connections; wait instead of failing.
+        conn.busy_timeout(std::time::Duration::from_millis(2000))?;
+        // Cleared history must not linger in free pages.
+        conn.pragma_update(None, "secure_delete", true)?;
         // WAL is a no-op on in-memory databases; ignore the returned mode.
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
         let mut db = Db { conn };
@@ -162,8 +223,25 @@ impl Db {
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
             let tx = self.conn.transaction()?;
             tx.execute_batch(sql)?;
+            Self::post_migrate(&tx, (i + 1) as i64)?;
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Rust-side backfills that SQL alone cannot express, keyed by target version.
+    fn post_migrate(tx: &rusqlite::Transaction<'_>, version: i64) -> Result<()> {
+        if version == 2 {
+            let rows: Vec<(i64, Vec<u8>)> = {
+                let mut st = tx.prepare("SELECT id, path FROM media WHERE dir IS NULL")?;
+                let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                it.collect::<std::result::Result<_, _>>()?
+            };
+            let mut up = tx.prepare("UPDATE media SET dir = ?2 WHERE id = ?1")?;
+            for (id, path) in rows {
+                up.execute(params![id, parent_blob(&blob_to_path(path))])?;
+            }
         }
         Ok(())
     }
@@ -332,7 +410,21 @@ impl Db {
         let folders: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM folders", [], |r| r.get(0))?;
+        let (rated, hidden, inbox, damaged, played): (i64, i64, i64, i64, i64) =
+            self.conn.query_row(
+                "SELECT COALESCE(SUM(rating > 0), 0), COALESCE(SUM(hidden = 1), 0),
+                        COALESCE(SUM(inbox = 1), 0), COALESCE(SUM(damaged > 0), 0),
+                        COALESCE(SUM(last_played_at IS NOT NULL), 0)
+                 FROM media",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
         Ok(Stats {
+            rated: rated as u64,
+            hidden: hidden as u64,
+            inbox: inbox as u64,
+            damaged: damaged as u64,
+            played: played as u64,
             total: total as u64,
             images: images as u64,
             videos: videos as u64,
@@ -359,5 +451,15 @@ fn row_to_media(r: &Row<'_>) -> rusqlite::Result<Media> {
         added_at: r.get(10)?,
         missing: r.get::<_, i64>(11)? != 0,
         favorite: r.get::<_, i64>(12)? != 0,
+        rating: r.get::<_, i64>(13)?.clamp(0, 5) as u8,
+        resume_ms: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+        play_count: r.get::<_, i64>(15)?.max(0) as u32,
+        last_played_at: r.get(16)?,
+        hidden: r.get::<_, i64>(17)? != 0,
+        inbox: r.get::<_, i64>(18)? != 0,
+        damaged: r.get::<_, i64>(19)?.clamp(0, 2) as u8,
+        check_note: r.get(20)?,
+        checked_at: r.get(21)?,
+        fp: r.get::<_, Option<Vec<u8>>>(22)?.map(|b| fp_string(&b)),
     })
 }

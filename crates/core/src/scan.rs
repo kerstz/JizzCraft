@@ -1,7 +1,7 @@
 //! Recursive folder indexing. Read-only on user media: files are only stat'ed
 //! and (for images) have their header read for dimensions.
 
-use crate::db::{Db, now_secs, path_to_blob};
+use crate::db::{Db, now_secs, parent_blob, path_to_blob};
 use crate::error::{Error, Result};
 use crate::model::{MediaKind, classify};
 use rusqlite::{OptionalExtension, params};
@@ -87,12 +87,14 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
         let mut find = tx.prepare("SELECT size, mtime FROM media WHERE path = ?1")?;
         let mut insert = tx.prepare(
             "INSERT INTO media(folder_id, path, name, name_lc, kind, size, mtime,
-                               width, height, added_at, missing, scan_gen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11)",
+                               width, height, added_at, missing, scan_gen, dir)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)",
         )?;
         let mut update = tx.prepare(
             "UPDATE media SET size = ?2, mtime = ?3, width = ?4, height = ?5,
-                              duration_ms = NULL, codec = NULL, missing = 0, scan_gen = ?6
+                              duration_ms = NULL, codec = NULL, missing = 0, scan_gen = ?6,
+                              fp = NULL, checksum = NULL, checked_at = NULL,
+                              damaged = 0, check_note = NULL
              WHERE path = ?1",
         )?;
         let mut touch =
@@ -170,7 +172,8 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                         w,
                         h,
                         now_secs(),
-                        gen_
+                        gen_,
+                        parent_blob(entry.path())
                     ])?;
                     rep.added += 1;
                 }
