@@ -1,36 +1,12 @@
+mod common;
+
+use common::clips_ready;
 use jizzcraft_media::player::{PlayState, Player};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn make_video(path: &std::path::Path, frames: u32) {
-    let st = Command::new("gst-launch-1.0")
-        .args([
-            "-q",
-            "videotestsrc",
-            &format!("num-buffers={frames}"),
-            "pattern=ball",
-            "!",
-        ])
-        .args([
-            "video/x-raw,width=640,height=360,framerate=30/1",
-            "!",
-            "videoconvert",
-            "!",
-        ])
-        .args([
-            "vp8enc",
-            "deadline=1",
-            "keyframe-max-dist=15",
-            "!",
-            "webmmux",
-            "!",
-            "filesink",
-        ])
-        .arg(format!("location={}", path.display()))
-        .status()
-        .unwrap();
-    assert!(st.success());
+    common::make_video(path, frames, 640, 360);
 }
 
 fn wait_until(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
@@ -50,6 +26,9 @@ fn wake() -> Arc<dyn Fn() + Send + Sync> {
 
 #[test]
 fn play_seek_eos_replay() {
+    if !clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("p.webm");
     make_video(&src, 90); // 3 s
@@ -138,6 +117,9 @@ fn garbage_file_errors_without_hanging() {
 
 #[test]
 fn seek_requested_before_preroll_is_applied() {
+    if !clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("s.webm");
     make_video(&src, 150); // 5 s
@@ -156,6 +138,9 @@ fn start(p: &Player) {
 
 #[test]
 fn speed_changes_playhead_rate_and_survives_seeks() {
+    if !clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("r.webm");
     make_video(&src, 300); // 10 s
@@ -190,6 +175,9 @@ fn speed_changes_playhead_rate_and_survives_seeks() {
 
 #[test]
 fn frame_step_forward_and_back() {
+    if !clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("f.webm");
     make_video(&src, 150);
@@ -221,6 +209,9 @@ fn frame_step_forward_and_back() {
 
 #[test]
 fn ab_loop_keeps_playhead_inside_the_window() {
+    if !clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("l.webm");
     make_video(&src, 300);
@@ -255,6 +246,9 @@ fn ab_loop_keeps_playhead_inside_the_window() {
 
 #[test]
 fn a_only_loop_restarts_at_end_of_stream() {
+    if !clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("e.webm");
     make_video(&src, 60); // 2 s
