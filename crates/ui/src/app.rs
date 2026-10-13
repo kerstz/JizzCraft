@@ -2,6 +2,7 @@
 
 use crate::bench::{self, BenchState};
 use crate::config::Config;
+use crate::keys;
 use crate::player_view::PlayerView;
 use crate::theme::{
     self, ACCENT_INK, APP, BG, DANGER, FAINT, LINE, LINE_STRONG, MUTED, RAISED, S, SUNKEN, TEXT,
@@ -659,251 +660,25 @@ impl JizzApp {
     // ---- frame -----------------------------------------------------------
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        use egui::{Key, KeyboardShortcut, Modifiers};
-        let boss = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::H);
-        let import = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
-        let rescan = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
-        let (b, i, r) = ctx.input_mut(|s| {
-            (
-                s.consume_shortcut(&boss),
-                s.consume_shortcut(&import),
-                s.consume_shortcut(&rescan),
-            )
-        });
-        if matches!(self.view, View::Image(_)) && !ctx.egui_wants_keyboard_input() {
-            use egui::Key;
-            let (esc, left, right, k0, k1, plus, minus, _) = ctx.input(|i| {
-                (
-                    i.key_pressed(Key::Escape),
-                    i.key_pressed(Key::ArrowLeft),
-                    i.key_pressed(Key::ArrowRight),
-                    i.key_pressed(Key::Num0),
-                    i.key_pressed(Key::Num1),
-                    i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals),
-                    i.key_pressed(Key::Minus),
-                    false,
-                )
-            });
-            if esc {
-                self.push("viewer.close", json!({}));
-            }
-            if left {
-                self.push("viewer.step", json!({ "delta": -1 }));
-            }
-            if right {
-                self.push("viewer.step", json!({ "delta": 1 }));
-            }
-            if k0 {
-                self.push("viewer.zoom", json!({ "mode": "fit" }));
-            }
-            if k1 {
-                self.push("viewer.zoom", json!({ "mode": "actual" }));
-            }
-            if plus {
-                self.push("viewer.zoom", json!({ "mode": "in" }));
-            }
-            if minus {
-                self.push("viewer.zoom", json!({ "mode": "out" }));
-            }
-            let fav =
-                ctx.input(|i| i.key_pressed(if self.cfg.left_hand { Key::F } else { Key::S }));
-            if fav && let Some(id) = self.selected {
-                self.push("media.favorite.toggle", json!({ "id": id }));
-            }
-            if self.cfg.left_hand {
-                let k = |key| ctx.input(|i| i.key_pressed(key));
-                if k(Key::Q) {
-                    self.push("viewer.close", json!({}));
-                }
-                if k(Key::A) {
-                    self.push("viewer.step", json!({ "delta": -1 }));
-                }
-                if k(Key::D) {
-                    self.push("viewer.step", json!({ "delta": 1 }));
-                }
-                if k(Key::W) {
-                    self.push("viewer.zoom", json!({ "mode": "in" }));
-                }
-                if k(Key::S) {
-                    self.push("viewer.zoom", json!({ "mode": "out" }));
-                }
-                if k(Key::Z) {
-                    self.push("viewer.zoom", json!({ "mode": "fit" }));
-                }
-            }
+        let events = ctx.input(|i| i.events.clone());
+        if events.is_empty() {
+            return;
         }
+        // While a text field has focus only Ctrl-chords go through.
+        let typing = ctx.egui_wants_keyboard_input();
+        let kctx = match &self.view {
+            View::Library => keys::Ctx::Library,
+            View::Image(_) => keys::Ctx::Viewer,
+            View::Player(_) => keys::Ctx::Player,
+        };
         let lh = self.cfg.left_hand;
-        if matches!(self.view, View::Library) && !ctx.egui_wants_keyboard_input() {
-            use egui::Key;
-            let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
-            let (left, right, up, down, open) = if lh {
-                (
-                    pressed(Key::A) || pressed(Key::ArrowLeft),
-                    pressed(Key::D) || pressed(Key::ArrowRight),
-                    pressed(Key::W) || pressed(Key::ArrowUp),
-                    pressed(Key::S) || pressed(Key::ArrowDown),
-                    pressed(Key::E) || pressed(Key::Space) || pressed(Key::Enter),
-                )
-            } else {
-                (
-                    pressed(Key::ArrowLeft),
-                    pressed(Key::ArrowRight),
-                    pressed(Key::ArrowUp),
-                    pressed(Key::ArrowDown),
-                    pressed(Key::Enter),
-                )
-            };
-            for (hit, dx, dy) in [(left, -1, 0), (right, 1, 0), (up, 0, -1), (down, 0, 1)] {
-                if hit {
-                    self.push("view.select.move", json!({ "dx": dx, "dy": dy }));
-                }
-            }
-            if open {
-                self.push("view.open_selected", json!({}));
-            }
-            if pressed(Key::Home) {
-                self.push("view.select.edge", json!({ "to": "first" }));
-            }
-            if pressed(Key::End) {
-                self.push("view.select.edge", json!({ "to": "last" }));
-            }
-            if pressed(Key::Slash) {
-                self.push("view.search.focus", json!({}));
-            }
-            if (pressed(Key::Escape) || (lh && pressed(Key::Q))) && !self.search.is_empty() {
-                self.push("view.search.clear", json!({}));
-            }
-            if pressed(Key::Questionmark) {
-                self.push("docs.toggle", json!({}));
-            }
-            for (key, tab) in [
-                (Key::Num1, "library"),
-                (Key::Num2, "images"),
-                (Key::Num3, "videos"),
-                (Key::Num4, "favorites"),
-            ] {
-                if pressed(key) {
-                    self.push("view.filter", json!({ "tab": tab }));
-                }
-            }
-            let fav = if lh { Key::F } else { Key::S };
-            if pressed(fav)
-                && let Some(id) = self.selected
+        for ev in &events {
+            if let Some(bind) =
+                keys::active(kctx, lh).find(|b| (b.ctrl || !typing) && keys::hit(ev, b))
             {
-                self.push("media.favorite.toggle", json!({ "id": id }));
+                let args = serde_json::from_str(bind.args).unwrap_or_else(|_| json!({}));
+                self.push(bind.cmd, args);
             }
-        }
-        if matches!(self.view, View::Player(_)) && !ctx.egui_wants_keyboard_input() {
-            use egui::Key;
-            let k = ctx.input(|i| {
-                (
-                    i.key_pressed(Key::Space),
-                    i.key_pressed(Key::ArrowLeft),
-                    i.key_pressed(Key::ArrowRight),
-                    i.key_pressed(Key::ArrowUp),
-                    i.key_pressed(Key::ArrowDown),
-                    i.key_pressed(Key::M),
-                    i.key_pressed(Key::F),
-                    i.key_pressed(Key::Escape),
-                    i.key_pressed(Key::S),
-                    i.key_pressed(Key::PageUp),
-                    i.key_pressed(Key::PageDown),
-                )
-            });
-            let fullscreen = matches!(&self.view, View::Player(pv) if pv.fullscreen);
-            if k.0 {
-                self.push("player.toggle", json!({}));
-            }
-            if k.1 {
-                self.push("player.seek", json!({ "delta": -5 }));
-            }
-            if k.2 {
-                self.push("player.seek", json!({ "delta": 5 }));
-            }
-            if k.3 {
-                self.push("player.volume", json!({ "delta": 0.05 }));
-            }
-            if k.4 {
-                self.push("player.volume", json!({ "delta": -0.05 }));
-            }
-            if k.5 {
-                self.push("player.mute", json!({}));
-            }
-            if k.6 && !self.cfg.left_hand {
-                self.push("player.fullscreen", json!({}));
-            }
-            if k.7 {
-                self.push(
-                    if fullscreen {
-                        "player.fullscreen"
-                    } else {
-                        "viewer.close"
-                    },
-                    json!({}),
-                );
-            }
-            if k.8
-                && !self.cfg.left_hand
-                && let Some(id) = self.selected
-            {
-                self.push("media.favorite.toggle", json!({ "id": id }));
-            }
-            if k.9 {
-                self.push("viewer.step", json!({ "delta": -1 }));
-            }
-            if k.10 {
-                self.push("viewer.step", json!({ "delta": 1 }));
-            }
-            if self.cfg.left_hand {
-                let (a, d, w, s, x, g, f, q, shift) = ctx.input(|i| {
-                    (
-                        i.key_pressed(Key::A),
-                        i.key_pressed(Key::D),
-                        i.key_pressed(Key::W),
-                        i.key_pressed(Key::S),
-                        i.key_pressed(Key::X),
-                        i.key_pressed(Key::G),
-                        i.key_pressed(Key::F),
-                        i.key_pressed(Key::Q),
-                        i.modifiers.shift,
-                    )
-                });
-                if a || d {
-                    let sign = if d { 1 } else { -1 };
-                    if shift {
-                        self.push("viewer.step", json!({ "delta": sign }));
-                    } else {
-                        self.push("player.seek", json!({ "delta": 5 * sign }));
-                    }
-                }
-                if w {
-                    self.push("player.volume", json!({ "delta": 0.05 }));
-                }
-                if s {
-                    self.push("player.volume", json!({ "delta": -0.05 }));
-                }
-                if x {
-                    self.push("player.mute", json!({}));
-                }
-                if g {
-                    self.push("player.fullscreen", json!({}));
-                }
-                if f && let Some(id) = self.selected {
-                    self.push("media.favorite.toggle", json!({ "id": id }));
-                }
-                if q {
-                    self.push("viewer.close", json!({}));
-                }
-            }
-        }
-        if b {
-            self.push("app.boss_key", json!({}));
-        }
-        if i {
-            self.push("library.import", json!({}));
-        }
-        if r {
-            self.push("library.rescan", json!({}));
         }
     }
 
@@ -1717,45 +1492,18 @@ impl JizzApp {
             .default_width(420.0)
             .show(ctx, |ui| {
                 let lh = self.cfg.left_hand;
-                let rows: &[(&str, &str)] = if lh {
-                    &[
-                        (
-                            "W A S D",
-                            "Move in the grid, zoom in the viewer, volume in the player",
-                        ),
-                        ("E / Space", "Open the selected item"),
-                        ("F", "Favorite"),
-                        ("A / D", "Previous / next in the viewer, seek in the player"),
-                        ("Shift+A / D", "Previous / next item in the player"),
-                        ("X · G", "Mute · fullscreen"),
-                        ("Z", "Fit the image to the window"),
-                        ("Q", "Back, or clear the search"),
-                        ("1 – 4", "Library, Images, Videos, Favorites"),
-                        ("/", "Focus the search box"),
-                        ("Ctrl+Shift+H", "Boss key: pause, mute, discreet, minimize"),
-                    ]
-                } else {
-                    &[
-                        ("Ctrl+O", "Import a folder"),
-                        ("Ctrl+R", "Rescan the library"),
-                        ("Ctrl+Shift+H", "Boss key: pause, mute, discreet, minimize"),
-                        ("← ↑ ↓ →", "Move in the grid"),
-                        ("Enter", "Open the selected item"),
-                        ("Home / End", "First / last item"),
-                        ("1 – 4", "Library, Images, Videos, Favorites"),
-                        ("/", "Focus the search box (Esc clears it)"),
-                        ("S", "Favorite"),
-                        ("Double-click", "Open an item"),
-                        ("Esc", "Back to the library"),
-                        ("← →", "Previous / next item in a viewer"),
-                        ("Space", "Play / pause video"),
-                        ("F", "Fullscreen"),
-                        ("?", "This window"),
-                    ]
-                };
-                for (k, v) in rows {
-                    widgets::kv(ui, k, v);
-                }
+                egui::ScrollArea::vertical()
+                    .max_height(480.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (ctx, rows) in keys::docs(lh) {
+                            widgets::eyebrow(ui, "", ctx.title(), "");
+                            for r in rows {
+                                widgets::kv(ui, r.keys, r.doc);
+                            }
+                            ui.add_space(S);
+                        }
+                    });
                 ui.add_space(S);
                 if widgets::toggle_chip(ui, "Left-hand keys", lh).clicked() {
                     self.push("app.left_hand.toggle", json!({}));
@@ -1845,7 +1593,8 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             let id = args
                 .get("id")
                 .and_then(Value::as_i64)
-                .ok_or_else(|| jizzcraft_core::Error::Invalid("id".into()))?;
+                .or(app.selected)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("nothing selected".into()))?;
             let fav = app.db.toggle_favorite(id)?;
             app.refresh();
             Ok(json!({ "id": id, "favorite": fav }))
@@ -1969,6 +1718,23 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         }
         Ok(json!({}))
     });
+    reg.register(
+        "player.back",
+        "Leave fullscreen, or go back to the library",
+        |app, _| {
+            let fullscreen = matches!(&app.view, View::Player(pv) if pv.fullscreen);
+            if fullscreen {
+                if let View::Player(pv) = &mut app.view {
+                    pv.fullscreen = false;
+                    app.ctx
+                        .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
+            } else {
+                app.close_view();
+            }
+            Ok(json!({}))
+        },
+    );
     reg.register("player.replay", "Restart from the beginning", |app, _| {
         if let View::Player(pv) = &app.view {
             pv.player.replay();
