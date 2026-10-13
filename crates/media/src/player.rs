@@ -316,7 +316,10 @@ impl Ctl {
     }
 
     fn request_seek(&mut self, ns: u64, accurate: bool) {
-        if self.seek_in_flight {
+        // Before the first preroll a seek would be rejected: park it, it is
+        // applied on the first ASYNC_DONE.
+        let loading = self.shared.state.load(Relaxed) == PlayState::Loading as u8;
+        if self.seek_in_flight || loading {
             self.pending_seek = Some((ns, accurate));
             self.shared.position_ns.store(ns, Relaxed);
         } else {
