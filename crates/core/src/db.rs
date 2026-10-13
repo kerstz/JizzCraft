@@ -96,14 +96,20 @@ pub enum SortKey {
     Added,
     Size,
     Duration,
+    Rating,
+    LastPlayed,
+    PlayCount,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 4] = [
+    pub const ALL: [SortKey; 7] = [
         SortKey::Name,
         SortKey::Added,
         SortKey::Size,
         SortKey::Duration,
+        SortKey::Rating,
+        SortKey::LastPlayed,
+        SortKey::PlayCount,
     ];
 
     pub fn parse(s: &str) -> Option<SortKey> {
@@ -112,6 +118,9 @@ impl SortKey {
             "added" => Some(SortKey::Added),
             "size" => Some(SortKey::Size),
             "duration" => Some(SortKey::Duration),
+            "rating" => Some(SortKey::Rating),
+            "played" | "last_played" => Some(SortKey::LastPlayed),
+            "plays" | "play_count" => Some(SortKey::PlayCount),
             _ => None,
         }
     }
@@ -122,7 +131,15 @@ impl SortKey {
             SortKey::Added => "added",
             SortKey::Size => "size",
             SortKey::Duration => "duration",
+            SortKey::Rating => "rating",
+            SortKey::LastPlayed => "played",
+            SortKey::PlayCount => "plays",
         }
+    }
+
+    /// History-derived keys are hidden in discreet mode by the UI.
+    pub fn is_history(self) -> bool {
+        matches!(self, SortKey::LastPlayed | SortKey::PlayCount)
     }
 
     fn column(self) -> &'static str {
@@ -131,6 +148,9 @@ impl SortKey {
             SortKey::Added => "added_at",
             SortKey::Size => "size",
             SortKey::Duration => "duration_ms",
+            SortKey::Rating => "rating",
+            SortKey::LastPlayed => "last_played_at",
+            SortKey::PlayCount => "play_count",
         }
     }
 }
@@ -144,6 +164,8 @@ pub struct Filter {
     pub favorites: bool,
     pub name: Option<String>,
     pub include_missing: bool,
+    /// `Some(true)` = has been played, `Some(false)` = never played.
+    pub played: Option<bool>,
     pub limit: Option<u64>,
     pub offset: u64,
 }
@@ -205,6 +227,12 @@ impl Db {
         let mut db = Db { conn };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Raw connection for tests that need to poke the schema directly.
+    #[doc(hidden)]
+    pub fn conn_for_tests(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn schema_version(&self) -> Result<i64> {
@@ -286,6 +314,11 @@ impl Db {
         if !f.include_missing {
             conds.push("missing = 0".into());
         }
+        match f.played {
+            Some(true) => conds.push("last_played_at IS NOT NULL".into()),
+            Some(false) => conds.push("play_count = 0 AND last_played_at IS NULL".into()),
+            None => {}
+        }
         if let Some(n) = f.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
             let esc = n
                 .to_lowercase()
@@ -307,10 +340,10 @@ impl Db {
         let (w, mut args) = Self::where_clause(f);
         let dir = if f.desc { "DESC" } else { "ASC" };
         // Missing durations always sort last; `id` keeps paging stable.
-        let nulls = if f.sort == SortKey::Duration {
-            "duration_ms IS NULL, "
-        } else {
-            ""
+        let nulls = match f.sort {
+            SortKey::Duration => "duration_ms IS NULL, ",
+            SortKey::LastPlayed => "last_played_at IS NULL, ",
+            _ => "",
         };
         let mut sql = format!(
             "SELECT {COLS} FROM media{w} ORDER BY {nulls}{} {dir}, id",

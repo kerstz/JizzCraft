@@ -122,6 +122,162 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
         let favorite = c.db().toggle_favorite(id)?;
         Ok(json!({ "id": id, "favorite": favorite }))
     });
+    register_userdata(reg);
+}
+
+fn register_userdata<C: HasLibrary>(reg: &mut Registry<C>) {
+    reg.register(
+        "media.rate",
+        "Set star rating: {id, rating: 0..5}",
+        |c, a| {
+            let id = id_arg(&a)?;
+            let r = a
+                .get("rating")
+                .and_then(Value::as_u64)
+                .filter(|r| *r <= 5)
+                .ok_or_else(|| Error::Invalid("`rating` must be 0..=5".into()))?
+                as u8;
+            c.db().set_rating(id, r)?;
+            Ok(json!({ "id": id, "rating": r }))
+        },
+    );
+    reg.register(
+        "media.hide",
+        "Hide or unhide an item in the library (database only): {id, hidden?}",
+        |c, a| {
+            let id = id_arg(&a)?;
+            let hidden = match a.get("hidden").and_then(Value::as_bool) {
+                Some(h) => {
+                    c.db().set_hidden(id, h)?;
+                    h
+                }
+                None => c.db().toggle_hidden(id)?,
+            };
+            Ok(json!({ "id": id, "hidden": hidden }))
+        },
+    );
+    reg.register(
+        "media.set",
+        "Patch user data: {id, favorite?, rating?, hidden?, inbox?}",
+        |c, a| {
+            let id = id_arg(&a)?;
+            let patch = crate::history::MediaPatch {
+                favorite: a.get("favorite").and_then(Value::as_bool),
+                rating: a.get("rating").and_then(Value::as_u64).map(|r| r as u8),
+                hidden: a.get("hidden").and_then(Value::as_bool),
+                inbox: a.get("inbox").and_then(Value::as_bool),
+            };
+            Ok(serde_json::to_value(c.db().patch(id, &patch)?).expect("media serialize"))
+        },
+    );
+    reg.register(
+        "media.inbox.clear",
+        "Mark items as triaged: {id?} (all when omitted)",
+        |c, a| {
+            let id = a.get("id").and_then(Value::as_i64);
+            Ok(json!({ "cleared": c.db().clear_inbox(id)? }))
+        },
+    );
+    reg.register(
+        "history.progress",
+        "Record playback progress: {id, pos_ms, duration_ms?, count_play?}",
+        |c, a| {
+            let id = id_arg(&a)?;
+            let pos = a
+                .get("pos_ms")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| Error::Invalid("missing integer argument `pos_ms`".into()))?;
+            let dur = a.get("duration_ms").and_then(Value::as_u64);
+            let count = a
+                .get("count_play")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let p = c.db().record_progress(id, pos, dur, count)?;
+            Ok(serde_json::to_value(p).expect("progress serialize"))
+        },
+    );
+    reg.register("history.list", "Recently played: {limit?}", |c, a| {
+        let limit = a.get("limit").and_then(Value::as_u64).unwrap_or(50);
+        let items = c.db().history(limit)?;
+        Ok(json!({ "count": items.len(), "items": items }))
+    });
+    reg.register(
+        "history.clear",
+        "Forget play history and resume points: {id?}",
+        |c, a| {
+            let id = a.get("id").and_then(Value::as_i64);
+            Ok(json!({ "cleared": c.db().clear_history(id)? }))
+        },
+    );
+    reg.register(
+        "history.pause",
+        "Stop (true) or resume (false) recording history: {paused}",
+        |c, a| {
+            let paused = a
+                .get("paused")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| Error::Invalid("missing boolean argument `paused`".into()))?;
+            c.db()
+                .set_setting("history.enabled", if paused { "0" } else { "1" })?;
+            Ok(json!({ "paused": paused }))
+        },
+    );
+    reg.register("settings.get", "Read settings: {key?}", |c, a| {
+        let db = c.db();
+        let mut out = serde_json::Map::new();
+        let keys: Vec<&str> = match a.get("key").and_then(Value::as_str) {
+            Some(k) => vec![k],
+            None => crate::history::SETTINGS_KEYS.to_vec(),
+        };
+        for k in keys {
+            out.insert(k.into(), json!(db.setting(k)?));
+        }
+        Ok(Value::Object(out))
+    });
+    reg.register("settings.set", "Write a setting: {key, value}", |c, a| {
+        let key = str_arg(&a, "key")?;
+        let value = str_arg(&a, "value")?;
+        c.db().set_setting(&key, &value)?;
+        Ok(json!({}))
+    });
+    reg.register("markers.list", "Markers of a video: {id}", |c, a| {
+        let id = id_arg(&a)?;
+        let items = c.db().markers(id)?;
+        Ok(json!({ "count": items.len(), "items": items }))
+    });
+    reg.register(
+        "markers.add",
+        "Add a marker: {id, pos_ms, label?}",
+        |c, a| {
+            let id = id_arg(&a)?;
+            let pos = a
+                .get("pos_ms")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| Error::Invalid("missing integer argument `pos_ms`".into()))?;
+            let label = a.get("label").and_then(Value::as_str).unwrap_or("");
+            Ok(serde_json::to_value(c.db().add_marker(id, pos, label)?).expect("marker"))
+        },
+    );
+    reg.register(
+        "markers.update",
+        "Edit a marker: {marker_id, pos_ms?, label?}",
+        |c, a| {
+            let mid = a
+                .get("marker_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| Error::Invalid("missing integer argument `marker_id`".into()))?;
+            let pos = a.get("pos_ms").and_then(Value::as_u64);
+            let label = a.get("label").and_then(Value::as_str);
+            Ok(serde_json::to_value(c.db().update_marker(mid, pos, label)?).expect("marker"))
+        },
+    );
+    reg.register("markers.remove", "Delete a marker: {marker_id}", |c, a| {
+        let mid = a
+            .get("marker_id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| Error::Invalid("missing integer argument `marker_id`".into()))?;
+        Ok(json!({ "removed": c.db().remove_marker(mid)? }))
+    });
 }
 
 fn str_arg(a: &Value, key: &str) -> Result<String> {
@@ -151,6 +307,7 @@ fn filter_from_args(a: &Value) -> Result<Filter> {
         }
     };
     Ok(Filter {
+        played: None,
         sort,
         desc: a.get("desc").and_then(Value::as_bool).unwrap_or(false),
         kind,
