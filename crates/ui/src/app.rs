@@ -1,6 +1,8 @@
 //! Application shell: state, command registry wiring, panels.
 
+use crate::bench::{self, BenchState};
 use crate::config::Config;
+use crate::player_view::PlayerView;
 use crate::theme::{self, ACCENT, BG, DANGER, HAIRLINE, PANEL, RAISED, S, TEXT, TEXT_DIM};
 use crate::widgets;
 use egui::{
@@ -11,6 +13,7 @@ use jizzcraft_core::scan::ScanReport;
 use jizzcraft_core::{
     Db, Filter, HasLibrary, Media, MediaKind, Registry, Stats, paths, register_core,
 };
+use jizzcraft_media::player::{PlayState, Player};
 use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -43,6 +46,8 @@ pub struct Options {
     pub open_index: Option<u64>,
     /// Commands to run once the startup import (if any) has finished.
     pub commands: Vec<(String, Value)>,
+    /// Play this file for N seconds and print a performance report.
+    pub bench: Option<(PathBuf, u32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -117,6 +122,7 @@ struct ImageView {
 
 enum View {
     Library,
+    Player(Box<PlayerView>),
     Image(Box<ImageView>),
 }
 
@@ -153,6 +159,8 @@ pub struct JizzApp {
 
     view: View,
     view_token: u64,
+    render_state: Option<egui_wgpu::RenderState>,
+    bench: Option<BenchState>,
     tab: Tab,
     search: String,
     selected: Option<i64>,
@@ -220,6 +228,8 @@ impl JizzApp {
             persist_cfg,
             view: View::Library,
             view_token: 0,
+            render_state: cc.wgpu_render_state.clone(),
+            bench: None,
             tab: opts
                 .tab
                 .as_deref()
@@ -253,7 +263,14 @@ impl JizzApp {
             opts,
         };
         app.refresh();
-        if let Some(dir) = app.opts.import.clone() {
+        if let Some((file, secs)) = app.opts.bench.clone() {
+            let name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            app.open_player(None, name, &file);
+            app.bench = Some(BenchState::new(file, secs));
+        } else if let Some(dir) = app.opts.import.clone() {
             app.start_scan(Some(dir));
         } else {
             if let Some(idx) = app.opts.open_index {
@@ -387,14 +404,44 @@ impl JizzApp {
                 });
             }
             MediaKind::Video => {
-                self.toast(ToastKind::Info, "Video player: next slice");
+                let name = m.name.clone();
+                self.open_player(Some(index), name, &m.path);
             }
         }
     }
 
+    fn open_player(&mut self, index: Option<u64>, name: String, path: &std::path::Path) {
+        self.close_view();
+        let ctx = self.ctx.clone();
+        let vol = f64::from(self.cfg.volume.unwrap_or(0.8));
+        // egui turns every zero-delay `request_repaint()` into two repaints;
+        // a 1 ms delay gives exactly one pass per decoded frame.
+        let wake = Arc::new(move || ctx.request_repaint_after(Duration::from_millis(1)));
+        let player = Player::open(path, vol, wake);
+        self.view = View::Player(Box::new(PlayerView::new(index, name, player)));
+    }
+
+    /// Leave the current view, freeing its GPU resources. Dropping a `Player`
+    /// only sends a message: pipeline teardown happens on its own thread.
+    fn close_view(&mut self) {
+        if let View::Player(pv) = &mut self.view {
+            pv.release(self.render_state.as_ref());
+            if pv.fullscreen {
+                self.ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
+        }
+        self.view = View::Library;
+    }
+
     fn step_view(&mut self, delta: i64) {
-        let View::Image(iv) = &self.view else { return };
-        let next = iv.index as i64 + delta;
+        let cur = match &self.view {
+            View::Image(iv) => Some(iv.index),
+            View::Player(pv) => pv.index,
+            View::Library => None,
+        };
+        let Some(cur) = cur else { return };
+        let next = cur as i64 + delta;
         if next >= 0 && (next as u64) < self.total {
             self.open_index(next as u64);
         }
@@ -593,6 +640,67 @@ impl JizzApp {
                 self.push("media.favorite.toggle", json!({ "id": id }));
             }
         }
+        if matches!(self.view, View::Player(_)) && !ctx.egui_wants_keyboard_input() {
+            use egui::Key;
+            let k = ctx.input(|i| {
+                (
+                    i.key_pressed(Key::Space),
+                    i.key_pressed(Key::ArrowLeft),
+                    i.key_pressed(Key::ArrowRight),
+                    i.key_pressed(Key::ArrowUp),
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::M),
+                    i.key_pressed(Key::F),
+                    i.key_pressed(Key::Escape),
+                    i.key_pressed(Key::S),
+                    i.key_pressed(Key::PageUp),
+                    i.key_pressed(Key::PageDown),
+                )
+            });
+            let fullscreen = matches!(&self.view, View::Player(pv) if pv.fullscreen);
+            if k.0 {
+                self.push("player.toggle", json!({}));
+            }
+            if k.1 {
+                self.push("player.seek", json!({ "delta": -5 }));
+            }
+            if k.2 {
+                self.push("player.seek", json!({ "delta": 5 }));
+            }
+            if k.3 {
+                self.push("player.volume", json!({ "delta": 0.05 }));
+            }
+            if k.4 {
+                self.push("player.volume", json!({ "delta": -0.05 }));
+            }
+            if k.5 {
+                self.push("player.mute", json!({}));
+            }
+            if k.6 {
+                self.push("player.fullscreen", json!({}));
+            }
+            if k.7 {
+                self.push(
+                    if fullscreen {
+                        "player.fullscreen"
+                    } else {
+                        "viewer.close"
+                    },
+                    json!({}),
+                );
+            }
+            if k.8
+                && let Some(id) = self.selected
+            {
+                self.push("media.favorite.toggle", json!({ "id": id }));
+            }
+            if k.9 {
+                self.push("viewer.step", json!({ "delta": -1 }));
+            }
+            if k.10 {
+                self.push("viewer.step", json!({ "delta": 1 }));
+            }
+        }
         if b {
             self.push("app.boss_key", json!({}));
         }
@@ -614,6 +722,75 @@ impl JizzApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.into()));
             self.last_title = title.into();
         }
+    }
+
+    fn drive_bench(&mut self, ctx: &egui::Context, t0: Instant) {
+        let Some(b) = &mut self.bench else { return };
+        let View::Player(pv) = &self.view else { return };
+        ctx.request_repaint_after(Duration::from_millis(250));
+        if let Some(last) = b.last_start.replace(t0)
+            && b.started.is_some()
+        {
+            b.interval_ms
+                .push(t0.duration_since(last).as_secs_f32() * 1000.0);
+        }
+        if b.started.is_none() {
+            // Skip start-up (clock sync, first-frame hiccups).
+            if pv.has_frame() && pv.player.position() > Duration::from_millis(1500) {
+                let c = pv.player.counters();
+                b.started = Some(bench::Started {
+                    at: Instant::now(),
+                    cpu0: bench::cpu_seconds_of("self").unwrap_or(0.0),
+                    delivered0: c.delivered,
+                    uploads0: pv.uploads,
+                    qos0: c.qos_dropped,
+                });
+            }
+            return;
+        }
+        b.ui_cost_ms.push(t0.elapsed().as_secs_f32() * 1000.0);
+        let st = b.started.as_ref().expect("started");
+        if st.at.elapsed().as_secs() < u64::from(b.secs) {
+            return;
+        }
+        let wall = st.at.elapsed().as_secs_f64();
+        let c = pv.player.counters();
+        let mut cost = std::mem::take(&mut b.ui_cost_ms);
+        let mut interval = std::mem::take(&mut b.interval_ms);
+        cost.sort_by(f32::total_cmp);
+        interval.sort_by(f32::total_cmp);
+        let stats = |v: &[f32]| {
+            [
+                bench::percentile(v, 0.5),
+                bench::percentile(v, 0.95),
+                v.last().copied().unwrap_or(0.0),
+            ]
+        };
+        let fps = pv.fps;
+        let report = bench::Report {
+            width: 0,
+            height: 0,
+            fps,
+            wall,
+            expected: f64::from(fps) * wall,
+            delivered: c.delivered - st.delivered0,
+            uploaded: pv.uploads - st.uploads0,
+            qos_dropped: c.qos_dropped.saturating_sub(st.qos0),
+            ui_passes: cost.len(),
+            ui_cost: stats(&cost),
+            interval: stats(&interval),
+            cpu_pct: (bench::cpu_seconds_of("self").unwrap_or(0.0) - st.cpu0) / wall * 100.0,
+            rss: bench::rss_mb_of("self").unwrap_or((0.0, 0.0)),
+        };
+        let (w, h) = pv.video_size();
+        let report = bench::Report {
+            width: w,
+            height: h,
+            ..report
+        };
+        report.print("jizzcraft");
+        self.bench = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     fn drive_screenshot(&mut self, ctx: &egui::Context) {
@@ -642,6 +819,12 @@ impl JizzApp {
             && self.frame_no > 12
             && self.busy == 0
             && !self.thumbs.is_busy()
+            && match &self.view {
+                View::Player(pv) => {
+                    pv.has_frame() && pv.player.position() > Duration::from_millis(400)
+                }
+                _ => true,
+            }
         {
             // Let the last uploaded textures reach the screen before shooting.
             self.idle_frames += 1;
@@ -721,6 +904,17 @@ impl JizzApp {
                         "JIZZCRAFT"
                     };
                     let mut crumb = format!("01 / {brand} / {}", self.tab.label());
+                    if let View::Player(pv) = &self.view {
+                        let name = if self.cfg.discreet {
+                            "…"
+                        } else {
+                            pv.name.as_str()
+                        };
+                        crumb += &format!(" / {name}");
+                        if let Some(i) = pv.index {
+                            crumb += &format!("  [{}/{}]", i + 1, self.total);
+                        }
+                    }
                     if let View::Image(iv) = &self.view {
                         let name = if self.cfg.discreet {
                             "…"
@@ -809,7 +1003,9 @@ impl JizzApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG))
             .show(ui, |ui| {
-                if matches!(self.view, View::Image(_)) {
+                if let View::Player(pv) = &mut self.view {
+                    pv.show(ui, self.cfg.discreet);
+                } else if matches!(self.view, View::Image(_)) {
                     self.image_view(ui);
                 } else if self.stats.total == 0 {
                     self.empty_state(ui);
@@ -1178,14 +1374,26 @@ impl eframe::App for JizzApp {
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);
 
-        self.top_bar(ui);
-        self.breadcrumb(ui);
-        self.inspector(ui);
+        let t0 = Instant::now();
+        if let (View::Player(pv), Some(rs)) = (&mut self.view, &self.render_state) {
+            pv.pump(rs);
+            if pv.player.state() == PlayState::Playing {
+                // Timeline/clock refresh; frames themselves wake the UI.
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        }
+        let chrome = !matches!(&self.view, View::Player(pv) if pv.fullscreen);
+        if chrome {
+            self.top_bar(ui);
+            self.breadcrumb(ui);
+            self.inspector(ui);
+        }
         self.central(ui);
         self.toasts_ui(&ctx);
         self.docs_window(&ctx);
 
         self.drain_queue();
+        self.drive_bench(&ctx, t0);
         self.drive_screenshot(&ctx);
     }
 
@@ -1246,7 +1454,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         Ok(json!({}))
     });
     reg.register("viewer.close", "Back to the library", |app, _| {
-        app.view = View::Library;
+        app.close_view();
         Ok(json!({}))
     });
     reg.register(
@@ -1281,6 +1489,77 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({}))
         },
     );
+    reg.register("player.toggle", "Play / pause", |app, _| {
+        if let View::Player(pv) = &app.view {
+            if pv.player.state() == PlayState::Ended {
+                pv.player.replay();
+            } else {
+                pv.player.toggle();
+            }
+        }
+        Ok(json!({}))
+    });
+    reg.register(
+        "player.seek",
+        "Seek: {delta: seconds} or {pos: seconds}",
+        |app, args| {
+            if let View::Player(pv) = &app.view {
+                if let Some(d) = args.get("delta").and_then(Value::as_i64) {
+                    pv.player.seek_relative(d);
+                } else if let Some(p) = args.get("pos").and_then(Value::as_f64) {
+                    pv.player.seek(Duration::from_secs_f64(p.max(0.0)), true);
+                }
+            }
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "player.volume",
+        "Volume: {delta} or {value} in 0..1",
+        |app, args| {
+            let mut new = None;
+            if let View::Player(pv) = &mut app.view {
+                let cur = pv.player.volume();
+                let v = match (
+                    args.get("value").and_then(Value::as_f64),
+                    args.get("delta").and_then(Value::as_f64),
+                ) {
+                    (Some(v), _) => v,
+                    (_, Some(d)) => cur + d,
+                    _ => cur,
+                };
+                pv.player.set_volume(v);
+                pv.player.set_muted(false);
+                new = Some(pv.player.volume() as f32);
+            }
+            if let Some(v) = new {
+                app.cfg.volume = Some(v);
+                app.save_cfg();
+            }
+            Ok(json!({}))
+        },
+    );
+    reg.register("player.mute", "Toggle mute", |app, _| {
+        if let View::Player(pv) = &mut app.view {
+            let m = !pv.player.muted();
+            pv.player.set_muted(m);
+        }
+        Ok(json!({}))
+    });
+    reg.register("player.fullscreen", "Toggle fullscreen", |app, _| {
+        if let View::Player(pv) = &mut app.view {
+            pv.fullscreen = !pv.fullscreen;
+            app.ctx
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(pv.fullscreen));
+        }
+        Ok(json!({}))
+    });
+    reg.register("player.replay", "Restart from the beginning", |app, _| {
+        if let View::Player(pv) = &app.view {
+            pv.player.replay();
+        }
+        Ok(json!({}))
+    });
     reg.register("app.discreet.toggle", "Toggle discreet mode", |app, _| {
         app.cfg.discreet = !app.cfg.discreet;
         app.save_cfg();
@@ -1292,6 +1571,16 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         |app, _| {
             app.cfg.discreet = true;
             app.save_cfg();
+            // Pause and mute whatever is playing, leave fullscreen, then hide.
+            if let View::Player(pv) = &mut app.view {
+                pv.player.pause();
+                pv.player.set_muted(true);
+                if pv.fullscreen {
+                    pv.fullscreen = false;
+                    app.ctx
+                        .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
+            }
             app.ctx
                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             Ok(json!({}))
