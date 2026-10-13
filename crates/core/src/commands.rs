@@ -140,6 +140,56 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
             Ok(serde_json::to_value(rep).expect("report"))
         },
     );
+    reg.register("library.backup", "Back up the library: {dest}", |c, a| {
+        let dest = str_arg(&a, "dest")?;
+        let bytes = crate::portability::backup(c.db(), std::path::Path::new(&dest))?;
+        Ok(json!({ "bytes": bytes }))
+    });
+    reg.register(
+        "meta.export",
+        "Export favorites, ratings, markers: {dest, include_history?, include_names?}",
+        |c, a| {
+            let dest = str_arg(&a, "dest")?;
+            let o = crate::portability::ExportOpts {
+                include_history: a
+                    .get("include_history")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                include_names: a
+                    .get("include_names")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            let rep = crate::portability::export_meta(c.db(), std::path::Path::new(&dest), &o)?;
+            Ok(serde_json::to_value(rep).expect("report"))
+        },
+    );
+    reg.register(
+        "meta.import",
+        "Import an export onto matching files: {src, dry_run?}",
+        |c, a| {
+            let src = str_arg(&a, "src")?;
+            let dry = a.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+            let rep = crate::portability::import_meta(c.db(), std::path::Path::new(&src), dry)?;
+            Ok(serde_json::to_value(rep).expect("report"))
+        },
+    );
+    reg.register(
+        "library.checksum",
+        "Checksum files and flag silent changes: {scope?: unchecked|all, limit?}",
+        |c, a| {
+            let scope = match a.get("scope").and_then(Value::as_str) {
+                None | Some("unchecked") => crate::integrity::Scope::Unchecked,
+                Some("all") => crate::integrity::Scope::All,
+                Some(s) => return Err(Error::Invalid(format!("unknown scope `{s}`"))),
+            };
+            let limit = a.get("limit").and_then(Value::as_u64);
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let rep =
+                crate::integrity::checksum_pending(c.db(), scope, limit, &cancel, &mut |_, _| {})?;
+            Ok(serde_json::to_value(rep).expect("report"))
+        },
+    );
     reg.register(
         "media.relink",
         "Merge a vanished entry into its new location: {from, to}",
