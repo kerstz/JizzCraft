@@ -3,7 +3,9 @@
 use crate::bench::{self, BenchState};
 use crate::config::Config;
 use crate::player_view::PlayerView;
-use crate::theme::{self, ACCENT, BG, DANGER, HAIRLINE, PANEL, RAISED, S, TEXT, TEXT_DIM};
+use crate::theme::{
+    self, ACCENT_INK, APP, BG, DANGER, FAINT, LINE, LINE_STRONG, MUTED, RAISED, S, SUNKEN, TEXT,
+};
 use crate::widgets;
 use egui::{
     Align, Align2, Color32, CornerRadius, FontFamily, FontId, Layout, Rect, Sense, Stroke,
@@ -11,7 +13,7 @@ use egui::{
 };
 use jizzcraft_core::scan::ScanReport;
 use jizzcraft_core::{
-    Db, Filter, HasLibrary, Media, MediaKind, Registry, Stats, paths, register_core,
+    Db, Filter, HasLibrary, Media, MediaKind, Registry, SortKey, Stats, paths, register_core,
 };
 use jizzcraft_media::player::{PlayState, Player};
 use jizzcraft_media::service::{Request, Thumb, ThumbService};
@@ -27,7 +29,6 @@ const PEACH_PNG: &[u8] = include_bytes!("../../../assets/icons/jizzcraft-512.png
 const VIEWER_PNG: &[u8] = include_bytes!("../../../assets/icons/viewer-256.png");
 
 const TILE_W: f32 = 184.0;
-const TILE_H: f32 = 148.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -165,6 +166,13 @@ pub struct JizzApp {
     tab: Tab,
     search: String,
     selected: Option<i64>,
+    selected_index: Option<u64>,
+    sort: SortKey,
+    sort_desc: bool,
+    last_cols: usize,
+    scroll_to: Option<u64>,
+    grid_scroll: (f32, f32),
+    focus_search: bool,
     stats: Stats,
     total: u64,
     generation: u64,
@@ -251,6 +259,13 @@ impl JizzApp {
                 .unwrap_or(Tab::Library),
             search: String::new(),
             selected: None,
+            selected_index: None,
+            sort: SortKey::default(),
+            sort_desc: false,
+            last_cols: 1,
+            scroll_to: None,
+            grid_scroll: (0.0, 0.0),
+            focus_search: false,
             stats: Stats::default(),
             total: 0,
             generation: 1,
@@ -278,6 +293,13 @@ impl JizzApp {
             idle_frames: 0,
             opts,
         };
+        app.sort = app
+            .cfg
+            .sort
+            .as_deref()
+            .and_then(SortKey::parse)
+            .unwrap_or_default();
+        app.sort_desc = app.cfg.sort_desc;
         app.refresh();
         if let Some((file, secs)) = app.opts.bench.clone() {
             let name = file
@@ -311,6 +333,8 @@ impl JizzApp {
             favorites: self.tab == Tab::Favorites,
             name: Some(self.search.clone()).filter(|s| !s.trim().is_empty()),
             include_missing: true,
+            sort: self.sort,
+            desc: self.sort_desc,
             ..Default::default()
         }
     }
@@ -347,6 +371,20 @@ impl JizzApp {
     fn selected_media(&self) -> Option<Media> {
         let id = self.selected?;
         self.db.get(id).ok().flatten()
+    }
+
+    /// Select the item at `idx` and scroll it into view.
+    fn select_index(&mut self, idx: u64) {
+        if self.total == 0 {
+            return;
+        }
+        let idx = idx.min(self.total - 1);
+        self.ensure_page(idx, idx + 1);
+        if let Some(m) = self.page.items.get((idx - self.page.offset) as usize) {
+            self.selected = Some(m.id);
+            self.selected_index = Some(idx);
+            self.scroll_to = Some(idx);
+        }
     }
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
@@ -634,7 +672,7 @@ impl JizzApp {
         });
         if matches!(self.view, View::Image(_)) && !ctx.egui_wants_keyboard_input() {
             use egui::Key;
-            let (esc, left, right, k0, k1, plus, minus, star) = ctx.input(|i| {
+            let (esc, left, right, k0, k1, plus, minus, _) = ctx.input(|i| {
                 (
                     i.key_pressed(Key::Escape),
                     i.key_pressed(Key::ArrowLeft),
@@ -643,7 +681,7 @@ impl JizzApp {
                     i.key_pressed(Key::Num1),
                     i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals),
                     i.key_pressed(Key::Minus),
-                    i.key_pressed(Key::S),
+                    false,
                 )
             });
             if esc {
@@ -667,16 +705,93 @@ impl JizzApp {
             if minus {
                 self.push("viewer.zoom", json!({ "mode": "out" }));
             }
-            if star && let Some(id) = self.selected {
+            let fav =
+                ctx.input(|i| i.key_pressed(if self.cfg.left_hand { Key::F } else { Key::S }));
+            if fav && let Some(id) = self.selected {
                 self.push("media.favorite.toggle", json!({ "id": id }));
             }
+            if self.cfg.left_hand {
+                let k = |key| ctx.input(|i| i.key_pressed(key));
+                if k(Key::Q) {
+                    self.push("viewer.close", json!({}));
+                }
+                if k(Key::A) {
+                    self.push("viewer.step", json!({ "delta": -1 }));
+                }
+                if k(Key::D) {
+                    self.push("viewer.step", json!({ "delta": 1 }));
+                }
+                if k(Key::W) {
+                    self.push("viewer.zoom", json!({ "mode": "in" }));
+                }
+                if k(Key::S) {
+                    self.push("viewer.zoom", json!({ "mode": "out" }));
+                }
+                if k(Key::Z) {
+                    self.push("viewer.zoom", json!({ "mode": "fit" }));
+                }
+            }
         }
-        if matches!(self.view, View::Library)
-            && !ctx.egui_wants_keyboard_input()
-            && ctx.input(|i| i.key_pressed(egui::Key::S))
-            && let Some(id) = self.selected
-        {
-            self.push("media.favorite.toggle", json!({ "id": id }));
+        let lh = self.cfg.left_hand;
+        if matches!(self.view, View::Library) && !ctx.egui_wants_keyboard_input() {
+            use egui::Key;
+            let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
+            let (left, right, up, down, open) = if lh {
+                (
+                    pressed(Key::A) || pressed(Key::ArrowLeft),
+                    pressed(Key::D) || pressed(Key::ArrowRight),
+                    pressed(Key::W) || pressed(Key::ArrowUp),
+                    pressed(Key::S) || pressed(Key::ArrowDown),
+                    pressed(Key::E) || pressed(Key::Space) || pressed(Key::Enter),
+                )
+            } else {
+                (
+                    pressed(Key::ArrowLeft),
+                    pressed(Key::ArrowRight),
+                    pressed(Key::ArrowUp),
+                    pressed(Key::ArrowDown),
+                    pressed(Key::Enter),
+                )
+            };
+            for (hit, dx, dy) in [(left, -1, 0), (right, 1, 0), (up, 0, -1), (down, 0, 1)] {
+                if hit {
+                    self.push("view.select.move", json!({ "dx": dx, "dy": dy }));
+                }
+            }
+            if open {
+                self.push("view.open_selected", json!({}));
+            }
+            if pressed(Key::Home) {
+                self.push("view.select.edge", json!({ "to": "first" }));
+            }
+            if pressed(Key::End) {
+                self.push("view.select.edge", json!({ "to": "last" }));
+            }
+            if pressed(Key::Slash) {
+                self.push("view.search.focus", json!({}));
+            }
+            if (pressed(Key::Escape) || (lh && pressed(Key::Q))) && !self.search.is_empty() {
+                self.push("view.search.clear", json!({}));
+            }
+            if pressed(Key::Questionmark) {
+                self.push("docs.toggle", json!({}));
+            }
+            for (key, tab) in [
+                (Key::Num1, "library"),
+                (Key::Num2, "images"),
+                (Key::Num3, "videos"),
+                (Key::Num4, "favorites"),
+            ] {
+                if pressed(key) {
+                    self.push("view.filter", json!({ "tab": tab }));
+                }
+            }
+            let fav = if lh { Key::F } else { Key::S };
+            if pressed(fav)
+                && let Some(id) = self.selected
+            {
+                self.push("media.favorite.toggle", json!({ "id": id }));
+            }
         }
         if matches!(self.view, View::Player(_)) && !ctx.egui_wants_keyboard_input() {
             use egui::Key;
@@ -714,7 +829,7 @@ impl JizzApp {
             if k.5 {
                 self.push("player.mute", json!({}));
             }
-            if k.6 {
+            if k.6 && !self.cfg.left_hand {
                 self.push("player.fullscreen", json!({}));
             }
             if k.7 {
@@ -728,6 +843,7 @@ impl JizzApp {
                 );
             }
             if k.8
+                && !self.cfg.left_hand
                 && let Some(id) = self.selected
             {
                 self.push("media.favorite.toggle", json!({ "id": id }));
@@ -737,6 +853,47 @@ impl JizzApp {
             }
             if k.10 {
                 self.push("viewer.step", json!({ "delta": 1 }));
+            }
+            if self.cfg.left_hand {
+                let (a, d, w, s, x, g, f, q, shift) = ctx.input(|i| {
+                    (
+                        i.key_pressed(Key::A),
+                        i.key_pressed(Key::D),
+                        i.key_pressed(Key::W),
+                        i.key_pressed(Key::S),
+                        i.key_pressed(Key::X),
+                        i.key_pressed(Key::G),
+                        i.key_pressed(Key::F),
+                        i.key_pressed(Key::Q),
+                        i.modifiers.shift,
+                    )
+                });
+                if a || d {
+                    let sign = if d { 1 } else { -1 };
+                    if shift {
+                        self.push("viewer.step", json!({ "delta": sign }));
+                    } else {
+                        self.push("player.seek", json!({ "delta": 5 * sign }));
+                    }
+                }
+                if w {
+                    self.push("player.volume", json!({ "delta": 0.05 }));
+                }
+                if s {
+                    self.push("player.volume", json!({ "delta": -0.05 }));
+                }
+                if x {
+                    self.push("player.mute", json!({}));
+                }
+                if g {
+                    self.push("player.fullscreen", json!({}));
+                }
+                if f && let Some(id) = self.selected {
+                    self.push("media.favorite.toggle", json!({ "id": id }));
+                }
+                if q {
+                    self.push("viewer.close", json!({}));
+                }
             }
         }
         if b {
@@ -887,45 +1044,77 @@ impl JizzApp {
             .exact_size(48.0)
             .frame(
                 egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(egui::Margin::symmetric(S as i8 * 2, 0))
+                    .fill(BG)
+                    .inner_margin(egui::Margin::ZERO)
                     .stroke(Stroke::NONE),
             )
             .show(ui, |ui| {
+                let bar = ui.max_rect();
+                let narrow = bar.width() < 1000.0;
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    // Logo cell, closed by a hairline.
+                    ui.add_space(16.0);
                     if self.discreet() {
-                        ui.label(egui::RichText::new("Viewer").color(TEXT_DIM).size(14.0));
+                        ui.label(egui::RichText::new("Viewer").color(MUTED).size(14.0));
                     } else {
                         widgets::badge(ui, "01", 24.0);
-                        widgets::wordmark(ui, 20.0);
+                        ui.add_space(10.0);
+                        widgets::wordmark(ui, 24.0);
                     }
-                    ui.add_space(S * 3.0);
+                    ui.add_space(16.0);
+                    let x = ui.cursor().left();
+                    ui.painter().vline(x, bar.y_range(), Stroke::new(1.0, LINE));
+                    ui.add_space(8.0);
                     for t in Tab::ALL {
                         if widgets::nav_tab(ui, t.label(), self.tab == t).clicked() {
                             self.push("view.filter", json!({ "tab": t.label() }));
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::button_solid(ui, "Import folder").clicked() {
+                        if widgets::button_solid_bar(ui, "Import folder").clicked() {
                             self.push("library.import", json!({}));
                         }
-                        if widgets::toggle_chip(ui, "Discreet", self.discreet()).clicked() {
-                            self.push("app.discreet.toggle", json!({}));
+                        let x = ui.cursor().right();
+                        ui.painter().vline(x, bar.y_range(), Stroke::new(1.0, LINE));
+                        ui.add_space(12.0);
+                        if narrow {
+                            let discreet = self.discreet();
+                            let share = self.cfg.screen_share_safe;
+                            ui.menu_button(theme::hud("Privacy", MUTED), |ui| {
+                                if ui.selectable_label(discreet, "Discreet").clicked() {
+                                    self.push("app.discreet.toggle", json!({}));
+                                    ui.close();
+                                }
+                                if ui.selectable_label(share, "Share-safe").clicked() {
+                                    self.push("app.share_safe.toggle", json!({}));
+                                    ui.close();
+                                }
+                            });
+                        } else {
+                            if widgets::toggle_chip(ui, "Discreet", self.discreet()).clicked() {
+                                self.push("app.discreet.toggle", json!({}));
+                            }
+                            ui.add_space(8.0);
+                            if widgets::toggle_chip(ui, "Share-safe", self.cfg.screen_share_safe)
+                                .on_hover_text("Blur every thumbnail until hovered")
+                                .clicked()
+                            {
+                                self.push("app.share_safe.toggle", json!({}));
+                            }
                         }
-                        if widgets::toggle_chip(ui, "Share-safe", self.cfg.screen_share_safe)
-                            .on_hover_text("Blur every thumbnail until hovered")
-                            .clicked()
-                        {
-                            self.push("app.share_safe.toggle", json!({}));
-                        }
-                        // Whatever the nav tabs leave over, up to 220 px.
-                        let w = (ui.available_width() - S).clamp(72.0, 220.0);
+                        ui.add_space(12.0);
+                        let w = (ui.available_width() - S).clamp(120.0, 260.0);
                         let resp = ui.add_sized(
                             [w, 28.0],
                             egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("SEARCH FILENAME")
+                                .hint_text("Search")
+                                .id(egui::Id::new("search"))
                                 .margin(egui::Margin::symmetric(8, 6)),
                         );
+                        if std::mem::take(&mut self.focus_search) {
+                            resp.request_focus();
+                        }
                         if resp.changed() {
                             self.refresh();
                         }
@@ -940,11 +1129,11 @@ impl JizzApp {
 
     fn breadcrumb(&mut self, ui: &mut Ui) {
         egui::Panel::top("breadcrumb")
-            .exact_size(32.0)
+            .exact_size(40.0)
             .frame(
                 egui::Frame::new()
                     .fill(BG)
-                    .inner_margin(egui::Margin::symmetric(S as i8 * 2, 0)),
+                    .inner_margin(egui::Margin::symmetric(24, 0)),
             )
             .show(ui, |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -973,18 +1162,37 @@ impl JizzApp {
                         };
                         crumb += &format!(" / {name}  [{}/{}]", iv.index + 1, self.total);
                     }
-                    widgets::mono_label(ui, &crumb, TEXT_DIM);
+                    widgets::mono_label(ui, &crumb, MUTED);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if self.stats.total > 0 {
                             let on = self.cfg.inspector_open;
                             if widgets::toggle_chip(ui, "Inspector", on).clicked() {
                                 self.push("inspector.toggle", json!({}));
                             }
-                            let mut text = format!("{} ITEMS", self.total);
-                            if self.busy > 0 {
-                                text += " · SCANNING…";
+                            let arrow = if self.sort_desc { "↓" } else { "↑" };
+                            let label = format!("Sort: {} {arrow}", self.sort.as_str());
+                            let mut pick: Option<SortKey> = None;
+                            ui.menu_button(theme::hud(&label, MUTED), |ui| {
+                                for k in SortKey::ALL {
+                                    if ui.selectable_label(self.sort == k, k.as_str()).clicked() {
+                                        pick = Some(k);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            if let Some(k) = pick {
+                                let desc = if k == self.sort {
+                                    !self.sort_desc
+                                } else {
+                                    false
+                                };
+                                self.push("view.sort", json!({ "by": k.as_str(), "desc": desc }));
                             }
-                            widgets::mono_label(ui, &text, TEXT_DIM);
+                            let mut text = format!("{} items", self.total);
+                            if self.busy > 0 {
+                                text += " · Scanning…";
+                            }
+                            widgets::mono_label(ui, &text, FAINT);
                         }
                     });
                 });
@@ -1003,17 +1211,17 @@ impl JizzApp {
             .resizable(true)
             .frame(
                 egui::Frame::new()
-                    .fill(PANEL)
+                    .fill(BG)
                     .inner_margin(egui::Margin::same(S as i8 * 2))
                     .stroke(theme::hairline()),
             )
             .show(ui, |ui| {
-                widgets::mono_label(ui, "Inspector", ACCENT);
+                widgets::mono_label(ui, "Inspector", MUTED);
                 ui.add_space(S);
                 widgets::hairline_h(ui);
                 ui.add_space(S);
                 let Some(m) = media else {
-                    widgets::mono_label(ui, "Select an item", TEXT_DIM);
+                    widgets::mono_label(ui, "Select an item, then press Enter to open", FAINT);
                     return;
                 };
                 widgets::kv(ui, "Name", if discreet { "—" } else { &m.name });
@@ -1070,99 +1278,108 @@ impl JizzApp {
 
     fn no_results(&mut self, ui: &mut Ui) {
         let rect = ui.max_rect();
-        widgets::grid_background(ui.painter(), rect);
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
             "NO MATCHING ITEMS",
-            FontId::new(12.0, FontFamily::Monospace),
-            TEXT_DIM,
+            FontId::new(11.0, FontFamily::Monospace),
+            FAINT,
         );
     }
 
     fn grid(&mut self, ui: &mut Ui) {
         let avail = ui.available_width();
-        let gap = S;
-        let cols = (((avail - gap) / (TILE_W + gap)).floor() as usize).max(1);
+        let cols = (((avail + 1.0) / (TILE_W + 1.0)).floor() as usize).max(1);
+        let tile_w = ((avail - (cols as f32 - 1.0)) / cols as f32).floor();
+        let tile_h = (tile_w * 0.62 + 44.0).round();
         let total = self.total as usize;
         let rows = total.div_ceil(cols);
         let discreet = self.discreet();
         let mut open: Option<usize> = None;
-        let mut select: Option<i64> = None;
+        let mut select: Option<(i64, u64)> = None;
         let mut fav_toggle: Option<i64> = None;
         let mut wanted: Vec<Request> = Vec::new();
         let hide_all = discreet;
         let share_safe = self.cfg.screen_share_safe;
         let frame_no = self.frame_no;
 
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show_rows(ui, TILE_H, rows, |ui, range| {
-                ui.spacing_mut().item_spacing = vec2(gap, gap);
-                let start = (range.start * cols) as u64;
-                let end = ((range.end * cols).min(total)) as u64;
-                self.ensure_page(start, end);
-                for row in range {
-                    ui.horizontal(|ui| {
-                        ui.add_space(gap);
-                        for col in 0..cols {
-                            let idx = (row * cols + col) as u64;
-                            if idx >= self.total {
-                                break;
-                            }
-                            let Some(m) = self.page.items.get((idx - self.page.offset) as usize)
-                            else {
-                                break;
-                            };
-                            let state = match self.textures.get_mut(&m.id) {
-                                Some(t) => {
-                                    t.used = frame_no;
-                                    ThumbState::Ready(&*t)
-                                }
-                                None if self.thumb_failed.contains(&m.id) || m.missing => {
-                                    ThumbState::Failed
-                                }
-                                None => {
-                                    wanted.push(Request {
-                                        id: m.id,
-                                        path: m.path.clone(),
-                                        kind: m.kind,
-                                        size: m.size,
-                                        mtime: m.mtime,
-                                        need_meta: m.kind == MediaKind::Video
-                                            && m.duration_ms.is_none()
-                                            && !self.meta_tried.contains(&m.id),
-                                    });
-                                    ThumbState::Loading
-                                }
-                            };
-                            let (resp, star) = draw_tile(
-                                ui,
-                                m,
-                                self.selected == Some(m.id),
-                                hide_all,
-                                share_safe,
-                                state,
-                                frame_no,
-                            );
-                            if star {
-                                fav_toggle = Some(m.id);
-                            } else if resp.clicked() {
-                                select = Some(m.id);
-                            }
-                            if resp.double_clicked() {
-                                open = Some(idx as usize);
-                            }
+        self.last_cols = cols;
+        let mut area = egui::ScrollArea::vertical().auto_shrink(false);
+        if let Some(target) = self.scroll_to.take() {
+            let (offset, view_h) = self.grid_scroll;
+            let top = (target as usize / cols) as f32 * tile_h;
+            if top < offset {
+                area = area.vertical_scroll_offset(top);
+            } else if top + tile_h > offset + view_h {
+                area = area.vertical_scroll_offset(top + tile_h - view_h);
+            }
+        }
+        let out = area.show_rows(ui, tile_h, rows, |ui, range| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            let start = (range.start * cols) as u64;
+            let end = ((range.end * cols).min(total)) as u64;
+            self.ensure_page(start, end);
+            for row in range {
+                ui.horizontal(|ui| {
+                    for col in 0..cols {
+                        let idx = (row * cols + col) as u64;
+                        if idx >= self.total {
+                            break;
                         }
-                    });
-                }
-            });
+                        let Some(m) = self.page.items.get((idx - self.page.offset) as usize) else {
+                            break;
+                        };
+                        let state = match self.textures.get_mut(&m.id) {
+                            Some(t) => {
+                                t.used = frame_no;
+                                ThumbState::Ready(&*t)
+                            }
+                            None if self.thumb_failed.contains(&m.id) || m.missing => {
+                                ThumbState::Failed
+                            }
+                            None => {
+                                wanted.push(Request {
+                                    id: m.id,
+                                    path: m.path.clone(),
+                                    kind: m.kind,
+                                    size: m.size,
+                                    mtime: m.mtime,
+                                    need_meta: m.kind == MediaKind::Video
+                                        && m.duration_ms.is_none()
+                                        && !self.meta_tried.contains(&m.id),
+                                });
+                                ThumbState::Loading
+                            }
+                        };
+                        let (resp, star) = draw_tile(
+                            ui,
+                            m,
+                            self.selected == Some(m.id),
+                            (hide_all, share_safe),
+                            state,
+                            frame_no,
+                            (vec2(tile_w, tile_h), idx),
+                        );
+                        if star {
+                            fav_toggle = Some(m.id);
+                        } else if resp.clicked() {
+                            select = Some((m.id, idx));
+                        }
+                        if resp.double_clicked() {
+                            open = Some(idx as usize);
+                        }
+                    }
+                });
+            }
+        });
+        self.grid_scroll = (out.state.offset.y, out.inner_rect.height());
         self.thumbs.set_wanted(wanted);
         if let Some(id) = fav_toggle {
             self.push("media.favorite.toggle", json!({ "id": id }));
         }
-        if let Some(id) = select {
+        if let Some((id, idx)) = select {
             self.selected = Some(id);
+            self.selected_index = Some(idx);
         }
         if let Some(idx) = open {
             self.push("media.open", json!({ "index": idx }));
@@ -1189,13 +1406,12 @@ impl JizzApp {
                 );
             }
             (None, None) => {
-                widgets::grid_background(&painter, rect);
                 painter.text(
                     rect.center(),
                     Align2::CENTER_CENTER,
                     "LOADING…",
                     FontId::new(12.0, FontFamily::Monospace),
-                    TEXT_DIM,
+                    MUTED,
                 );
             }
             (Some(tex), None) => {
@@ -1264,7 +1480,7 @@ impl JizzApp {
                     egui::pos2(rect.left() + S, rect.bottom() - 28.0 - S),
                     vec2(label.chars().count() as f32 * 8.2 + 20.0, 28.0),
                 );
-                painter.rect_filled(hud, CornerRadius::same(1), PANEL);
+                painter.rect_filled(hud, CornerRadius::same(1), BG);
                 painter.rect_stroke(
                     hud,
                     CornerRadius::same(1),
@@ -1285,80 +1501,138 @@ impl JizzApp {
     fn empty_state(&mut self, ui: &mut Ui) {
         let rect = ui.max_rect();
         let p = ui.painter().clone();
-        widgets::grid_background(&p, rect);
         widgets::corner_crosshairs(&p, rect, 16.0);
-        widgets::ruler(&p, rect);
 
         let discreet = self.discreet();
-        if !discreet {
-            p.text(
-                rect.right_top() + vec2(-48.0, 36.0),
-                Align2::RIGHT_CENTER,
-                "J I Z Z   C R A F T",
-                FontId::new(11.0, FontFamily::Monospace),
-                TEXT,
-            );
-        }
-
-        // Table of contents, bottom right.
-        let toc = ["Highlights", "Library", "Player", "Privacy", "Get started"];
-        let mut y = rect.bottom() - 40.0;
-        for (i, item) in toc.iter().enumerate().rev() {
-            let label = format!("{:02}  {}", i + 1, item.to_uppercase());
-            p.text(
-                egui::pos2(rect.right() - 64.0, y),
-                Align2::RIGHT_BOTTOM,
-                label,
-                FontId::new(10.0, FontFamily::Monospace),
-                TEXT_DIM,
-            );
-            y -= 18.0;
-        }
-
-        // Left column.
-        let col = Rect::from_min_size(
-            egui::pos2(
-                rect.left() + 64.0,
-                rect.top() + (rect.height() * 0.5 - 190.0).max(40.0),
-            ),
-            vec2((rect.width() - 128.0).min(820.0), 400.0),
-        );
-        ui.scope_builder(UiBuilder::new().max_rect(col), |ui| {
-            ui.spacing_mut().item_spacing = vec2(S * 2.0, S * 2.0);
-            ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::hover());
-                ui.painter().rect_filled(r, CornerRadius::same(2), Color32::WHITE);
-                let tex = if discreet { &self.viewer_icon } else { &self.peach };
+        let col_w = (rect.width() - 96.0).clamp(280.0, 1040.0);
+        let head = (rect.width() * 0.055).clamp(36.0, 64.0);
+        let col = Rect::from_center_size(rect.center(), vec2(col_w, rect.height() - 64.0));
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(col)
+                .layout(Layout::top_down(Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing = vec2(S * 2.0, S * 2.0);
+                let used = if discreet { 280.0 } else { 520.0 };
+                ui.add_space(((col.height() - used) * 0.5).max(0.0));
+                // Icon with a soft offset shadow, no white box.
+                let (r, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
+                let tex = if discreet {
+                    &self.viewer_icon
+                } else {
+                    &self.peach
+                };
+                let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 ui.painter().image(
                     tex.id(),
-                    r.shrink(6.0),
-                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
+                    r.translate(vec2(0.0, 6.0)),
+                    uv,
+                    Color32::from_black_alpha(70),
                 );
+                ui.painter().image(tex.id(), r, uv, Color32::WHITE);
                 if !discreet {
-                    widgets::badge(ui, "01", 22.0);
-                    widgets::wordmark(ui, 22.0);
+                    let wm = ui.painter().layout_job(widgets::wordmark_job(24.0));
+                    let w = wm.size().x + 48.0 + 12.0;
+                    ui.allocate_ui_with_layout(
+                        vec2(w, 32.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            widgets::badge(ui, "01", 24.0);
+                            ui.add_space(12.0);
+                            widgets::wordmark(ui, 24.0);
+                        },
+                    );
                 }
-            });
-            ui.add_space(S);
-            ui.label(headline(self.opts.know.max(1), discreet));
-            ui.add_space(S);
-            let sub = if discreet {
-                "Your library, in a native app. Offline, and yours."
-            } else {
-                "Your library, in a native app written entirely in Rust. Open source, offline, and yours."
-            };
-            ui.add(egui::Label::new(egui::RichText::new(sub).size(14.0).color(TEXT_DIM)).wrap());
-            ui.add_space(S * 2.0);
-            ui.horizontal(|ui| {
-                if widgets::button_solid(ui, "Import folder").clicked() {
-                    self.push("library.import", json!({}));
+                ui.label(headline(
+                    self.opts.know.max(1),
+                    discreet,
+                    head,
+                    col_w.min(900.0),
+                ));
+                let sub = if discreet {
+                    "Your library, in a native app. Offline, and yours."
+                } else {
+                    "Point it at a folder. It indexes your images and videos in place, \
+                     never touches the files, and stays offline: no account, no ads, no network."
+                };
+                ui.scope(|ui| {
+                    ui.set_max_width(576.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(sub).size(16.0).color(MUTED)).wrap(),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    let w = 220.0 + 150.0 + 12.0;
+                    ui.add_space(((col_w - w) * 0.5).max(0.0));
+                    if widgets::button_solid_hero(ui, "Import folder").clicked() {
+                        self.push("library.import", json!({}));
+                    }
+                    if widgets::button_outline_hero(ui, "Shortcuts").clicked() {
+                        self.push("docs.toggle", json!({}));
+                    }
+                });
+                if !discreet {
+                    ui.label(theme::hud(
+                        "Linux · Offline · No ads · Free and open source",
+                        FAINT,
+                    ));
+                    ui.add_space(S);
+                    let cells = [
+                        (
+                            "01",
+                            "Point it at a folder",
+                            "Indexed in place, never modified.",
+                        ),
+                        (
+                            "02",
+                            "Browse by keyboard",
+                            "Filter, favorite and play without the mouse.",
+                        ),
+                        ("03", "Stays offline", "No account, no ads, no network."),
+                    ];
+                    let w = col_w.min(900.0);
+                    let (grid, _) = ui.allocate_exact_size(vec2(w, 112.0), Sense::hover());
+                    let cw = (w - 2.0) / 3.0;
+                    let g = ui.painter().clone();
+                    g.rect_filled(grid, CornerRadius::ZERO, LINE);
+                    for (i, (n, title, body)) in cells.iter().enumerate() {
+                        let cell = Rect::from_min_size(
+                            grid.min + vec2(i as f32 * (cw + 1.0), 0.0),
+                            vec2(cw, 112.0),
+                        );
+                        g.rect_filled(cell, CornerRadius::ZERO, BG);
+                        g.text(
+                            cell.right_top() + vec2(-12.0, 12.0),
+                            Align2::RIGHT_TOP,
+                            *n,
+                            FontId::new(10.0, FontFamily::Monospace),
+                            FAINT,
+                        );
+                        g.text(
+                            cell.min + vec2(16.0, 16.0),
+                            Align2::LEFT_TOP,
+                            *title,
+                            FontId::new(18.0, theme::title_family()),
+                            TEXT,
+                        );
+                        let job = egui::text::LayoutJob::simple(
+                            (*body).to_owned(),
+                            FontId::new(13.0, FontFamily::Proportional),
+                            MUTED,
+                            cw - 32.0,
+                        );
+                        let galley = g.layout_job(job);
+                        g.galley(cell.min + vec2(16.0, 48.0), galley, MUTED);
+                    }
+                    g.rect_stroke(
+                        grid,
+                        CornerRadius::ZERO,
+                        Stroke::new(1.0, LINE),
+                        StrokeKind::Inside,
+                    );
                 }
-                if widgets::button_outline(ui, "Read the docs").clicked() {
-                    self.push("docs.toggle", json!({}));
-                }
-            });
-        });
+            },
+        );
     }
 
     /// 18+ gate, shown until confirmed (persisted in the config).
@@ -1368,15 +1642,13 @@ impl JizzApp {
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let p = ui.painter().clone();
-                widgets::grid_background(&p, rect);
                 widgets::corner_crosshairs(&p, rect, 16.0);
-                widgets::ruler(&p, rect);
                 let col = Rect::from_center_size(rect.center(), vec2(640.0_f32.min(rect.width() - 96.0), 320.0));
                 ui.scope_builder(UiBuilder::new().max_rect(col), |ui| {
                     ui.spacing_mut().item_spacing = vec2(S * 2.0, S * 2.0);
                     ui.horizontal(|ui| {
                         widgets::badge(ui, "18", 28.0);
-                        widgets::mono_label(ui, "Age check", TEXT_DIM);
+                        widgets::mono_label(ui, "Age check", MUTED);
                     });
                     ui.label(
                         egui::RichText::new("You must be 18 or older.")
@@ -1390,7 +1662,7 @@ impl JizzApp {
                                  Nothing leaves this machine. By continuing you confirm that you are at least 18 years old.",
                             )
                             .size(13.0)
-                            .color(TEXT_DIM),
+                            .color(MUTED),
                         )
                         .wrap(),
                     );
@@ -1420,7 +1692,7 @@ impl JizzApp {
             .show(ctx, |ui| {
                 for t in &self.toasts {
                     let (edge, fg) = match t.kind {
-                        ToastKind::Info => (ACCENT, TEXT),
+                        ToastKind::Info => (LINE_STRONG, TEXT),
                         ToastKind::Error => (DANGER, TEXT),
                     };
                     egui::Frame::new()
@@ -1428,7 +1700,7 @@ impl JizzApp {
                         .stroke(Stroke::new(1.0, edge))
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
-                            ui.label(theme::spaced(&t.text, 10.5, 0.8, fg));
+                            ui.label(egui::RichText::new(&t.text).size(12.0).color(fg));
                         });
                 }
             });
@@ -1444,24 +1716,56 @@ impl JizzApp {
             .collapsible(false)
             .default_width(420.0)
             .show(ctx, |ui| {
-                for (k, v) in [
-                    ("Ctrl+O", "Import a folder"),
-                    ("Ctrl+R", "Rescan the library"),
-                    ("Ctrl+Shift+H", "Boss key: pause, mute, discreet, minimize"),
-                    ("Double-click", "Open an item"),
-                    ("Esc", "Back to the library"),
-                    ("← →", "Previous / next item"),
-                    ("Space", "Play / pause video"),
-                    ("F", "Fullscreen"),
-                ] {
+                let lh = self.cfg.left_hand;
+                let rows: &[(&str, &str)] = if lh {
+                    &[
+                        (
+                            "W A S D",
+                            "Move in the grid, zoom in the viewer, volume in the player",
+                        ),
+                        ("E / Space", "Open the selected item"),
+                        ("F", "Favorite"),
+                        ("A / D", "Previous / next in the viewer, seek in the player"),
+                        ("Shift+A / D", "Previous / next item in the player"),
+                        ("X · G", "Mute · fullscreen"),
+                        ("Z", "Fit the image to the window"),
+                        ("Q", "Back, or clear the search"),
+                        ("1 – 4", "Library, Images, Videos, Favorites"),
+                        ("/", "Focus the search box"),
+                        ("Ctrl+Shift+H", "Boss key: pause, mute, discreet, minimize"),
+                    ]
+                } else {
+                    &[
+                        ("Ctrl+O", "Import a folder"),
+                        ("Ctrl+R", "Rescan the library"),
+                        ("Ctrl+Shift+H", "Boss key: pause, mute, discreet, minimize"),
+                        ("← ↑ ↓ →", "Move in the grid"),
+                        ("Enter", "Open the selected item"),
+                        ("Home / End", "First / last item"),
+                        ("1 – 4", "Library, Images, Videos, Favorites"),
+                        ("/", "Focus the search box (Esc clears it)"),
+                        ("S", "Favorite"),
+                        ("Double-click", "Open an item"),
+                        ("Esc", "Back to the library"),
+                        ("← →", "Previous / next item in a viewer"),
+                        ("Space", "Play / pause video"),
+                        ("F", "Fullscreen"),
+                        ("?", "This window"),
+                    ]
+                };
+                for (k, v) in rows {
                     widgets::kv(ui, k, v);
+                }
+                ui.add_space(S);
+                if widgets::toggle_chip(ui, "Left-hand keys", lh).clicked() {
+                    self.push("app.left_hand.toggle", json!({}));
                 }
                 ui.add_space(S);
                 ui.label(
                     egui::RichText::new(
                         "Everything stays on this machine. No account, no telemetry, no network.",
                     )
-                    .color(TEXT_DIM),
+                    .color(MUTED),
                 );
             });
         self.show_docs = open;
@@ -1724,19 +2028,110 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({}))
         },
     );
+    reg.register(
+        "view.sort",
+        "Sort the library: {by: name|added|size|duration, desc?}",
+        |app, args| {
+            let by = args
+                .get("by")
+                .and_then(Value::as_str)
+                .and_then(SortKey::parse)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("unknown sort key".into()))?;
+            app.sort = by;
+            app.sort_desc = args.get("desc").and_then(Value::as_bool).unwrap_or(false);
+            app.cfg.sort = Some(by.as_str().to_owned());
+            app.cfg.sort_desc = app.sort_desc;
+            app.save_cfg();
+            app.selected_index = None;
+            app.refresh();
+            Ok(json!({}))
+        },
+    );
+    reg.register("view.search.focus", "Focus the search box", |app, _| {
+        app.focus_search = true;
+        Ok(json!({}))
+    });
+    reg.register("view.search.clear", "Clear the search box", |app, _| {
+        app.search.clear();
+        app.refresh();
+        Ok(json!({}))
+    });
+    reg.register(
+        "view.select.move",
+        "Move the grid selection: {dx, dy}",
+        |app, args| {
+            let dx = args.get("dx").and_then(Value::as_i64).unwrap_or(0);
+            let dy = args.get("dy").and_then(Value::as_i64).unwrap_or(0);
+            let cur = app.selected_index;
+            let next = move_index(cur, dx, dy, app.last_cols, app.total);
+            if let Some(i) = next {
+                app.select_index(i);
+            }
+            Ok(json!({ "index": next }))
+        },
+    );
+    reg.register(
+        "view.select.edge",
+        "Select the first or last item: {to: first|last}",
+        |app, args| {
+            let last = args.get("to").and_then(Value::as_str) == Some("last");
+            if app.total > 0 {
+                app.select_index(if last { app.total - 1 } else { 0 });
+            }
+            Ok(json!({}))
+        },
+    );
+    reg.register("view.open_selected", "Open the selected item", |app, _| {
+        if let Some(i) = app.selected_index {
+            app.open_index(i);
+        }
+        Ok(json!({}))
+    });
+    reg.register(
+        "app.left_hand.toggle",
+        "Toggle the left-hand (WASD) key preset",
+        |app, _| {
+            app.cfg.left_hand = !app.cfg.left_hand;
+            app.save_cfg();
+            Ok(json!({ "left_hand": app.cfg.left_hand }))
+        },
+    );
     reg.register("docs.toggle", "Show or hide the docs window", |app, _| {
         app.show_docs = !app.show_docs;
         Ok(json!({}))
     });
 }
 
-fn headline(know: u32, _discreet: bool) -> egui::text::LayoutJob {
+/// New grid index after moving by `(dx, dy)` cells; `None` when the library is empty.
+/// Moves clamp at the edges, and the first move from no selection lands on 0.
+fn move_index(cur: Option<u64>, dx: i64, dy: i64, cols: usize, total: u64) -> Option<u64> {
+    if total == 0 {
+        return None;
+    }
+    let Some(cur) = cur else {
+        return Some(0);
+    };
+    let step = dx + dy * cols.max(1) as i64;
+    Some((cur as i64 + step).clamp(0, total as i64 - 1) as u64)
+}
+
+fn headline(know: u32, discreet: bool, size: f32, width: f32) -> egui::text::LayoutJob {
     use egui::{TextFormat, text::LayoutJob};
-    let font = FontId::new(52.0, theme::title_family());
-    let plain = TextFormat::simple(font.clone(), Color32::WHITE);
-    let accent = TextFormat::simple(font, ACCENT);
+    let font = FontId::new(size, theme::title_family());
+    let fmt = |color| TextFormat {
+        font_id: font.clone(),
+        color,
+        extra_letter_spacing: size * -0.035,
+        ..Default::default()
+    };
+    let (plain, accent) = (fmt(Color32::WHITE), fmt(ACCENT_INK));
     let mut job = LayoutJob::default();
-    job.wrap.max_width = 760.0;
+    job.wrap.max_width = width;
+    job.halign = Align::Center;
+    if discreet {
+        job.append("Your library, offline.", 0.0, plain);
+        return job;
+    }
     job.append("The porn viewer you already ", 0.0, plain.clone());
     for i in 0..know {
         if i > 0 {
@@ -1752,26 +2147,23 @@ fn draw_tile(
     ui: &mut Ui,
     m: &Media,
     selected: bool,
-    discreet: bool,
-    share_safe: bool,
+    (discreet, share_safe): (bool, bool),
     state: ThumbState<'_>,
     frame_no: u64,
+    (size, idx): (egui::Vec2, u64),
 ) -> (egui::Response, bool) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(TILE_W, TILE_H), Sense::click());
-    let star_rect = Rect::from_center_size(rect.right_top() + vec2(-14.0, 16.0), vec2(24.0, 24.0));
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let star_rect =
+        Rect::from_center_size(rect.right_bottom() + vec2(-20.0, -22.0), vec2(28.0, 28.0));
     let star_clicked = resp.clicked()
         && ui
             .input(|i| i.pointer.interact_pos())
             .is_some_and(|p| star_rect.contains(p));
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(1), RAISED);
-    let body = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - 36.0));
-    let inner = body.shrink(1.0);
-    p.rect_filled(
-        inner,
-        CornerRadius::ZERO,
-        Color32::from_rgb(0x18, 0x1b, 0x1f),
-    );
+    p.rect_filled(rect, CornerRadius::ZERO, BG);
+    let body = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - 44.0));
+    let inner = body.shrink2(vec2(0.0, 0.0));
+    p.rect_filled(inner, CornerRadius::ZERO, SUNKEN);
     match state {
         ThumbState::Ready(t) => {
             // Discreet / screen-share-safe: blurred until hovered (discreet: always).
@@ -1806,7 +2198,7 @@ fn draw_tile(
                 Align2::CENTER_CENTER,
                 "…",
                 FontId::new(14.0, FontFamily::Monospace),
-                HAIRLINE.gamma_multiply(2.2),
+                LINE.gamma_multiply(2.2),
             );
         }
         ThumbState::Failed => {
@@ -1818,39 +2210,41 @@ fn draw_tile(
                 if m.missing {
                     DANGER
                 } else {
-                    HAIRLINE.gamma_multiply(2.2)
+                    LINE.gamma_multiply(2.2)
                 },
             );
         }
     }
     // Type badge.
-    let badge = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(40.0, 16.0));
-    p.rect_filled(badge, CornerRadius::same(1), BG);
-    p.rect_stroke(
-        badge,
-        CornerRadius::same(1),
-        theme::hairline(),
-        StrokeKind::Inside,
-    );
+    let badge = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(44.0, 16.0));
+    p.rect_filled(badge, CornerRadius::ZERO, BG.gamma_multiply(0.6));
     p.text(
         badge.center(),
         Align2::CENTER_CENTER,
         m.kind.label(),
         FontId::new(9.0, FontFamily::Monospace),
-        TEXT_DIM,
+        MUTED,
+    );
+    // Faint index number, top right.
+    p.text(
+        rect.right_top() + vec2(-8.0, 8.0),
+        Align2::RIGHT_TOP,
+        format!("{:03}", idx + 1),
+        FontId::new(9.0, FontFamily::Monospace),
+        FAINT,
     );
     if m.favorite || resp.hovered() {
-        p.text(
+        widgets::star_icon(
+            p,
             star_rect.center(),
-            Align2::CENTER_CENTER,
-            if m.favorite { "★" } else { "☆" },
-            FontId::new(14.0, FontFamily::Proportional),
-            if m.favorite { ACCENT } else { TEXT_DIM },
+            14.0,
+            m.favorite,
+            if m.favorite { APP } else { MUTED },
         );
     }
     if m.missing {
         p.rect_stroke(
-            body.shrink(1.0),
+            body,
             CornerRadius::ZERO,
             Stroke::new(1.0, DANGER),
             StrokeKind::Inside,
@@ -1867,36 +2261,47 @@ fn draw_tile(
         MediaKind::Image => m.width.zip(m.height).map(|(w, h)| format!("{w}×{h}")),
     }
     .unwrap_or_else(|| "—".into());
-    let cap = Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 36.0), rect.max);
-    p.with_clip_rect(cap).text(
-        cap.min + vec2(8.0, 6.0),
+    let cap = Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 44.0), rect.max);
+    let cap_text = Rect::from_min_max(cap.min, egui::pos2(cap.max.x - 32.0, cap.max.y));
+    p.with_clip_rect(cap_text).text(
+        cap.min + vec2(10.0, 7.0),
         Align2::LEFT_TOP,
         &name,
-        FontId::new(11.0, FontFamily::Monospace),
+        FontId::new(12.0, FontFamily::Proportional),
         TEXT,
     );
     p.text(
-        cap.min + vec2(8.0, 21.0),
+        cap.min + vec2(10.0, 25.0),
         Align2::LEFT_TOP,
         meta,
-        FontId::new(9.5, FontFamily::Monospace),
-        TEXT_DIM,
+        FontId::new(10.5, FontFamily::Monospace),
+        FAINT,
     );
 
-    let border = if selected {
-        Stroke::new(2.0, ACCENT)
+    // Shared hairlines: right and bottom edge only, so neighbours do not double up.
+    p.vline(rect.max.x - 0.5, rect.y_range(), theme::hairline());
+    p.hline(rect.x_range(), rect.max.y - 0.5, theme::hairline());
+    if selected {
+        p.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(2.0, APP),
+            StrokeKind::Inside,
+        );
     } else if resp.hovered() {
-        Stroke::new(1.0, TEXT_DIM)
-    } else {
-        theme::hairline()
-    };
-    p.rect_stroke(rect, CornerRadius::same(1), border, StrokeKind::Inside);
+        p.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, LINE_STRONG),
+            StrokeKind::Inside,
+        );
+    }
     if resp.has_focus() {
         p.rect_stroke(
-            rect.expand(2.0),
-            CornerRadius::same(2),
-            Stroke::new(2.0, ACCENT),
-            StrokeKind::Outside,
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(2.0, ACCENT_INK),
+            StrokeKind::Inside,
         );
     }
     (resp, star_clicked)
@@ -1985,6 +2390,17 @@ pub fn fmt_date(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_moves_clamp_at_edges() {
+        assert_eq!(move_index(None, 1, 0, 4, 10), Some(0));
+        assert_eq!(move_index(Some(0), -1, 0, 4, 10), Some(0));
+        assert_eq!(move_index(Some(9), 1, 0, 4, 10), Some(9));
+        assert_eq!(move_index(Some(2), 0, 1, 4, 10), Some(6));
+        assert_eq!(move_index(Some(8), 0, 1, 4, 10), Some(9));
+        assert_eq!(move_index(Some(1), 0, -1, 4, 10), Some(0));
+        assert_eq!(move_index(Some(0), 0, 1, 4, 0), None);
+    }
 
     #[test]
     fn formats() {

@@ -1,38 +1,20 @@
-//! Craft graphic language: technical grid, crosshairs, ruler, mono buttons.
+//! Craft graphic language: hairlines, square corners, tracked mono labels,
+//! inverted primary buttons, corner ticks.
 
-use crate::theme::{self, ACCENT, BG, HAIRLINE, S, TEXT, TEXT_DIM};
+use crate::theme::{
+    self, ACCENT_INK, APP, APP_INK, FAINT, INVERT_BG, INVERT_FG, LINE, LINE_STRONG, MUTED, S, TEXT,
+    TEXT_STRONG,
+};
 use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, Sense, Stroke,
     StrokeKind, Ui, vec2,
 };
 
-/// Faint technical grid behind a panel.
-pub fn grid_background(painter: &egui::Painter, rect: Rect) {
-    let step = 32.0;
-    let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0x2a, 0x2f, 0x35, 90));
-    let mut x = (rect.left() / step).ceil() * step;
-    while x < rect.right() {
-        painter.line_segment(
-            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-            stroke,
-        );
-        x += step;
-    }
-    let mut y = (rect.top() / step).ceil() * step;
-    while y < rect.bottom() {
-        painter.line_segment(
-            [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            stroke,
-        );
-        y += step;
-    }
-}
-
-/// `+` registration marks at the four corners of a rect.
+/// `+` / corner registration ticks at the four corners of a rect (11 px).
 pub fn corner_crosshairs(painter: &egui::Painter, rect: Rect, inset: f32) {
     let r = rect.shrink(inset);
-    let arm = 6.0;
-    let stroke = Stroke::new(1.0, TEXT_DIM);
+    let arm = 5.5;
+    let stroke = Stroke::new(1.0, LINE_STRONG);
     for c in [
         r.left_top(),
         r.right_top(),
@@ -44,163 +26,149 @@ pub fn corner_crosshairs(painter: &egui::Painter, rect: Rect, inset: f32) {
     }
 }
 
-/// Graduated vertical ruler (0, 5, 10…) on the right edge of `rect`.
-pub fn ruler(painter: &egui::Painter, rect: Rect) {
-    let x = rect.right() - 8.0;
-    let step = 12.0;
-    let top = rect.top() + 48.0;
-    let bottom = rect.bottom() - 48.0;
-    let mut y = top;
-    let mut i = 0;
-    while y <= bottom {
-        let major = i % 5 == 0;
-        let len = if major { 12.0 } else { 6.0 };
-        painter.line_segment(
-            [Pos2::new(x - len, y), Pos2::new(x, y)],
-            Stroke::new(1.0, HAIRLINE.gamma_multiply(2.0)),
-        );
-        if major {
-            painter.text(
-                Pos2::new(x - 16.0, y),
-                Align2::RIGHT_CENTER,
-                format!("{i}"),
-                FontId::new(9.0, FontFamily::Monospace),
-                TEXT_DIM,
-            );
-        }
-        y += step;
-        i += 1;
-    }
-}
-
 fn paint_focus(ui: &Ui, r: &Response) {
     if r.has_focus() {
         ui.painter().rect_stroke(
             r.rect.expand(2.0),
-            CornerRadius::same(2),
-            Stroke::new(2.0, ACCENT),
+            CornerRadius::ZERO,
+            Stroke::new(2.0, ACCENT_INK),
             StrokeKind::Outside,
         );
     }
 }
 
-fn button_inner(
-    ui: &mut Ui,
-    label: &str,
-    fill: Color32,
-    fg: Color32,
-    stroke: Stroke,
-    tracking: f32,
-) -> Response {
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    Solid,
+    Outline,
+    Chip { on: bool },
+}
+
+fn button_inner(ui: &mut Ui, label: &str, look: Look, height: f32, side_pad: f32) -> Response {
+    let tracking = 1.32;
+    let probe = ui
+        .painter()
+        .layout_job(theme::spaced(label, 11.0, tracking, TEXT));
+    let size = vec2(probe.size().x + side_pad * 2.0, height);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let hovered = resp.hovered();
+    let (fill, fg, stroke) = match (look, hovered) {
+        (Look::Solid, false) => (INVERT_BG, INVERT_FG, Stroke::NONE),
+        (Look::Solid, true) => (INVERT_BG.gamma_multiply(0.8), INVERT_FG, Stroke::NONE),
+        (Look::Outline, false) => (Color32::TRANSPARENT, TEXT, Stroke::new(1.0, LINE_STRONG)),
+        (Look::Outline, true) => (INVERT_BG, INVERT_FG, Stroke::NONE),
+        (Look::Chip { on: true }, _) => (Color32::TRANSPARENT, TEXT, Stroke::new(1.0, LINE_STRONG)),
+        (Look::Chip { on: false }, false) => (Color32::TRANSPARENT, MUTED, Stroke::new(1.0, LINE)),
+        (Look::Chip { on: false }, true) => {
+            (Color32::TRANSPARENT, TEXT, Stroke::new(1.0, LINE_STRONG))
+        }
+    };
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+    if stroke != Stroke::NONE {
+        ui.painter()
+            .rect_stroke(rect, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+    }
     let galley = ui
         .painter()
         .layout_job(theme::spaced(label, 11.0, tracking, fg));
-    let pad = vec2(S * 1.5, S);
-    let (rect, resp) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
-    let hovered = resp.hovered();
-    let fill = if hovered && fill != Color32::TRANSPARENT {
-        fill.gamma_multiply(0.92)
-    } else {
-        fill
-    };
-    ui.painter().rect_filled(rect, CornerRadius::same(1), fill);
-    let stroke = if hovered {
-        Stroke::new(1.0, TEXT)
-    } else {
-        stroke
-    };
-    ui.painter()
-        .rect_stroke(rect, CornerRadius::same(1), stroke, StrokeKind::Inside);
-    ui.painter().galley(rect.min + pad, galley, fg);
+    let pos = rect.center() - galley.size() / 2.0;
+    ui.painter().galley(pos, galley, fg);
     paint_focus(ui, &resp);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Solid white button with black mono text (primary action).
+/// Inverted primary button: white fill, near-black text.
 pub fn button_solid(ui: &mut Ui, label: &str) -> Response {
-    button_inner(
-        ui,
-        label,
-        Color32::WHITE,
-        Color32::BLACK,
-        Stroke::new(1.0, Color32::WHITE),
-        1.5,
-    )
+    button_inner(ui, label, Look::Solid, 32.0, 14.0)
 }
 
-/// Outlined button (secondary action).
+/// Outlined secondary button; inverts on hover.
 pub fn button_outline(ui: &mut Ui, label: &str) -> Response {
-    button_inner(
-        ui,
-        label,
-        Color32::TRANSPARENT,
-        TEXT,
-        Stroke::new(1.0, TEXT),
-        1.5,
-    )
+    button_inner(ui, label, Look::Outline, 32.0, 14.0)
 }
 
-/// Nav tab. The active tab is a white outlined box, as on the site.
+/// 48 px hero-size primary button.
+pub fn button_solid_hero(ui: &mut Ui, label: &str) -> Response {
+    button_inner(ui, label, Look::Solid, 48.0, 24.0)
+}
+
+/// Full-height top-bar primary button.
+pub fn button_solid_bar(ui: &mut Ui, label: &str) -> Response {
+    button_inner(ui, label, Look::Solid, 48.0, 20.0)
+}
+
+/// 48 px hero-size secondary button.
+pub fn button_outline_hero(ui: &mut Ui, label: &str) -> Response {
+    button_inner(ui, label, Look::Outline, 48.0, 24.0)
+}
+
+/// Top-bar nav item: no box, muted when idle, inverted chip on hover.
 pub fn nav_tab(ui: &mut Ui, label: &str, active: bool) -> Response {
-    let color = if active { Color32::WHITE } else { TEXT_DIM };
-    let galley = ui
-        .painter()
-        .layout_job(theme::spaced(label, 11.0, 1.5, color));
-    let pad = vec2(S * 1.25, S * 0.75);
-    let (rect, resp) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
-    if active {
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(1),
-            Stroke::new(1.0, Color32::WHITE),
-            StrokeKind::Inside,
-        );
-    }
-    let color = if resp.hovered() && !active {
+    let probe = ui.painter().layout_job(theme::hud(label, TEXT));
+    let h = 48.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(probe.size().x + 20.0, h), Sense::click());
+    let hovered = resp.hovered() && !active;
+    let fg = if hovered {
+        INVERT_FG
+    } else if active {
         TEXT
     } else {
-        color
+        MUTED
     };
-    ui.painter().galley(rect.min + pad, galley, color);
+    let galley = ui.painter().layout_job(theme::hud(label, fg));
+    if hovered {
+        let chip = Rect::from_center_size(rect.center(), galley.size() + vec2(12.0, 4.0));
+        ui.painter()
+            .rect_filled(chip, CornerRadius::ZERO, INVERT_BG);
+    }
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, fg);
     paint_focus(ui, &resp);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Small toggle chip (discreet mode, inspector, …).
 pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool) -> Response {
-    let (fg, stroke) = if on {
-        (ACCENT, Stroke::new(1.0, ACCENT))
-    } else {
-        (TEXT_DIM, theme::hairline())
-    };
-    button_inner(ui, label, Color32::TRANSPARENT, fg, stroke, 1.0)
+    button_inner(ui, label, Look::Chip { on }, 24.0, 10.0)
 }
 
-/// Square blue badge with a mono number, e.g. the "01" before the wordmark.
+/// Rectangular app-colour badge with black bold mono text ("01").
 pub fn badge(ui: &mut Ui, text: &str, side: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(1), ACCENT);
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::new(side * 0.45, FontFamily::Name("mono-bold".into())),
-        BG,
+    let font = FontId::new(
+        (side * 0.46).max(11.0),
+        FontFamily::Name("mono-bold".into()),
     );
+    let galley = ui
+        .painter()
+        .layout_job(egui::text::LayoutJob::single_section(
+            text.to_owned(),
+            egui::TextFormat {
+                font_id: font,
+                color: Color32::BLACK,
+                extra_letter_spacing: 1.65,
+                ..Default::default()
+            },
+        ));
+    let size = galley.size() + vec2(16.0, 8.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, APP);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
     resp
 }
 
-/// "Jizz" (white) + "Craft" (accent) in the title face.
+/// "Jizz" (strong white) + "Craft" (app colour) in the display face.
 pub fn wordmark_job(size: f32) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let font = FontId::new(size, theme::title_family());
-    job.append(
-        "Jizz",
-        0.0,
-        egui::TextFormat::simple(font.clone(), Color32::WHITE),
-    );
-    job.append("Craft", 0.0, egui::TextFormat::simple(font, ACCENT));
+    let fmt = |color| egui::TextFormat {
+        font_id: font.clone(),
+        color,
+        extra_letter_spacing: size * -0.03,
+        ..Default::default()
+    };
+    job.append("Jizz", 0.0, fmt(TEXT_STRONG));
+    job.append("Craft", 0.0, fmt(APP_INK));
     job
 }
 
@@ -208,9 +176,9 @@ pub fn wordmark(ui: &mut Ui, size: f32) {
     ui.label(wordmark_job(size));
 }
 
-/// Mono dim label, uppercase and tracked.
+/// Tracked uppercase mono label (`hud`).
 pub fn mono_label(ui: &mut Ui, text: &str, color: Color32) {
-    ui.label(theme::spaced(text, 10.0, 1.2, color));
+    ui.label(theme::hud(text, color));
 }
 
 /// Key / value metadata row (inspector).
@@ -218,13 +186,51 @@ pub fn kv(ui: &mut Ui, key: &str, value: &str) {
     ui.horizontal_top(|ui| {
         ui.set_min_width(ui.available_width());
         ui.allocate_ui(vec2(84.0, 14.0), |ui| {
-            ui.label(theme::spaced(key, 10.0, 1.2, TEXT_DIM));
+            ui.label(theme::spaced(key, 10.0, 1.2, FAINT));
         });
-        ui.add(egui::Label::new(egui::RichText::new(value).size(11.0).color(TEXT)).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(value).size(12.0).color(TEXT)).wrap());
     });
 }
 
 pub fn hairline_h(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, HAIRLINE);
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, LINE);
 }
+
+/// Section header: faint number, faint slash, muted name; faint note on the right.
+pub fn eyebrow(ui: &mut Ui, num: &str, name: &str, right: &str) {
+    ui.horizontal(|ui| {
+        ui.label(theme::hud(num, FAINT));
+        ui.label(theme::hud("/", FAINT));
+        ui.label(theme::hud(name, MUTED));
+        if !right.is_empty() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(theme::hud(right, FAINT));
+            });
+        }
+    });
+}
+
+/// Line-style 5-point star (Lucide look), filled when `filled`.
+pub fn star_icon(painter: &egui::Painter, center: Pos2, size: f32, filled: bool, color: Color32) {
+    let outer = size / 2.0;
+    let inner = outer * 0.42;
+    let pts: Vec<Pos2> = (0..10)
+        .map(|i| {
+            let r = if i % 2 == 0 { outer } else { inner };
+            let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+            center + vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    let fill = if filled { color } else { Color32::TRANSPARENT };
+    painter.add(egui::Shape::convex_polygon(
+        pts,
+        fill,
+        Stroke::new(1.5, color),
+    ));
+}
+
+#[allow(dead_code)]
+const _: f32 = S;
+#[allow(dead_code)]
+const _A: Align2 = Align2::CENTER_CENTER;

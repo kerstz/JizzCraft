@@ -4,8 +4,9 @@
 
 | Font | Use | License | Source |
 | --- | --- | --- | --- |
-| Space Grotesk (Bold) | titles, wordmark | SIL Open Font License 1.1 (`SpaceGrotesk-OFL.txt`) | https://github.com/floriankarsten/space-grotesk |
-| JetBrains Mono (Regular, Bold) | every label, tab, button, value | SIL Open Font License 1.1 (`JetBrainsMono-OFL.txt`) | https://github.com/JetBrains/JetBrainsMono |
+| Archivo (Medium) | wordmark, headings, hero headline | SIL Open Font License 1.1 (`Archivo-OFL.txt`) | https://github.com/Omnibus-Type/Archivo |
+| Inter (Regular, Medium) | body text, filenames | SIL Open Font License 1.1 (`Inter-OFL.txt`) | https://github.com/rsms/inter |
+| JetBrains Mono (Regular, Bold) | labels, tabs, buttons, numbers | SIL Open Font License 1.1 (`JetBrainsMono-OFL.txt`) | https://github.com/JetBrains/JetBrainsMono |
 
 Fonts are used unmodified. egui additionally ships its own default fonts
 (Ubuntu-Light, Hack, NotoEmoji, emoji-icon-font) as glyph fallbacks.

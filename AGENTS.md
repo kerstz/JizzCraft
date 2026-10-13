@@ -31,8 +31,8 @@ cargo run -p jizzcraft-cli -- stats --json
 ## Command registry
 
 One registry of named commands (`library.import`, `library.rescan`,
-`media.query`, `media.favorite.toggle`, `view.filter`, `player.*`,
-`app.boss_key`, …). Menus, shortcuts, the CLI and `--cmd NAME=JSON` all call it.
+`media.query`, `media.favorite.toggle`, `view.filter`, `view.sort`, `view.select.move`, `player.*`,
+`app.boss_key`, `app.left_hand.toggle`, …). Menus, shortcuts, the CLI and `--cmd NAME=JSON` all call it.
 Add behaviour as a command first, UI second.
 
 ## Rules
@@ -48,3 +48,11 @@ Add behaviour as a command first, UI second.
 - Do not use `ctx.request_repaint()` per video frame: egui doubles it. Use a
   non-zero delay (see `open_player`).
 - Do not reuse code, assets, logos or wordmarks from ArtCraft / PhotoCraft.
+
+## Visual language
+
+Craft look (tokens in `crates/ui/src/theme.rs`, widgets in `widgets.rs`): flat
+surfaces, 0 px radius, hairlines in translucent warm white, Archivo for display,
+Inter for body, JetBrains Mono for tracked uppercase labels and numbers, inverted
+white primary button, own app colour `APP` (peach). Tiles and cells share 1 px
+hairlines. Do not add background grids or rulers.

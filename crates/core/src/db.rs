@@ -46,9 +46,58 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 const COLS: &str = "id, path, name, kind, size, mtime, width, height, duration_ms, codec, \
                     added_at, missing, favorite";
 
+/// Sort key for library queries. Mapped to SQL through a fixed whitelist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Added,
+    Size,
+    Duration,
+}
+
+impl SortKey {
+    pub const ALL: [SortKey; 4] = [
+        SortKey::Name,
+        SortKey::Added,
+        SortKey::Size,
+        SortKey::Duration,
+    ];
+
+    pub fn parse(s: &str) -> Option<SortKey> {
+        match s.to_ascii_lowercase().as_str() {
+            "name" => Some(SortKey::Name),
+            "added" => Some(SortKey::Added),
+            "size" => Some(SortKey::Size),
+            "duration" => Some(SortKey::Duration),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Added => "added",
+            SortKey::Size => "size",
+            SortKey::Duration => "duration",
+        }
+    }
+
+    fn column(self) -> &'static str {
+        match self {
+            SortKey::Name => "name_lc",
+            SortKey::Added => "added_at",
+            SortKey::Size => "size",
+            SortKey::Duration => "duration_ms",
+        }
+    }
+}
+
 /// Library query. The grid asks for one page at a time.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
+    pub sort: SortKey,
+    pub desc: bool,
     pub kind: Option<MediaKind>,
     pub favorites: bool,
     pub name: Option<String>,
@@ -178,7 +227,17 @@ impl Db {
 
     pub fn query(&self, f: &Filter) -> Result<Vec<Media>> {
         let (w, mut args) = Self::where_clause(f);
-        let mut sql = format!("SELECT {COLS} FROM media{w} ORDER BY name_lc, id");
+        let dir = if f.desc { "DESC" } else { "ASC" };
+        // Missing durations always sort last; `id` keeps paging stable.
+        let nulls = if f.sort == SortKey::Duration {
+            "duration_ms IS NULL, "
+        } else {
+            ""
+        };
+        let mut sql = format!(
+            "SELECT {COLS} FROM media{w} ORDER BY {nulls}{} {dir}, id",
+            f.sort.column()
+        );
         if let Some(l) = f.limit {
             sql.push_str(" LIMIT ? OFFSET ?");
             args.push(Value::Integer(l as i64));

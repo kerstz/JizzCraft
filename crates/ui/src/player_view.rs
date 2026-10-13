@@ -1,7 +1,7 @@
 //! Video player view: persistent wgpu texture updated in place, timeline,
 //! volume, overlays. The pipeline itself lives in `jizzcraft-media`.
 
-use crate::theme::{self, ACCENT, DANGER, PANEL, S, TEXT, TEXT_DIM};
+use crate::theme::{self, ACCENT, BG, DANGER, MUTED, S, TEXT};
 use crate::widgets;
 use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Rect, Sense, Ui, pos2, vec2};
 use egui_wgpu::{RenderState, wgpu};
@@ -178,14 +178,13 @@ impl PlayerView {
                 );
             }
             None => {
-                widgets::grid_background(&painter, video_area);
                 if state != PlayState::Error {
                     painter.text(
                         video_area.center(),
                         Align2::CENTER_CENTER,
                         "LOADING…",
                         FontId::new(12.0, FontFamily::Monospace),
-                        TEXT_DIM,
+                        MUTED,
                     );
                 }
             }
@@ -246,7 +245,7 @@ impl PlayerView {
 
     fn bar(&mut self, ui: &mut Ui, rect: Rect, _discreet: bool) {
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, CornerRadius::ZERO, PANEL);
+        painter.rect_filled(rect, CornerRadius::ZERO, BG);
         painter.hline(rect.x_range(), rect.top(), theme::hairline());
 
         let dur = self.player.duration();
@@ -279,7 +278,7 @@ impl PlayerView {
         }
 
         // Track, elapsed portion, playhead.
-        painter.rect_filled(track, CornerRadius::ZERO, theme::HAIRLINE);
+        painter.rect_filled(track, CornerRadius::ZERO, theme::LINE);
         let frac = match dur {
             Some(d) if !d.is_zero() => (pos.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0),
             _ => 0.0,
@@ -288,7 +287,7 @@ impl PlayerView {
         painter.rect_filled(
             Rect::from_min_max(track.min, pos2(x, track.max.y)),
             CornerRadius::ZERO,
-            TEXT_DIM,
+            MUTED,
         );
         painter.rect_filled(
             Rect::from_center_size(pos2(x, track.center().y), vec2(3.0, 14.0)),
@@ -337,7 +336,7 @@ impl PlayerView {
             if state == PlayState::Error {
                 DANGER
             } else {
-                TEXT_DIM
+                MUTED
             },
         );
         let vol = if self.player.muted() {

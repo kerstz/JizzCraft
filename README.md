@@ -22,7 +22,8 @@ Your library, in a native app written entirely in Rust. Open source, offline, an
 
 ## Why JizzCraft
 
-- 🎛️ **Familiar by design.** A top bar, a grid, an inspector, keyboard shortcuts you already know. Open a folder, see your files.
+- 🎛️ **Familiar by design.** If you know a file browser, you already know JizzCraft: a top bar, a grid, an inspector. Open a folder, see your files.
+- ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs. A left-hand preset keeps everything on `WASD` for one-handed use.
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
 - 🔒 **Private by default.** No account, no telemetry, no network access, ever. A boss key, a discreet mode and a screen-share-safe mode are built in.
 - 🤖 **Agent-ready.** One registry of named commands drives the menus, the shortcuts and a JSON CLI.
@@ -31,7 +32,7 @@ Your library, in a native app written entirely in Rust. Open source, offline, an
 
 ### A library that stays out of your way
 
-Import a folder (native dialog), and JizzCraft indexes images and videos recursively. It never follows symlinks, never touches your files, and keeps a file that went missing flagged instead of silently dropping it. Search by filename, filter All / Images / Videos / Favorites, and rescan on demand.
+Import a folder (native dialog), and JizzCraft indexes images and videos recursively. It never follows symlinks, never touches your files, and keeps a file that went missing flagged instead of silently dropping it. Search by filename, filter All / Images / Videos / Favorites, sort by name, date added, size or duration, and rescan on demand. No ads, no account, nothing to log into.
 
 ![Empty state](docs/screenshots/empty.png)
 
@@ -187,4 +188,4 @@ JizzCraft started as a joke imitating the "Crafting Apps" family (PhotoCraft, Fi
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
-Fonts (Space Grotesk, JetBrains Mono, both OFL) and other credits are listed in [`ATTRIBUTION.md`](ATTRIBUTION.md). The peach icon was drawn for this project.
+Fonts (Archivo, Inter, JetBrains Mono, all OFL) and other credits are listed in [`ATTRIBUTION.md`](ATTRIBUTION.md). The peach icon was drawn for this project.
