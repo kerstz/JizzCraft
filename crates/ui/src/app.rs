@@ -175,6 +175,8 @@ pub struct JizzApp {
     grid_scroll: (f32, f32),
     focus_search: bool,
     marker_cache: Option<(i64, u64, Vec<jizzcraft_core::Marker>)>,
+    /// When the next item starts by itself (autoplay), if pending.
+    autoplay_at: Option<Instant>,
     stats: Stats,
     total: u64,
     generation: u64,
@@ -269,6 +271,7 @@ impl JizzApp {
             grid_scroll: (0.0, 0.0),
             focus_search: false,
             marker_cache: None,
+            autoplay_at: None,
             stats: Stats::default(),
             total: 0,
             generation: 1,
@@ -374,6 +377,39 @@ impl JizzApp {
     fn selected_media(&self) -> Option<Media> {
         let id = self.selected?;
         self.db.get(id).ok().flatten()
+    }
+
+    /// Autoplay-next: when a video ends, count down three seconds, then step.
+    fn tick_autoplay(&mut self, ctx: &egui::Context) {
+        let next_exists = match &self.view {
+            View::Player(pv) => pv.index.is_some_and(|i| i + 1 < self.total),
+            _ => false,
+        };
+        let Some(pv) = (match &mut self.view {
+            View::Player(pv) => Some(pv),
+            _ => None,
+        }) else {
+            self.autoplay_at = None;
+            return;
+        };
+        let looping = pv.player.loop_points() != (None, None);
+        let ended = pv.player.state() == PlayState::Ended;
+        if ended && self.cfg.autoplay_next && next_exists && !looping {
+            let at = *self
+                .autoplay_at
+                .get_or_insert_with(|| Instant::now() + Duration::from_secs(3));
+            let left = at.saturating_duration_since(Instant::now());
+            pv.autoplay_in = Some(left.as_secs() as u32 + 1);
+            if left.is_zero() {
+                self.autoplay_at = None;
+                self.step_view(1);
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
+        } else {
+            pv.autoplay_in = None;
+            self.autoplay_at = None;
+        }
     }
 
     /// Markers of one item, cached per library generation.
@@ -517,6 +553,7 @@ impl JizzApp {
         if let Some(m) = media {
             pv.media_id = Some(m.id);
             pv.duration_hint = m.duration_ms;
+            pv.source = Some((m.path.clone(), m.size, m.mtime));
             // Offer to continue where it stopped, unless resume is switched off.
             if let Some(ms) = m.resume_ms
                 && ms >= 5_000
@@ -527,7 +564,10 @@ impl JizzApp {
                 pv.resumed = Some((at, Instant::now()));
             }
         }
+        pv.autoplay_on = self.cfg.autoplay_next;
+        pv.previews_enabled = !self.cfg.no_previews;
         self.view = View::Player(Box::new(pv));
+        self.autoplay_at = None;
     }
 
     /// Persist playback progress (resume point, play count) for the open video.
@@ -1194,8 +1234,29 @@ impl JizzApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG))
             .show(ui, |ui| {
-                if let View::Player(pv) = &mut self.view {
-                    pv.show(ui, self.cfg.discreet);
+                if matches!(self.view, View::Player(_)) {
+                    let id = match &self.view {
+                        View::Player(pv) => pv.media_id,
+                        _ => None,
+                    };
+                    let ticks: Vec<u64> = id
+                        .map(|id| self.markers_of(id).iter().map(|m| m.pos_ms).collect())
+                        .unwrap_or_default();
+                    let blur = self.cfg.discreet || self.cfg.screen_share_safe;
+                    let (previews, autoplay) = (!self.cfg.no_previews, self.cfg.autoplay_next);
+                    let discreet = self.cfg.discreet;
+                    let mut actions = Vec::new();
+                    if let View::Player(pv) = &mut self.view {
+                        pv.marker_ticks = ticks;
+                        pv.blur_previews = blur;
+                        pv.previews_enabled = previews;
+                        pv.autoplay_on = autoplay;
+                        pv.show(ui, discreet);
+                        actions = std::mem::take(&mut pv.actions);
+                    }
+                    for (name, args) in actions {
+                        self.push(&name, args);
+                    }
                 } else if matches!(self.view, View::Image(_)) {
                     self.image_view(ui);
                 } else if self.stats.total == 0 {
@@ -1710,6 +1771,7 @@ impl eframe::App for JizzApp {
         if due {
             self.flush_progress();
         }
+        self.tick_autoplay(&ctx);
         if let (View::Player(pv), Some(rs)) = (&mut self.view, &self.render_state) {
             pv.pump(rs);
             if pv.player.state() == PlayState::Playing {
@@ -1976,6 +2038,131 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({}))
         },
     );
+    reg.register(
+        "player.speed",
+        "Playback speed: {value} | {delta} | {reset: true} | {cycle: true}",
+        |app, args| {
+            let View::Player(pv) = &app.view else {
+                return Ok(json!({}));
+            };
+            let cur = pv.player.rate();
+            let next = if args.get("reset").and_then(Value::as_bool) == Some(true) {
+                1.0
+            } else if args.get("cycle").and_then(Value::as_bool) == Some(true) {
+                const STEPS: [f64; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+                STEPS
+                    .iter()
+                    .copied()
+                    .find(|s| *s > cur + 0.01)
+                    .unwrap_or(STEPS[0])
+            } else if let Some(v) = args.get("value").and_then(Value::as_f64) {
+                v
+            } else if let Some(d) = args.get("delta").and_then(Value::as_f64) {
+                cur + d
+            } else {
+                cur
+            };
+            pv.player.set_rate(next);
+            Ok(json!({ "rate": pv.player.rate() }))
+        },
+    );
+    reg.register(
+        "player.loop",
+        "A-B loop: {action: cycle|clear} or {a_ms?, b_ms?}",
+        |app, args| {
+            let View::Player(pv) = &app.view else {
+                return Ok(json!({}));
+            };
+            let pos = pv.player.position();
+            let (a, b) = pv.player.loop_points();
+            let ms = |k: &str| {
+                args.get(k)
+                    .and_then(Value::as_u64)
+                    .map(Duration::from_millis)
+            };
+            if args.get("a_ms").is_some() || args.get("b_ms").is_some() {
+                pv.player.set_loop(ms("a_ms"), ms("b_ms"));
+            } else if args.get("action").and_then(Value::as_str) == Some("clear") {
+                pv.player.set_loop(None, None);
+            } else {
+                match (a, b) {
+                    (None, None) => pv.player.set_loop(Some(pos), None),
+                    (Some(a), None) => {
+                        let (lo, hi) = if pos > a { (a, pos) } else { (pos, a) };
+                        pv.player.set_loop(Some(lo), Some(hi));
+                    }
+                    _ => pv.player.set_loop(None, None),
+                }
+            }
+            let (a, b) = pv.player.loop_points();
+            Ok(json!({
+                "a_ms": a.map(|d| d.as_millis() as u64),
+                "b_ms": b.map(|d| d.as_millis() as u64),
+            }))
+        },
+    );
+    reg.register(
+        "player.frame",
+        "Step one frame: {delta: 1|-1}",
+        |app, args| {
+            if let View::Player(pv) = &app.view {
+                let fwd = args.get("delta").and_then(Value::as_i64).unwrap_or(1) >= 0;
+                pv.player.step_frame(fwd, pv.fps);
+            }
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "player.marker.jump",
+        "Jump to the next or previous marker: {dir: next|prev}",
+        |app, args| {
+            let View::Player(pv) = &app.view else {
+                return Ok(json!({}));
+            };
+            let pos = pv.player.position().as_millis() as u64;
+            let next = args.get("dir").and_then(Value::as_str) != Some("prev");
+            let target = if next {
+                pv.marker_ticks
+                    .iter()
+                    .copied()
+                    .filter(|m| *m > pos + 500)
+                    .min()
+            } else {
+                pv.marker_ticks
+                    .iter()
+                    .copied()
+                    .filter(|m| *m + 1500 < pos)
+                    .max()
+            };
+            if let Some(t) = target {
+                pv.player.seek(Duration::from_millis(t), true);
+            }
+            Ok(json!({ "pos_ms": target }))
+        },
+    );
+    reg.register(
+        "player.autoplay.toggle",
+        "Play the next item when a video ends",
+        |app, _| {
+            app.cfg.autoplay_next = !app.cfg.autoplay_next;
+            app.autoplay_at = None;
+            app.save_cfg();
+            Ok(json!({ "autoplay": app.cfg.autoplay_next }))
+        },
+    );
+    reg.register(
+        "player.preview",
+        "Show the scrub preview popup at {pos: seconds}",
+        |app, args| {
+            if let View::Player(pv) = &mut app.view {
+                pv.force_preview = args
+                    .get("pos")
+                    .and_then(Value::as_f64)
+                    .map(Duration::from_secs_f64);
+            }
+            Ok(json!({}))
+        },
+    );
     reg.register("player.mute", "Toggle mute", |app, _| {
         if let View::Player(pv) = &mut app.view {
             let m = !pv.player.muted();
@@ -1995,6 +2182,12 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         "player.back",
         "Leave fullscreen, or go back to the library",
         |app, _| {
+            if app.autoplay_at.take().is_some() {
+                // Esc cancels a pending autoplay before it leaves the video.
+                app.cfg.autoplay_next = false;
+                app.save_cfg();
+                return Ok(json!({ "cancelled": true }));
+            }
             let fullscreen = matches!(&app.view, View::Player(pv) if pv.fullscreen);
             if fullscreen {
                 if let View::Player(pv) = &mut app.view {
@@ -2042,6 +2235,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         "Pause, mute, discreet mode, minimize",
         |app, _| {
             app.cfg.discreet = true;
+            app.autoplay_at = None;
             app.save_cfg();
             // Pause and mute whatever is playing, leave fullscreen, then hide.
             if let View::Player(pv) = &mut app.view {
