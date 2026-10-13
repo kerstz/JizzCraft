@@ -74,6 +74,21 @@ pub struct Media {
     pub added_at: i64,
     pub missing: bool,
     pub favorite: bool,
+    /// 0 = unrated, 1..=5 stars.
+    pub rating: u8,
+    pub resume_ms: Option<u64>,
+    pub play_count: u32,
+    pub last_played_at: Option<i64>,
+    /// Hidden from the library (database flag only; the file is untouched).
+    pub hidden: bool,
+    /// Newly imported and not yet triaged.
+    pub inbox: bool,
+    /// 0 = fine, 1 = decode failure, 2 = checksum changed.
+    pub damaged: u8,
+    pub check_note: Option<String>,
+    pub checked_at: Option<i64>,
+    /// Quick content fingerprint, `fp1:<hex>`.
+    pub fp: Option<String>,
 }
 
 /// Metadata discovered after indexing (by core for images, by `media` for videos).
@@ -94,4 +109,9 @@ pub struct Stats {
     pub missing: u64,
     pub folders: u64,
     pub total_bytes: u64,
+    pub rated: u64,
+    pub hidden: u64,
+    pub inbox: u64,
+    pub damaged: u64,
+    pub played: u64,
 }

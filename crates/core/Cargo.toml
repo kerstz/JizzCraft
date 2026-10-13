@@ -13,6 +13,7 @@ rusqlite.workspace = true
 walkdir.workspace = true
 directories.workspace = true
 image.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
