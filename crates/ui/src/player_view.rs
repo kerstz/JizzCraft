@@ -6,6 +6,10 @@ use crate::widgets;
 use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Rect, Sense, Ui, pos2, vec2};
 use egui_wgpu::{RenderState, wgpu};
 use jizzcraft_media::player::{Frame, PlayState, Player};
+use jizzcraft_media::preview::{PREVIEW_W, PreviewService, bucket_for};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const BAR_H: f32 = 56.0;
@@ -39,6 +43,22 @@ pub struct PlayerView {
     pub last_write: Instant,
     /// Where playback was resumed from, and when (for the HUD chip).
     pub resumed: Option<(Duration, Instant)>,
+    /// Marker positions (ms) drawn as ticks on the timeline.
+    pub marker_ticks: Vec<u64>,
+    /// `(path, size, mtime)` for the preview service.
+    pub source: Option<(PathBuf, u64, i64)>,
+    pub previews_enabled: bool,
+    /// Discreet / share-safe: previews use the blurred variant.
+    pub blur_previews: bool,
+    preview: Option<PreviewService>,
+    preview_tex: HashMap<u32, (egui::TextureHandle, egui::TextureHandle, Instant)>,
+    /// Force a preview popup at this position (screenshots, `player.preview`).
+    pub force_preview: Option<Duration>,
+    /// Seconds until the next item starts by itself (autoplay).
+    pub autoplay_in: Option<u32>,
+    pub autoplay_on: bool,
+    /// Commands queued by the bar's chips, drained by the app each frame.
+    pub actions: Vec<(String, serde_json::Value)>,
 }
 
 impl PlayerView {
@@ -60,6 +80,16 @@ impl PlayerView {
             ended_flushed: false,
             last_write: Instant::now(),
             resumed: None,
+            marker_ticks: Vec::new(),
+            source: None,
+            previews_enabled: true,
+            blur_previews: false,
+            preview: None,
+            preview_tex: HashMap::new(),
+            force_preview: None,
+            autoplay_in: None,
+            autoplay_on: false,
+            actions: Vec::new(),
         }
     }
 
@@ -267,6 +297,15 @@ impl PlayerView {
             if widgets::button_solid(&mut child, "Replay").clicked() {
                 self.player.replay();
             }
+            if let Some(n) = self.autoplay_in {
+                painter.text(
+                    video_area.center() + vec2(0.0, 40.0),
+                    Align2::CENTER_CENTER,
+                    format!("NEXT IN {n} · ESC CANCELS"),
+                    FontId::new(11.0, FontFamily::Monospace),
+                    MUTED,
+                );
+            }
         }
 
         if show_bar {
@@ -278,7 +317,7 @@ impl PlayerView {
         }
     }
 
-    fn bar(&mut self, ui: &mut Ui, rect: Rect, _discreet: bool) {
+    fn bar(&mut self, ui: &mut Ui, rect: Rect, discreet: bool) {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, CornerRadius::ZERO, BG);
         painter.hline(rect.x_range(), rect.top(), theme::hairline());
@@ -324,11 +363,57 @@ impl PlayerView {
             CornerRadius::ZERO,
             MUTED,
         );
+        // A-B loop window.
+        let (la, lb) = self.player.loop_points();
+        if let Some(d) = dur.filter(|d| !d.is_zero()) {
+            let fx = |t: Duration| {
+                track.left() + (t.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0) * track.width()
+            };
+            if la.is_some() || lb.is_some() {
+                let (xa, xb) = (la.map_or(track.left(), fx), lb.map_or(track.right(), fx));
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        pos2(xa, track.top() - 3.0),
+                        pos2(xb.max(xa + 2.0), track.bottom() + 3.0),
+                    ),
+                    CornerRadius::ZERO,
+                    ACCENT.gamma_multiply(0.35),
+                );
+                for p in [la, lb].into_iter().flatten() {
+                    painter.vline(
+                        fx(p),
+                        (track.top() - 5.0)..=(track.bottom() + 5.0),
+                        egui::Stroke::new(1.5, theme::ACCENT_INK),
+                    );
+                }
+            }
+            // Marker ticks.
+            for ms in &self.marker_ticks {
+                let t = Duration::from_millis(*ms);
+                painter.rect_filled(
+                    Rect::from_center_size(pos2(fx(t), track.top() - 5.0), vec2(2.0, 8.0)),
+                    CornerRadius::ZERO,
+                    theme::APP,
+                );
+            }
+        }
         painter.rect_filled(
             Rect::from_center_size(pos2(x, track.center().y), vec2(3.0, 14.0)),
             CornerRadius::ZERO,
             ACCENT,
         );
+        // Scrub preview popup.
+        let hover_at = match (dur, ui.input(|i| i.pointer.hover_pos())) {
+            (Some(d), Some(h)) if resp.hovered() => Some((d, d.mul_f32(frac_at(h.x)), h.x)),
+            _ => None,
+        };
+        let forced = dur.zip(self.force_preview).map(|(d, p)| {
+            let f = (p.as_secs_f32() / d.as_secs_f32().max(0.001)).clamp(0.0, 1.0);
+            (d, p, track.left() + f * track.width())
+        });
+        if let Some((d, t, x)) = hover_at.or(forced) {
+            self.preview_popup(ui, d, t, x, track.top(), discreet);
+        }
         if resp.hovered()
             && let (Some(d), Some(h)) = (dur, ui.input(|i| i.pointer.hover_pos()))
         {
@@ -374,6 +459,53 @@ impl PlayerView {
                 MUTED
             },
         );
+        // Right-hand chips: speed, A-B loop, autoplay.
+        let chips = Rect::from_min_max(
+            pos2(rect.left() + 260.0, rect.bottom() - 36.0),
+            pos2(rect.right() - margin - 96.0, rect.bottom() - 6.0),
+        );
+        if chips.width() > 150.0 {
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(chips)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            );
+            child.spacing_mut().item_spacing.x = 6.0;
+            let rate = self.player.rate();
+            if widgets::toggle_chip(&mut child, "Auto", self.autoplay_on)
+                .on_hover_text("Play the next item when this one ends")
+                .clicked()
+            {
+                self.actions
+                    .push(("player.autoplay.toggle".into(), serde_json::json!({})));
+            }
+            let looping = la.is_some() || lb.is_some();
+            let label = match (la.is_some(), lb.is_some()) {
+                (true, true) => "A-B",
+                (true, false) => "A-",
+                _ => "A-B",
+            };
+            if widgets::toggle_chip(&mut child, label, looping)
+                .on_hover_text("Set loop start, then end, then clear")
+                .clicked()
+            {
+                self.actions.push((
+                    "player.loop".into(),
+                    serde_json::json!({ "action": "cycle" }),
+                ));
+            }
+            if widgets::toggle_chip(
+                &mut child,
+                &format!("{rate:.2}x"),
+                (rate - 1.0).abs() > 0.01,
+            )
+            .on_hover_text("Playback speed (click to cycle, Backspace resets)")
+            .clicked()
+            {
+                self.actions
+                    .push(("player.speed".into(), serde_json::json!({ "cycle": true })));
+            }
+        }
         let vol = if self.player.muted() {
             "MUTED".to_owned()
         } else {
@@ -385,6 +517,121 @@ impl PlayerView {
             vol,
             FontId::new(11.0, FontFamily::Monospace),
             if self.player.muted() { DANGER } else { TEXT },
+        );
+    }
+}
+
+impl PlayerView {
+    /// Small frame popup above the timeline. The decoder runs on its own
+    /// thread; until a frame arrives only the time label shows.
+    fn preview_popup(
+        &mut self,
+        ui: &Ui,
+        dur: Duration,
+        at: Duration,
+        x: f32,
+        track_top: f32,
+        discreet: bool,
+    ) {
+        if !self.previews_enabled {
+            return;
+        }
+        let bucket = bucket_for(at, dur);
+        if self.preview.is_none()
+            && let Some((path, size, mtime)) = &self.source
+        {
+            let ctx = ui.ctx().clone();
+            let wake: Arc<dyn Fn() + Send + Sync> =
+                Arc::new(move || ctx.request_repaint_after(Duration::from_millis(1)));
+            self.preview = Some(PreviewService::new(
+                path.clone(),
+                *size,
+                *mtime,
+                jizzcraft_core::paths::cache_dir(),
+                wake,
+            ));
+        }
+        if let Some(svc) = &self.preview {
+            svc.request(bucket, at);
+            if let Some(f) = svc.take() {
+                let mk = |name: String, img: &jizzcraft_media::service::Rgba| {
+                    ui.ctx().load_texture(
+                        name,
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [img.w as usize, img.h as usize],
+                            &img.data,
+                        ),
+                        egui::TextureOptions::LINEAR,
+                    )
+                };
+                let full = mk(format!("pv-{}", f.bucket), &f.full);
+                let blur = mk(format!("pvb-{}", f.bucket), &f.blur);
+                self.preview_tex
+                    .insert(f.bucket, (full, blur, Instant::now()));
+                // Keep the texture cache small.
+                while self.preview_tex.len() > 32 {
+                    if let Some(k) = self
+                        .preview_tex
+                        .iter()
+                        .min_by_key(|(_, v)| v.2)
+                        .map(|(k, _)| *k)
+                    {
+                        self.preview_tex.remove(&k);
+                    }
+                }
+            }
+        }
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("scrub-preview"),
+        ));
+        let tex = self.preview_tex.get(&bucket).or_else(|| {
+            // Nearest cached bucket while the exact one is decoding.
+            self.preview_tex
+                .iter()
+                .min_by_key(|(k, _)| k.abs_diff(bucket))
+                .map(|(_, v)| v)
+        });
+        let w = PREVIEW_W as f32;
+        let h = w * 9.0 / 16.0;
+        let cx = x.clamp(
+            ui.max_rect().left() + w / 2.0 + 8.0,
+            ui.max_rect().right() - w / 2.0 - 8.0,
+        );
+        let r = Rect::from_min_size(pos2(cx - w / 2.0, track_top - h - 32.0), vec2(w, h));
+        painter.rect_filled(r.expand(1.0), CornerRadius::ZERO, theme::LINE_STRONG);
+        painter.rect_filled(r, CornerRadius::ZERO, theme::SUNKEN);
+        if let Some((full, blur, _)) = tex {
+            let t = if discreet || self.blur_previews {
+                blur
+            } else {
+                full
+            };
+            painter.image(
+                t.id(),
+                r,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        let mut label = fmt_clock(at);
+        if let Some(ms) = self
+            .marker_ticks
+            .iter()
+            .find(|ms| Duration::from_millis(**ms).abs_diff(at) < Duration::from_secs(2))
+            && !discreet
+        {
+            label.push_str(&format!(
+                "  · MARKER {}",
+                fmt_clock(Duration::from_millis(*ms))
+            ));
+        }
+        painter.text(
+            pos2(cx, r.bottom() + 6.0),
+            Align2::CENTER_TOP,
+            label,
+            FontId::new(10.0, FontFamily::Monospace),
+            TEXT,
         );
     }
 }
