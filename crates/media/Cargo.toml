@@ -1,0 +1,16 @@
+[package]
+name = "jizzcraft-media"
+description = "Thumbnails, GStreamer player and codec probing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jizzcraft-core.workspace = true
+image.workspace = true
+rayon.workspace = true
+blake3.workspace = true
+gstreamer.workspace = true
+gstreamer-app.workspace = true
+gstreamer-video.workspace = true

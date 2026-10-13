@@ -1,0 +1,18 @@
+[package]
+name = "jizzcraft-ui"
+description = "egui application: Craft theme, grid, viewer, player, inspector."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jizzcraft-core.workspace = true
+jizzcraft-media.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+image.workspace = true
