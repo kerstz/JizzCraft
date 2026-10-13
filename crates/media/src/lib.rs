@@ -1,6 +1,7 @@
 //! Thumbnails, codec probing and (soon) the GStreamer player.
 //! Everything here is local-file only: no network element is ever created.
 
+pub mod player;
 pub mod probe;
 pub mod service;
 pub mod thumbs;
@@ -36,4 +37,14 @@ pub fn describe_missing_plugin(msg: &gstreamer::Message) -> Option<String> {
     Some(format!(
         "missing GStreamer plugin: {desc} — install gst-plugins-good/bad/ugly and gst-libav"
     ))
+}
+
+/// Append a GStreamer debug string to an error only when debug logging is on
+/// (it can contain file paths).
+pub(crate) fn debug_detail(text: &mut String, detail: &str) {
+    if jizzcraft_core::privacy::debug_enabled() {
+        text.push_str(" (");
+        text.push_str(detail);
+        text.push(')');
+    }
 }
