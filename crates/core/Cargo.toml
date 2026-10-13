@@ -1,0 +1,18 @@
+[package]
+name = "jizzcraft-core"
+description = "JizzCraft engine: model, SQLite library, folder scanning, command registry. No UI, no GStreamer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+walkdir.workspace = true
+directories.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

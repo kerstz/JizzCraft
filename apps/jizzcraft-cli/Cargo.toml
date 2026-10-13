@@ -1,0 +1,16 @@
+[package]
+name = "jizzcraft-cli"
+description = "Command-line front end on the JizzCraft command registry."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "jizzcraft-cli"
+path = "src/main.rs"
+
+[dependencies]
+jizzcraft-core.workspace = true
+serde_json.workspace = true
+clap.workspace = true
