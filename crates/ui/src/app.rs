@@ -19,6 +19,8 @@ use jizzcraft_core::{
 use jizzcraft_media::player::{PlayState, Player};
 use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
+mod sidebar;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -151,6 +153,14 @@ struct Page {
     items: Vec<Media>,
 }
 
+#[derive(Default)]
+struct Slideshow {
+    active: bool,
+    paused: bool,
+    interval: u64,
+    next_at: Option<Instant>,
+}
+
 pub struct JizzApp {
     ctx: egui::Context,
     db: Db,
@@ -177,6 +187,14 @@ pub struct JizzApp {
     marker_cache: Option<(i64, u64, Vec<jizzcraft_core::Marker>)>,
     /// When the next item starts by itself (autoplay), if pending.
     autoplay_at: Option<Instant>,
+    /// Applied built-in/saved view or folder filter (replaces the tab filter).
+    extra: Option<Filter>,
+    view_label: String,
+    seed: u32,
+    slideshow: Slideshow,
+    save_view: Option<String>,
+    sidebar: Option<sidebar::SidebarCache>,
+    tree_expanded: HashSet<PathBuf>,
     stats: Stats,
     total: u64,
     generation: u64,
@@ -272,6 +290,16 @@ impl JizzApp {
             focus_search: false,
             marker_cache: None,
             autoplay_at: None,
+            extra: None,
+            view_label: String::new(),
+            seed: 1,
+            slideshow: Slideshow {
+                interval: 5,
+                ..Default::default()
+            },
+            save_view: None,
+            sidebar: None,
+            tree_expanded: HashSet::new(),
             stats: Stats::default(),
             total: 0,
             generation: 1,
@@ -330,7 +358,19 @@ impl JizzApp {
     // ---- state -----------------------------------------------------------
 
     fn filter(&self) -> Filter {
+        if let Some(extra) = &self.extra {
+            let mut f = extra.clone();
+            if !self.search.trim().is_empty() {
+                f.name = Some(self.search.clone());
+            }
+            f.include_missing = true;
+            f.seed = self.seed;
+            f.limit = None;
+            f.offset = 0;
+            return f;
+        }
         Filter {
+            seed: self.seed,
             kind: match self.tab {
                 Tab::Images => Some(MediaKind::Image),
                 Tab::Videos => Some(MediaKind::Video),
@@ -1033,7 +1073,14 @@ impl JizzApp {
                     } else {
                         "JIZZCRAFT"
                     };
-                    let mut crumb = format!("01 / {brand} / {}", self.tab.label());
+                    let place = if self.extra.is_some() && !self.cfg.discreet {
+                        self.view_label.to_uppercase()
+                    } else if self.extra.is_some() {
+                        "VIEW".to_owned()
+                    } else {
+                        self.tab.label().to_owned()
+                    };
+                    let mut crumb = format!("01 / {brand} / {place}");
                     if let View::Player(pv) = &self.view {
                         let name = if self.cfg.discreet {
                             "…"
@@ -1060,11 +1107,28 @@ impl JizzApp {
                             if widgets::toggle_chip(ui, "Inspector", on).clicked() {
                                 self.push("inspector.toggle", json!({}));
                             }
+                            if self.stats.total > 0 {
+                                if widgets::toggle_chip(ui, "Save view", false)
+                                    .on_hover_text("Ctrl+S")
+                                    .clicked()
+                                {
+                                    self.push("views.save.open", json!({}));
+                                }
+                                if widgets::toggle_chip(ui, "Shuffle", self.sort == SortKey::Random)
+                                    .clicked()
+                                {
+                                    self.push("view.shuffle", json!({}));
+                                }
+                            }
                             let arrow = if self.sort_desc { "↓" } else { "↑" };
                             let label = format!("Sort: {} {arrow}", self.sort.as_str());
                             let mut pick: Option<SortKey> = None;
                             ui.menu_button(theme::hud(&label, MUTED), |ui| {
+                                let hide_hist = self.cfg.discreet || self.cfg.hide_history;
                                 for k in SortKey::ALL {
+                                    if k.is_history() && hide_hist {
+                                        continue;
+                                    }
                                     if ui.selectable_label(self.sort == k, k.as_str()).clicked() {
                                         pick = Some(k);
                                         ui.close();
@@ -1384,6 +1448,21 @@ impl JizzApp {
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, CornerRadius::ZERO, BG);
+        if self.slideshow.active {
+            let text = if self.slideshow.paused {
+                "SLIDESHOW PAUSED · SPACE RESUMES · T STOPS"
+            } else {
+                "SLIDESHOW · SPACE PAUSES · T STOPS"
+            };
+            let galley = painter.layout_job(theme::hud(text, TEXT));
+            let at = rect.left_top() + vec2(16.0, 16.0);
+            painter.rect_filled(
+                Rect::from_min_size(at, galley.size() + vec2(16.0, 10.0)),
+                CornerRadius::ZERO,
+                BG.gamma_multiply(0.85),
+            );
+            painter.galley(at + vec2(8.0, 5.0), galley, TEXT);
+        }
         let View::Image(iv) = &mut self.view else {
             return;
         };
@@ -1772,6 +1851,7 @@ impl eframe::App for JizzApp {
             self.flush_progress();
         }
         self.tick_autoplay(&ctx);
+        self.tick_slideshow(&ctx);
         if let (View::Player(pv), Some(rs)) = (&mut self.view, &self.render_state) {
             pv.pump(rs);
             if pv.player.state() == PlayState::Playing {
@@ -1784,8 +1864,10 @@ impl eframe::App for JizzApp {
             self.top_bar(ui);
             self.breadcrumb(ui);
             self.inspector(ui);
+            self.sidebar(ui);
         }
         self.central(ui);
+        self.save_view_dialog(&ctx);
         self.toasts_ui(&ctx);
         self.docs_window(&ctx);
 
@@ -1935,11 +2017,153 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({ "hidden": app.cfg.hide_history }))
         },
     );
+    reg.register(
+        "view.apply",
+        "Apply a built-in/saved view or a filter: {name} | {spec, label?}",
+        |app, args| {
+            let (spec, label) = if let Some(name) = args.get("name").and_then(Value::as_str) {
+                if let Some(b) = jizzcraft_core::view::builtin(name) {
+                    ((b.spec)(), b.label.to_owned())
+                } else {
+                    let v = app
+                        .db
+                        .view(name)?
+                        .ok_or_else(|| jizzcraft_core::Error::NotFound(format!("view `{name}`")))?;
+                    (Filter::from_json(&v.spec)?, v.name)
+                }
+            } else {
+                let f = Filter::from_json(args.get("spec").unwrap_or(&Value::Null))?;
+                let label = args
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Filtered")
+                    .to_owned();
+                (f, label)
+            };
+            app.tab = Tab::Library;
+            app.sort = spec.sort;
+            app.sort_desc = spec.desc;
+            app.extra = Some(spec);
+            app.view_label = label;
+            app.search.clear();
+            app.selected_index = None;
+            app.refresh();
+            Ok(json!({}))
+        },
+    );
+    reg.register("view.shuffle", "Shuffle the current list", |app, _| {
+        app.seed = app.seed.wrapping_mul(1664525).wrapping_add(1013904223) | 1;
+        app.sort = SortKey::Random;
+        if let Some(x) = &mut app.extra {
+            x.sort = SortKey::Random;
+        }
+        app.refresh();
+        Ok(json!({ "seed": app.seed }))
+    });
+    reg.register("view.random", "Open a random item of the list", |app, _| {
+        let entropy = {
+            use std::hash::{BuildHasher, Hasher};
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
+            );
+            h.finish()
+        };
+        let f = app.filter();
+        if let Some((idx, _)) = app.db.random_index(&f, entropy)? {
+            app.open_index(idx);
+        }
+        Ok(json!({}))
+    });
+    reg.register(
+        "view.slideshow",
+        "Slideshow: {action: start|stop|toggle|pause, interval_s?}",
+        |app, args| {
+            if let Some(n) = args.get("interval_s").and_then(Value::as_u64) {
+                app.slideshow.interval = n.clamp(1, 600);
+            }
+            let act = args
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("toggle");
+            match act {
+                "pause" => app.slideshow.paused = !app.slideshow.paused,
+                "stop" => {
+                    app.slideshow = Slideshow {
+                        interval: app.slideshow.interval,
+                        ..Default::default()
+                    }
+                }
+                "start" | "toggle" => {
+                    if app.slideshow.active && act == "toggle" {
+                        app.slideshow.active = false;
+                        app.slideshow.next_at = None;
+                    } else {
+                        app.slideshow.active = true;
+                        app.slideshow.paused = false;
+                        app.slideshow.next_at = None;
+                        if matches!(app.view, View::Library) {
+                            let start = app.selected_index.unwrap_or(0);
+                            app.open_index(start);
+                        }
+                    }
+                }
+                other => {
+                    return Err(jizzcraft_core::Error::Invalid(format!(
+                        "unknown slideshow action `{other}`"
+                    )));
+                }
+            }
+            Ok(json!({ "active": app.slideshow.active, "paused": app.slideshow.paused }))
+        },
+    );
+    reg.register("sidebar.toggle", "Show or hide the sidebar", |app, _| {
+        app.cfg.sidebar_closed = !app.cfg.sidebar_closed;
+        app.save_cfg();
+        Ok(json!({}))
+    });
+    reg.register(
+        "views.save.open",
+        "Ask for a name and save the current filter",
+        |app, _| {
+            app.save_view = Some(String::new());
+            Ok(json!({}))
+        },
+    );
+    reg.register("views.save", "Save a view: {name, spec}", |app, args| {
+        let name = args
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `name`".into()))?;
+        let f = Filter::from_json(args.get("spec").unwrap_or(&Value::Null))?;
+        let id = app.db.save_view(name, &f)?;
+        app.generation += 1;
+        app.toast(ToastKind::Info, "View saved");
+        Ok(json!({ "id": id }))
+    });
+    reg.register(
+        "views.delete",
+        "Delete a saved view: {name}",
+        |app, args| {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `name`".into()))?;
+            let deleted = app.db.delete_view(name)?;
+            app.generation += 1;
+            Ok(json!({ "deleted": deleted }))
+        },
+    );
     reg.register("view.filter", "Switch tab: {tab}", |app, args| {
         let tab = args.get("tab").and_then(Value::as_str).and_then(Tab::parse);
         match tab {
             Some(t) => {
                 app.tab = t;
+                app.extra = None;
+                app.view_label.clear();
                 app.refresh();
                 Ok(json!({}))
             }
@@ -2236,6 +2460,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         |app, _| {
             app.cfg.discreet = true;
             app.autoplay_at = None;
+            app.slideshow.active = false;
             app.save_cfg();
             // Pause and mute whatever is playing, leave fullscreen, then hide.
             if let View::Player(pv) = &mut app.view {
@@ -2272,6 +2497,10 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 .ok_or_else(|| jizzcraft_core::Error::Invalid("unknown sort key".into()))?;
             app.sort = by;
             app.sort_desc = args.get("desc").and_then(Value::as_bool).unwrap_or(false);
+            if let Some(x) = &mut app.extra {
+                x.sort = by;
+                x.desc = app.sort_desc;
+            }
             app.cfg.sort = Some(by.as_str().to_owned());
             app.cfg.sort_desc = app.sort_desc;
             app.save_cfg();

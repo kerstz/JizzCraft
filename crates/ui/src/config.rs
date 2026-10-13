@@ -11,6 +11,8 @@ pub struct Config {
     pub discreet: bool,
     pub screen_share_safe: bool,
     pub inspector_open: bool,
+    /// Sidebar is shown unless closed (so existing configs get it too).
+    pub sidebar_closed: bool,
     pub volume: Option<f32>,
     /// Keep every key under the left hand (WASD preset).
     pub left_hand: bool,
