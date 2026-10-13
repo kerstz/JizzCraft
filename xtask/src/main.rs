@@ -119,6 +119,9 @@ fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
         "!".into(),
         "videoconvert".into(),
         "!".into(),
+        // 4:2:0 like real-world files; hardware decoders only take this.
+        "video/x-raw,format=I420".into(),
+        "!".into(),
     ];
     let (venc, mux, aenc): (&[&str], &str, &[&str]) = if v.h264 {
         (
