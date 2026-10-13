@@ -60,6 +60,10 @@ struct Shared {
     qos_processed: AtomicU64,
     seeking: AtomicBool,
     has_audio: AtomicBool,
+    /// Playback rate as `f64` bits (1.0 by default).
+    rate_bits: AtomicU64,
+    loop_a: AtomicU64,
+    loop_b: AtomicU64,
     error: Mutex<Option<String>>,
     mailbox: Mutex<Option<gst::Sample>>,
 }
@@ -68,11 +72,23 @@ enum Cmd {
     Play,
     Pause,
     Toggle,
-    Seek { ns: u64, accurate: bool },
-    SeekRel { delta_ns: i64 },
+    Seek {
+        ns: u64,
+        accurate: bool,
+    },
+    SeekRel {
+        delta_ns: i64,
+    },
     Volume(f64),
     Mute(bool),
     Replay,
+    Rate(f64),
+    Step {
+        forward: bool,
+        fps: f32,
+    },
+    /// Loop points live in `Shared`; this only wakes the control loop.
+    Loop,
     Stop,
 }
 
@@ -140,6 +156,9 @@ impl Player {
     pub fn open(path: &Path, volume: f64, wake: Arc<dyn Fn() + Send + Sync>) -> Player {
         let shared = Arc::new(Shared::default());
         shared.duration_ns.store(UNKNOWN, Relaxed);
+        shared.rate_bits.store(1.0f64.to_bits(), Relaxed);
+        shared.loop_a.store(UNKNOWN, Relaxed);
+        shared.loop_b.store(UNKNOWN, Relaxed);
         let (tx, rx) = channel();
         let path = path.to_path_buf();
         let sh = Arc::clone(&shared);
@@ -191,6 +210,49 @@ impl Player {
 
     pub fn replay(&self) {
         self.send(Cmd::Replay);
+    }
+
+    /// Playback speed, clamped to 0.25..=4.0. Audio keeps its pitch
+    /// (`scaletempo`) when that element is installed.
+    pub fn set_rate(&self, rate: f64) {
+        let r = if rate.is_finite() {
+            rate.clamp(0.25, 4.0)
+        } else {
+            1.0
+        };
+        self.shared.rate_bits.store(r.to_bits(), Relaxed);
+        self.send(Cmd::Rate(r));
+    }
+
+    pub fn rate(&self) -> f64 {
+        f64::from_bits(self.shared.rate_bits.load(Relaxed))
+    }
+
+    /// One frame forward (a real GStreamer step event) or back (pause plus an
+    /// accurate seek of one frame period; `fps_hint` ≤ 0 falls back to 25).
+    pub fn step_frame(&self, forward: bool, fps_hint: f32) {
+        self.send(Cmd::Step {
+            forward,
+            fps: fps_hint,
+        });
+    }
+
+    /// A-B loop. `a` alone loops from `a` to the end; `b` alone loops from the
+    /// start to `b`; `None, None` clears the loop.
+    pub fn set_loop(&self, a: Option<Duration>, b: Option<Duration>) {
+        let ns = |d: Option<Duration>| d.map_or(UNKNOWN, |d| d.as_nanos() as u64);
+        let (a, b) = (ns(a), ns(b));
+        self.shared.loop_a.store(a, Relaxed);
+        self.shared.loop_b.store(b, Relaxed);
+        self.send(Cmd::Loop);
+    }
+
+    pub fn loop_points(&self) -> (Option<Duration>, Option<Duration>) {
+        let get = |v: u64| (v != UNKNOWN).then(|| Duration::from_nanos(v));
+        (
+            get(self.shared.loop_a.load(Relaxed)),
+            get(self.shared.loop_b.load(Relaxed)),
+        )
     }
 
     pub fn volume(&self) -> f64 {
@@ -277,6 +339,7 @@ struct Ctl {
     buffering_paused: bool,
     is_live: bool,
     last_target_ns: u64,
+    rate: f64,
 }
 
 impl Ctl {
@@ -298,7 +361,19 @@ impl Ctl {
                 gst::SeekFlags::KEY_UNIT
             };
         let pos = gst::ClockTime::from_nseconds(ns);
-        if self.pipeline.seek_simple(flags, pos).is_ok() {
+        // `seek_simple` would reset the rate to 1.0; always carry ours.
+        if self
+            .pipeline
+            .seek(
+                self.rate,
+                flags,
+                gst::SeekType::Set,
+                pos,
+                gst::SeekType::None,
+                gst::ClockTime::NONE,
+            )
+            .is_ok()
+        {
             self.seek_in_flight = true;
             self.last_target_ns = ns;
             self.shared.seeking.store(true, Relaxed);
@@ -379,9 +454,53 @@ impl Ctl {
                 let _ = self.pipeline.set_state(gst::State::Playing);
                 self.set_state(PlayState::Playing);
             }
+            Cmd::Rate(r) => {
+                self.rate = r;
+                // A flushing seek to the current position applies the new rate.
+                let cur = self.current_ns();
+                self.request_seek(cur, true);
+            }
+            Cmd::Step { forward, fps } => {
+                // Stepping always happens paused.
+                self.want_playing = false;
+                let _ = self.pipeline.set_state(gst::State::Paused);
+                let _ = self.pipeline.state(gst::ClockTime::from_mseconds(250));
+                if self.shared.state.load(Relaxed) != PlayState::Ended as u8 {
+                    self.set_state(PlayState::Paused);
+                }
+                if forward {
+                    let ev =
+                        gst::event::Step::new(gst::format::Buffers::from_u64(1), 1.0, true, false);
+                    let _ = self.pipeline.send_event(ev);
+                } else {
+                    let fps = if fps > 1.0 { fps as f64 } else { 25.0 };
+                    let one = (1_000_000_000.0 / fps) as u64;
+                    let target = self.current_ns().saturating_sub(one);
+                    self.request_seek(target, true);
+                }
+            }
+            Cmd::Loop => {}
             Cmd::Stop => return false,
         }
         true
+    }
+
+    /// A-B loop enforcement, called from the control loop.
+    fn enforce_loop(&mut self) {
+        let a = self.shared.loop_a.load(Relaxed);
+        let b = self.shared.loop_b.load(Relaxed);
+        if b == UNKNOWN || self.seek_in_flight {
+            return;
+        }
+        if self.shared.state.load(Relaxed) != PlayState::Playing as u8 {
+            return;
+        }
+        if let Some(p) = self.pipeline.query_position::<gst::ClockTime>()
+            && p.nseconds() >= b
+        {
+            let to = if a == UNKNOWN || a >= b { 0 } else { a };
+            self.request_seek(to, true);
+        }
     }
 
     fn on_message(&mut self, msg: &gst::Message) {
@@ -404,6 +523,20 @@ impl Ctl {
                 (self.wake)();
             }
             MessageView::DurationChanged(_) => self.update_duration(),
+            MessageView::StepDone(_) => {
+                if let Some(p) = self.pipeline.query_position::<gst::ClockTime>() {
+                    self.shared.position_ns.store(p.nseconds(), Relaxed);
+                }
+                (self.wake)();
+            }
+            MessageView::Eos(_) if self.shared.loop_a.load(Relaxed) != UNKNOWN => {
+                // `a` set and no `b` before the end: loop A -> end.
+                let a = self.shared.loop_a.load(Relaxed);
+                self.want_playing = true;
+                self.request_seek(a, true);
+                let _ = self.pipeline.set_state(gst::State::Playing);
+                self.set_state(PlayState::Playing);
+            }
             MessageView::Eos(_) => {
                 let dur = self.shared.duration_ns.load(Relaxed);
                 if dur != UNKNOWN {
@@ -494,6 +627,10 @@ fn build_pipeline(
     let playbin = mk("playbin", "install gst-plugins-base")?;
     playbin.set_property("uri", &uri);
     playbin.set_property("volume", volume);
+    // Keep pitch at non-1.0 rates. Optional: absent plugin = pitch shifts.
+    if let Ok(st) = gst::ElementFactory::make("scaletempo").build() {
+        playbin.set_property("audio-filter", &st);
+    }
 
     // video-sink bin: videoflip(auto orientation) ! videoconvert ! appsink(RGBA)
     let flip = mk("videoflip", "install gst-plugins-good")?;
@@ -586,6 +723,7 @@ fn control_thread(
         buffering_paused: false,
         is_live: false,
         last_target_ns: 0,
+        rate: 1.0,
     };
 
     match pipeline.set_state(gst::State::Playing) {
@@ -615,6 +753,7 @@ fn control_thread(
         while let Some(msg) = bus.timed_pop(gst::ClockTime::ZERO) {
             ctl.on_message(&msg);
         }
+        ctl.enforce_loop();
         if last_poll.elapsed() >= Duration::from_millis(100) {
             last_poll = Instant::now();
             let st = shared.state.load(Relaxed);

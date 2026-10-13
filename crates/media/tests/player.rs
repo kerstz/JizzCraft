@@ -148,3 +148,133 @@ fn seek_requested_before_preroll_is_applied() {
         p.position() >= Duration::from_millis(2900) && !p.is_seeking()
     });
 }
+
+fn start(p: &Player) {
+    wait_until("first frame", 10, || p.take_frame().is_some());
+    wait_until("duration", 5, || p.duration().is_some());
+}
+
+#[test]
+fn speed_changes_playhead_rate_and_survives_seeks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("r.webm");
+    make_video(&src, 300); // 10 s
+    let p = Player::open(&src, 0.0, wake());
+    start(&p);
+    assert_eq!(p.rate(), 1.0);
+
+    p.set_rate(2.0);
+    wait_until("rate applied", 5, || !p.is_seeking());
+    let t0 = Instant::now();
+    let a = p.position();
+    std::thread::sleep(Duration::from_millis(1000));
+    let advanced = p.position().saturating_sub(a).as_secs_f64();
+    let wall = t0.elapsed().as_secs_f64();
+    let ratio = advanced / wall;
+    assert!((1.5..2.6).contains(&ratio), "playhead ratio {ratio:.2}");
+
+    // A relative seek must not reset the rate to 1.0.
+    p.seek_relative(1);
+    wait_until("seek settled", 5, || !p.is_seeking());
+    let a = p.position();
+    std::thread::sleep(Duration::from_millis(1000));
+    let ratio = p.position().saturating_sub(a).as_secs_f64();
+    assert!(ratio > 1.4, "rate lost after seek: {ratio:.2} s per second");
+    assert_eq!(p.rate(), 2.0);
+
+    p.set_rate(100.0);
+    assert_eq!(p.rate(), 4.0, "clamped");
+    p.set_rate(f64::NAN);
+    assert_eq!(p.rate(), 1.0);
+}
+
+#[test]
+fn frame_step_forward_and_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("f.webm");
+    make_video(&src, 150);
+    let p = Player::open(&src, 0.0, wake());
+    start(&p);
+    p.pause();
+    wait_until("paused", 5, || p.state() == PlayState::Paused);
+    p.seek(Duration::from_millis(1000), true);
+    wait_until("settled", 5, || !p.is_seeking());
+    while p.take_frame().is_some() {}
+    let before = p.position();
+
+    p.step_frame(true, 30.0);
+    wait_until("stepped frame", 5, || p.take_frame().is_some());
+    std::thread::sleep(Duration::from_millis(120));
+    let fwd = p.position();
+    let d = fwd.saturating_sub(before).as_millis() as u64;
+    assert!((20..=80).contains(&d), "forward step moved {d} ms");
+    assert_eq!(p.state(), PlayState::Paused);
+
+    p.step_frame(false, 30.0);
+    // The command is handled on the control thread: wait for the playhead.
+    wait_until("stepped back", 5, || p.position() < fwd);
+    wait_until("settled back", 5, || !p.is_seeking());
+    let back = p.position();
+    let d = fwd.saturating_sub(back).as_millis() as u64;
+    assert!((20..=80).contains(&d), "back step moved {d} ms");
+}
+
+#[test]
+fn ab_loop_keeps_playhead_inside_the_window() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("l.webm");
+    make_video(&src, 300);
+    let p = Player::open(&src, 0.0, wake());
+    start(&p);
+    p.set_loop(
+        Some(Duration::from_millis(500)),
+        Some(Duration::from_millis(1500)),
+    );
+    assert_eq!(
+        p.loop_points(),
+        (
+            Some(Duration::from_millis(500)),
+            Some(Duration::from_millis(1500))
+        )
+    );
+    p.seek(Duration::from_millis(600), true);
+    let end = Instant::now() + Duration::from_secs(4);
+    let mut lo = u128::MAX;
+    let mut hi = 0u128;
+    while Instant::now() < end {
+        let m = p.position().as_millis();
+        lo = lo.min(m);
+        hi = hi.max(m);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(lo >= 400, "left the loop below A: {lo} ms");
+    assert!(hi <= 1900, "left the loop above B: {hi} ms");
+    p.set_loop(None, None);
+    assert_eq!(p.loop_points(), (None, None));
+}
+
+#[test]
+fn a_only_loop_restarts_at_end_of_stream() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("e.webm");
+    make_video(&src, 60); // 2 s
+    let p = Player::open(&src, 0.0, wake());
+    start(&p);
+    p.set_loop(Some(Duration::from_millis(500)), None);
+    p.seek(Duration::from_millis(1500), true);
+    // Without a loop this reaches Ended; with one it must come back below A+.
+    let end = Instant::now() + Duration::from_secs(6);
+    let mut wrapped = false;
+    while Instant::now() < end {
+        if p.state() == PlayState::Ended {
+            panic!("A-only loop must not end");
+        }
+        if p.position() < Duration::from_millis(1300) && p.position() >= Duration::from_millis(400)
+        {
+            wrapped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(wrapped, "playhead never wrapped back to A");
+}
