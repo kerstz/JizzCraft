@@ -99,10 +99,12 @@ pub enum SortKey {
     Rating,
     LastPlayed,
     PlayCount,
+    /// Stable shuffle driven by `Filter::seed`.
+    Random,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 7] = [
+    pub const ALL: [SortKey; 8] = [
         SortKey::Name,
         SortKey::Added,
         SortKey::Size,
@@ -110,6 +112,7 @@ impl SortKey {
         SortKey::Rating,
         SortKey::LastPlayed,
         SortKey::PlayCount,
+        SortKey::Random,
     ];
 
     pub fn parse(s: &str) -> Option<SortKey> {
@@ -121,6 +124,7 @@ impl SortKey {
             "rating" => Some(SortKey::Rating),
             "played" | "last_played" => Some(SortKey::LastPlayed),
             "plays" | "play_count" => Some(SortKey::PlayCount),
+            "random" | "shuffle" => Some(SortKey::Random),
             _ => None,
         }
     }
@@ -134,6 +138,7 @@ impl SortKey {
             SortKey::Rating => "rating",
             SortKey::LastPlayed => "played",
             SortKey::PlayCount => "plays",
+            SortKey::Random => "random",
         }
     }
 
@@ -151,6 +156,61 @@ impl SortKey {
             SortKey::Rating => "rating",
             SortKey::LastPlayed => "last_played_at",
             SortKey::PlayCount => "play_count",
+            SortKey::Random => "id",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HiddenMode {
+    /// Normal library: hidden items are left out.
+    #[default]
+    Exclude,
+    Only,
+    Include,
+}
+
+impl HiddenMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "exclude" => Some(Self::Exclude),
+            "only" => Some(Self::Only),
+            "include" => Some(Self::Include),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exclude => "exclude",
+            Self::Only => "only",
+            Self::Include => "include",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    Landscape,
+    Portrait,
+    Square,
+}
+
+impl Orientation {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "landscape" => Some(Self::Landscape),
+            "portrait" => Some(Self::Portrait),
+            "square" => Some(Self::Square),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Landscape => "landscape",
+            Self::Portrait => "portrait",
+            Self::Square => "square",
         }
     }
 }
@@ -166,6 +226,27 @@ pub struct Filter {
     pub include_missing: bool,
     /// `Some(true)` = has been played, `Some(false)` = never played.
     pub played: Option<bool>,
+    pub hidden: HiddenMode,
+    pub min_rating: Option<u8>,
+    pub unrated: bool,
+    /// Has a saved resume point.
+    pub in_progress: bool,
+    pub min_duration_ms: Option<u64>,
+    pub max_duration_ms: Option<u64>,
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+    pub orientation: Option<Orientation>,
+    pub added_within_days: Option<u32>,
+    pub inbox: bool,
+    pub damaged: bool,
+    /// Only files flagged missing (overrides `include_missing`).
+    pub missing_only: bool,
+    pub has_markers: bool,
+    /// Restrict to a directory (raw path); `recursive` includes sub-directories.
+    pub dir: Option<PathBuf>,
+    pub recursive: bool,
+    /// Seed for `SortKey::Random`.
+    pub seed: u32,
     pub limit: Option<u64>,
     pub offset: u64,
 }
@@ -311,8 +392,74 @@ impl Db {
         if f.favorites {
             conds.push("favorite = 1".into());
         }
-        if !f.include_missing {
+        if f.missing_only {
+            conds.push("missing = 1".into());
+        } else if !f.include_missing {
             conds.push("missing = 0".into());
+        }
+        match f.hidden {
+            HiddenMode::Exclude => conds.push("hidden = 0".into()),
+            HiddenMode::Only => conds.push("hidden = 1".into()),
+            HiddenMode::Include => {}
+        }
+        if let Some(r) = f.min_rating {
+            conds.push("rating >= ?".into());
+            args.push(Value::Integer(r.min(5) as i64));
+        }
+        if f.unrated {
+            conds.push("rating = 0".into());
+        }
+        if f.in_progress {
+            conds.push("resume_ms IS NOT NULL".into());
+        }
+        for (v, sql) in [
+            (f.min_duration_ms, "duration_ms >= ?"),
+            (f.max_duration_ms, "duration_ms <= ?"),
+            (f.min_size, "size >= ?"),
+            (f.max_size, "size <= ?"),
+        ] {
+            if let Some(v) = v {
+                conds.push(sql.into());
+                args.push(Value::Integer(v.min(i64::MAX as u64) as i64));
+            }
+        }
+        match f.orientation {
+            Some(Orientation::Landscape) => conds.push("width > height".into()),
+            Some(Orientation::Portrait) => conds.push("height > width".into()),
+            Some(Orientation::Square) => conds.push("width = height".into()),
+            None => {}
+        }
+        if let Some(days) = f.added_within_days {
+            conds.push("added_at >= ?".into());
+            args.push(Value::Integer(now_secs() - days as i64 * 86_400));
+        }
+        if f.inbox {
+            conds.push("inbox = 1".into());
+        }
+        if f.damaged {
+            conds.push("damaged > 0".into());
+        }
+        if f.has_markers {
+            conds.push("EXISTS (SELECT 1 FROM markers k WHERE k.media_id = media.id)".into());
+        }
+        if let Some(d) = &f.dir {
+            let mut blob = path_to_blob(d);
+            while blob.len() > 1 && blob.last() == Some(&b'/') {
+                blob.pop();
+            }
+            if f.recursive {
+                let mut prefix = blob.clone();
+                if prefix.last() != Some(&b'/') {
+                    prefix.push(b'/');
+                }
+                conds.push("(dir = ? OR substr(dir, 1, ?) = ?)".into());
+                args.push(Value::Blob(blob));
+                args.push(Value::Integer(prefix.len() as i64));
+                args.push(Value::Blob(prefix));
+            } else {
+                conds.push("dir = ?".into());
+                args.push(Value::Blob(blob));
+            }
         }
         match f.played {
             Some(true) => conds.push("last_played_at IS NOT NULL".into()),
@@ -345,10 +492,16 @@ impl Db {
             SortKey::LastPlayed => "last_played_at IS NULL, ",
             _ => "",
         };
-        let mut sql = format!(
-            "SELECT {COLS} FROM media{w} ORDER BY {nulls}{} {dir}, id",
-            f.sort.column()
-        );
+        let order = if f.sort == SortKey::Random {
+            // Stable for a given seed, so paging never repeats or skips rows.
+            // Knuth multiplicative hash of (id + seed) mod 2^32. The seed is masked
+            // to 31 bits so the product stays inside SQLite's 64-bit integers.
+            args.push(Value::Integer((f.seed & 0x7fff_ffff) as i64));
+            "(((id + ?) * 2654435761) % 4294967296)".to_owned()
+        } else {
+            f.sort.column().to_owned()
+        };
+        let mut sql = format!("SELECT {COLS} FROM media{w} ORDER BY {nulls}{order} {dir}, id");
         if let Some(l) = f.limit {
             sql.push_str(" LIMIT ? OFFSET ?");
             args.push(Value::Integer(l as i64));

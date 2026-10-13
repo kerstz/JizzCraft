@@ -3,9 +3,8 @@
 //! language. The registry is generic over its context so the UI can register
 //! its own commands (`player.toggle`, `app.boss_key`…) next to the core ones.
 
-use crate::db::{Db, Filter, SortKey};
+use crate::db::{Db, Filter};
 use crate::error::{Error, Result};
-use crate::model::MediaKind;
 use crate::scan;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -123,6 +122,72 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
         Ok(json!({ "id": id, "favorite": favorite }))
     });
     register_userdata(reg);
+    register_views(reg);
+}
+
+fn register_views<C: HasLibrary>(reg: &mut Registry<C>) {
+    reg.register("media.count", "Count media matching a filter", |c, a| {
+        let f = filter_from_args(&a)?;
+        Ok(json!({ "count": c.db().count(&f)? }))
+    });
+    reg.register(
+        "media.random",
+        "Pick a random item matching a filter",
+        |c, a| {
+            let f = filter_from_args(&a)?;
+            let entropy = {
+                use std::hash::{BuildHasher, Hasher};
+                let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+                h.write_u128(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0),
+                );
+                h.finish()
+            };
+            Ok(match c.db().random_index(&f, entropy)? {
+                Some((index, id)) => json!({ "index": index, "id": id }),
+                None => Value::Null,
+            })
+        },
+    );
+    reg.register("views.list", "Built-in and saved views", |c, _| {
+        let builtin: Vec<Value> = crate::view::BUILTINS
+            .iter()
+            .map(|b| json!({ "key": b.key, "label": b.label, "sensitive": b.sensitive }))
+            .collect();
+        Ok(json!({ "builtin": builtin, "saved": c.db().views()? }))
+    });
+    reg.register(
+        "views.get",
+        "Resolve a view to its filter: {name}",
+        |c, a| {
+            let name = str_arg(&a, "name")?;
+            if let Some(b) = crate::view::builtin(&name) {
+                return Ok(json!({ "spec": (b.spec)().to_json() }));
+            }
+            let v = c
+                .db()
+                .view(&name)?
+                .ok_or_else(|| Error::NotFound(format!("view `{name}`")))?;
+            Ok(json!({ "spec": v.spec }))
+        },
+    );
+    reg.register("views.save", "Save a view: {name, spec}", |c, a| {
+        let name = str_arg(&a, "name")?;
+        let f = Filter::from_json(a.get("spec").unwrap_or(&Value::Null))?;
+        Ok(json!({ "id": c.db().save_view(&name, &f)? }))
+    });
+    reg.register("views.delete", "Delete a saved view: {name}", |c, a| {
+        let name = str_arg(&a, "name")?;
+        Ok(json!({ "deleted": c.db().delete_view(&name)? }))
+    });
+    reg.register("library.tree", "Folder tree with item counts", |c, _| {
+        let roots: Vec<_> = c.db().folders()?.into_iter().map(|(_, p)| p).collect();
+        let counts = c.db().dir_counts()?;
+        Ok(json!({ "roots": crate::view::build_tree(&roots, &counts) }))
+    });
 }
 
 fn register_userdata<C: HasLibrary>(reg: &mut Registry<C>) {
@@ -294,30 +359,5 @@ fn id_arg(a: &Value) -> Result<i64> {
 }
 
 fn filter_from_args(a: &Value) -> Result<Filter> {
-    let kind = match a.get("kind").and_then(Value::as_str) {
-        None => None,
-        Some(s) => {
-            Some(MediaKind::parse(s).ok_or_else(|| Error::Invalid(format!("unknown kind `{s}`")))?)
-        }
-    };
-    let sort = match a.get("sort").and_then(Value::as_str) {
-        None => SortKey::default(),
-        Some(s) => {
-            SortKey::parse(s).ok_or_else(|| Error::Invalid(format!("unknown sort `{s}`")))?
-        }
-    };
-    Ok(Filter {
-        played: None,
-        sort,
-        desc: a.get("desc").and_then(Value::as_bool).unwrap_or(false),
-        kind,
-        favorites: a.get("fav").and_then(Value::as_bool).unwrap_or(false),
-        name: a.get("name").and_then(Value::as_str).map(str::to_owned),
-        include_missing: a
-            .get("include_missing")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        limit: a.get("limit").and_then(Value::as_u64),
-        offset: a.get("offset").and_then(Value::as_u64).unwrap_or(0),
-    })
+    Filter::from_json(a)
 }

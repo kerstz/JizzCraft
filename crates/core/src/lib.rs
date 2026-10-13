@@ -9,9 +9,10 @@ pub mod model;
 pub mod paths;
 pub mod privacy;
 pub mod scan;
+pub mod view;
 
 pub use commands::{HasLibrary, Registry, register_core};
-pub use db::{Db, Filter, SortKey};
+pub use db::{Db, Filter, HiddenMode, Orientation, SortKey};
 pub use error::{Error, Result};
 pub use history::MediaPatch;
 pub use markers::Marker;
