@@ -1617,6 +1617,7 @@ dependencies = [
  "gstreamer-video",
  "image",
  "jizzcraft-core",
+ "serde_json",
  "tempfile",
 ]
 

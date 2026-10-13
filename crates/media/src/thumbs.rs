@@ -72,16 +72,23 @@ pub fn image_thumb(src: &Path) -> Result<RgbImage, String> {
     Ok(img.thumbnail(THUMB_MAX, THUMB_MAX).to_rgb8())
 }
 
-struct NullOnDrop(gst::Pipeline);
+pub(crate) struct NullOnDrop(pub gst::Pipeline);
 impl Drop for NullOnDrop {
     fn drop(&mut self) {
         let _ = self.0.set_state(gst::State::Null);
     }
 }
 
-/// Dedicated thumbnail pipeline: uridecodebin → videoconvert → videoscale → appsink.
-/// Paused, seeked to ~10 %, then the preroll sample is pulled.
-pub fn video_thumb(src: &Path) -> Result<RgbImage, String> {
+/// A paused local-file decode pipeline ending in an RGB appsink no wider or
+/// taller than `max_side`. Guard it with `NullOnDrop`.
+pub(crate) struct Paused {
+    pub pipeline: gst::Pipeline,
+    pub sink: gst_app::AppSink,
+    pub bus: gst::Bus,
+    pub _guard: NullOnDrop,
+}
+
+pub(crate) fn open_paused(src: &Path, max_side: u32) -> Result<Paused, String> {
     crate::init()?;
     let uri = crate::file_uri(src)?;
     let mk = |name: &str| {
@@ -99,8 +106,8 @@ pub fn video_thumb(src: &Path) -> Result<RgbImage, String> {
     let scale = mk("videoscale")?;
     let caps = gst::Caps::builder("video/x-raw")
         .field("format", "RGB")
-        .field("width", gst::IntRange::new(1, THUMB_MAX as i32))
-        .field("height", gst::IntRange::new(1, THUMB_MAX as i32))
+        .field("width", gst::IntRange::new(1, max_side as i32))
+        .field("height", gst::IntRange::new(1, max_side as i32))
         .build();
     let sink = gst_app::AppSink::builder()
         .caps(&caps)
@@ -133,30 +140,55 @@ pub fn video_thumb(src: &Path) -> Result<RgbImage, String> {
     let bus = pipeline.bus().ok_or("pipeline has no bus")?;
     pipeline
         .set_state(gst::State::Paused)
-        .map_err(|_| "cannot pause thumbnail pipeline".to_string())?;
-
+        .map_err(|_| "cannot pause decode pipeline".to_string())?;
     wait_async_done(&bus, 15)?;
+    Ok(Paused {
+        pipeline,
+        sink,
+        bus,
+        _guard: guard,
+    })
+}
 
-    if let Some(dur) = pipeline.query_duration::<gst::ClockTime>() {
+/// Seek a paused pipeline to `ns` and pull the frame there.
+pub(crate) fn frame_at(p: &Paused, ns: u64, timeout_s: u64) -> Result<RgbImage, String> {
+    let target = gst::ClockTime::from_nseconds(ns);
+    p.pipeline
+        .seek_simple(
+            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT | gst::SeekFlags::SNAP_NEAREST,
+            target,
+        )
+        .map_err(|_| "seek failed".to_string())?;
+    wait_async_done(&p.bus, timeout_s)?;
+    let sample = p
+        .sink
+        .try_pull_preroll(gst::ClockTime::from_seconds(timeout_s))
+        .ok_or("no video frame available")?;
+    sample_to_rgb(&sample)
+}
+
+/// Dedicated thumbnail pipeline: uridecodebin → videoconvert → videoscale → appsink.
+/// Paused, seeked to ~10 %, then the preroll sample is pulled.
+pub fn video_thumb(src: &Path) -> Result<RgbImage, String> {
+    let p = open_paused(src, THUMB_MAX)?;
+    if let Some(dur) = p.pipeline.query_duration::<gst::ClockTime>() {
         let target = gst::ClockTime::from_nseconds(dur.nseconds() / 10);
-        if pipeline
+        if p.pipeline
             .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, target)
             .is_ok()
         {
             // Not fatal if it fails: the first frame is still a fine thumbnail.
-            let _ = wait_async_done(&bus, 10);
+            let _ = wait_async_done(&p.bus, 10);
         }
     }
-
-    let sample = sink
+    let sample = p
+        .sink
         .try_pull_preroll(gst::ClockTime::from_seconds(5))
         .ok_or("no video frame available")?;
-    let img = sample_to_rgb(&sample)?;
-    drop(guard);
-    Ok(img)
+    sample_to_rgb(&sample)
 }
 
-fn wait_async_done(bus: &gst::Bus, secs: u64) -> Result<(), String> {
+pub(crate) fn wait_async_done(bus: &gst::Bus, secs: u64) -> Result<(), String> {
     use gst::MessageView;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     let mut missing: Option<String> = None;
@@ -190,7 +222,7 @@ fn wait_async_done(bus: &gst::Bus, secs: u64) -> Result<(), String> {
     }
 }
 
-fn sample_to_rgb(sample: &gst::Sample) -> Result<RgbImage, String> {
+pub(crate) fn sample_to_rgb(sample: &gst::Sample) -> Result<RgbImage, String> {
     let caps = sample.caps().ok_or("sample without caps")?;
     let info = gst_video::VideoInfo::from_caps(caps).map_err(|e| e.to_string())?;
     let buffer = sample.buffer().ok_or("sample without buffer")?;

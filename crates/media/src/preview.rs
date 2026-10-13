@@ -1,0 +1,210 @@
+//! Scrub previews: one small frame per time bucket, decoded on demand on its
+//! own thread with its own pipeline (never the player's), cached on disk under
+//! the XDG cache dir. Idle pipelines are torn down after a while.
+
+use crate::service::Rgba;
+use crate::thumbs;
+use image::RgbImage;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+pub const PREVIEW_W: u32 = 192;
+const SCHEMA: &str = "preview-v1";
+const IDLE_TEARDOWN: Duration = Duration::from_secs(20);
+const MIN_GAP: Duration = Duration::from_millis(120);
+
+/// Bucket index for `pos` in a clip of `dur`: about 300 buckets, at least 1 s each.
+pub fn bucket_for(pos: Duration, dur: Duration) -> u32 {
+    let len = bucket_len(dur);
+    (pos.as_millis() / len.as_millis().max(1)).min(u32::MAX as u128) as u32
+}
+
+pub fn bucket_len(dur: Duration) -> Duration {
+    (dur / 300).max(Duration::from_secs(1))
+}
+
+pub fn preview_key(path: &Path, size: u64, mtime: i64) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut h = blake3::Hasher::new();
+    h.update(SCHEMA.as_bytes());
+    h.update(path.as_os_str().as_bytes());
+    h.update(&size.to_le_bytes());
+    h.update(&mtime.to_le_bytes());
+    h.finalize().to_hex().as_str()[..32].to_owned()
+}
+
+fn preview_file(cache_root: &Path, key: &str, bucket: u32) -> PathBuf {
+    cache_root
+        .join("previews")
+        .join(&key[..2])
+        .join(key)
+        .join(format!("{bucket}.jpg"))
+}
+
+pub struct PreviewFrame {
+    pub bucket: u32,
+    pub full: Rgba,
+    /// Tiny version for discreet / share-safe mode.
+    pub blur: Rgba,
+}
+
+enum Msg {
+    Want { bucket: u32, ns: u64 },
+    Stop,
+}
+
+pub struct PreviewService {
+    tx: Sender<Msg>,
+    out: Arc<Mutex<Option<PreviewFrame>>>,
+    failed: Arc<AtomicBool>,
+}
+
+impl PreviewService {
+    /// Spawns the worker thread; nothing is decoded until `request`.
+    /// `wake` is called from the worker whenever a frame is ready.
+    pub fn new(
+        path: PathBuf,
+        size: u64,
+        mtime: i64,
+        cache_root: PathBuf,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let (tx, rx) = channel();
+        let out = Arc::new(Mutex::new(None));
+        let failed = Arc::new(AtomicBool::new(false));
+        let (o, f) = (Arc::clone(&out), Arc::clone(&failed));
+        std::thread::Builder::new()
+            .name("jizzcraft-preview".into())
+            .spawn(move || worker(path, size, mtime, cache_root, rx, o, f, wake))
+            .expect("spawn preview thread");
+        PreviewService { tx, out, failed }
+    }
+
+    /// Latest request wins; older ones still queued are skipped.
+    pub fn request(&self, bucket: u32, pos: Duration) {
+        let _ = self.tx.send(Msg::Want {
+            bucket,
+            ns: pos.as_nanos() as u64,
+        });
+    }
+
+    pub fn take(&self) -> Option<PreviewFrame> {
+        self.out.lock().unwrap().take()
+    }
+
+    /// The pipeline could not be opened (no previews for this file).
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for PreviewService {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Msg::Stop);
+    }
+}
+
+fn to_rgba(img: &RgbImage) -> Rgba {
+    let (w, h) = img.dimensions();
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for p in img.pixels() {
+        data.extend_from_slice(&[p[0], p[1], p[2], 255]);
+    }
+    Rgba { w, h, data }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn worker(
+    path: PathBuf,
+    size: u64,
+    mtime: i64,
+    root: PathBuf,
+    rx: Receiver<Msg>,
+    out: Arc<Mutex<Option<PreviewFrame>>>,
+    failed: Arc<AtomicBool>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    let key = preview_key(&path, size, mtime);
+    let mut pipe: Option<thumbs::Paused> = None;
+    let mut last_decode = Instant::now() - MIN_GAP;
+    loop {
+        let msg = match rx.recv_timeout(IDLE_TEARDOWN) {
+            Ok(m) => m,
+            Err(RecvTimeoutError::Timeout) => {
+                pipe = None; // idle: release the decoder
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        let (mut bucket, mut ns) = match msg {
+            Msg::Stop => return,
+            Msg::Want { bucket, ns } => (bucket, ns),
+        };
+        // Drain: only the newest request matters.
+        while let Ok(m) = rx.try_recv() {
+            match m {
+                Msg::Stop => return,
+                Msg::Want { bucket: b, ns: n } => {
+                    bucket = b;
+                    ns = n;
+                }
+            }
+        }
+        let file = preview_file(&root, &key, bucket);
+        let img = if let Some(img) = thumbs::load_cached(&file) {
+            img
+        } else {
+            let gap = last_decode.elapsed();
+            if gap < MIN_GAP {
+                std::thread::sleep(MIN_GAP - gap);
+            }
+            if pipe.is_none() {
+                match thumbs::open_paused(&path, PREVIEW_W) {
+                    Ok(p) => pipe = Some(p),
+                    Err(_) => {
+                        failed.store(true, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+            }
+            let Some(p) = pipe.as_ref() else { continue };
+            last_decode = Instant::now();
+            match thumbs::frame_at(p, ns, 3) {
+                Ok(img) => {
+                    let _ = thumbs::save_cached(&file, &img);
+                    img
+                }
+                Err(_) => {
+                    pipe = None; // rebuild next time
+                    continue;
+                }
+            }
+        };
+        *out.lock().unwrap() = Some(PreviewFrame {
+            bucket,
+            blur: to_rgba(&thumbs::blurred(&img)),
+            full: to_rgba(&img),
+        });
+        wake();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buckets_scale_with_duration() {
+        let short = Duration::from_secs(60);
+        assert_eq!(bucket_len(short), Duration::from_secs(1));
+        assert_eq!(bucket_for(Duration::from_millis(5400), short), 5);
+        let long = Duration::from_secs(3600);
+        assert_eq!(bucket_len(long), Duration::from_secs(12));
+        assert_eq!(bucket_for(Duration::from_secs(25), long), 2);
+        // About 300 buckets whatever the length.
+        assert!(bucket_for(long, long) <= 301);
+    }
+}
