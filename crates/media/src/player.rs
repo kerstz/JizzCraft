@@ -332,6 +332,11 @@ struct Ctl {
     pipeline: gst::Element,
     shared: Arc<Shared>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// Set by `guard::watch` when an element that could reach the network
+    /// was refused.
+    refused: Arc<AtomicBool>,
+    /// Torn down after a refusal: only `Stop` is handled from then on.
+    dead: bool,
     seek_in_flight: bool,
     pending_seek: Option<(u64, bool)>,
     /// What the user asked for (as opposed to a temporary buffering pause).
@@ -413,6 +418,9 @@ impl Ctl {
     }
 
     fn apply(&mut self, cmd: Cmd) -> bool {
+        if self.dead {
+            return !matches!(cmd, Cmd::Stop);
+        }
         match cmd {
             Cmd::Play => {
                 self.want_playing = true;
@@ -582,13 +590,22 @@ impl Ctl {
             }
             MessageView::Error(e) => {
                 let known = self.shared.error.lock().unwrap().clone();
-                let text = known.unwrap_or_else(|| {
-                    let mut t = format!("playback error: {}", e.error());
-                    if let Some(d) = e.debug() {
-                        crate::debug_detail(&mut t, &d);
-                    }
-                    t
-                });
+                let text = if self.refused.load(Relaxed) {
+                    crate::guard::REFUSED.to_owned()
+                } else {
+                    known.unwrap_or_else(|| {
+                        let mut t = format!("playback error: {}", e.error());
+                        if let Some(d) = e.debug() {
+                            crate::debug_detail(&mut t, &d);
+                        }
+                        t
+                    })
+                };
+                if text == crate::guard::REFUSED {
+                    // Stop everything now; this is the control thread.
+                    let _ = self.pipeline.set_state(gst::State::Null);
+                    self.dead = true;
+                }
                 self.fail(text);
             }
             MessageView::StateChanged(s)
@@ -615,7 +632,7 @@ fn build_pipeline(
     volume: f64,
     shared: &Arc<Shared>,
     wake: &Arc<dyn Fn() + Send + Sync>,
-) -> Result<gst::Element, String> {
+) -> Result<(gst::Element, Arc<AtomicBool>), String> {
     crate::init()?;
     let uri = crate::file_uri(path)?;
     let mk = |name: &str, hint: &str| {
@@ -625,6 +642,11 @@ fn build_pipeline(
     };
 
     let playbin = mk("playbin", "install gst-plugins-base")?;
+    let refused = crate::guard::watch(
+        playbin
+            .downcast_ref::<gst::Bin>()
+            .ok_or("playbin is not a bin")?,
+    );
     playbin.set_property("uri", &uri);
     playbin.set_property("volume", volume);
     // Keep pitch at non-1.0 rates. Optional: absent plugin = pitch shifts.
@@ -690,7 +712,7 @@ fn build_pipeline(
             }
         });
     }
-    Ok(playbin)
+    Ok((playbin, refused))
 }
 
 fn control_thread(
@@ -701,7 +723,7 @@ fn control_thread(
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
     shared.buffering.store(100, Relaxed);
-    let pipeline = match build_pipeline(&path, volume, &shared, &wake) {
+    let (pipeline, refused) = match build_pipeline(&path, volume, &shared, &wake) {
         Ok(p) => p,
         Err(e) => {
             *shared.error.lock().unwrap() = Some(e);
@@ -717,6 +739,8 @@ fn control_thread(
         pipeline: pipeline.clone(),
         shared: Arc::clone(&shared),
         wake,
+        refused,
+        dead: false,
         seek_in_flight: false,
         pending_seek: None,
         want_playing: true,
