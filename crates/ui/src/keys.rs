@@ -825,6 +825,193 @@ pub const KEYMAP: &[Binding] = &[
     ),
 ];
 
+use Ctx::Triage;
+
+/// Triage reuses the open viewer/player but takes over the decision keys.
+/// Left/right seeking in a video moves to Shift+arrow while triaging.
+pub const TRIAGE_KEYMAP: &[Binding] = &[
+    b(
+        Triage,
+        Both,
+        Key::ArrowRight,
+        false,
+        "→",
+        "triage.keep",
+        "{}",
+        "Keep, leave the inbox",
+    ),
+    b(
+        Triage,
+        Lh,
+        Key::D,
+        true,
+        "D",
+        "triage.keep",
+        "{}",
+        "Keep, leave the inbox",
+    ),
+    b(
+        Triage,
+        Both,
+        Key::ArrowDown,
+        false,
+        "↓",
+        "triage.hide",
+        "{}",
+        "Hide (reversible)",
+    ),
+    b(
+        Triage,
+        Both,
+        Key::X,
+        true,
+        "X",
+        "triage.hide",
+        "{}",
+        "Hide (reversible)",
+    ),
+    b(
+        Triage,
+        Lh,
+        Key::S,
+        true,
+        "S",
+        "triage.hide",
+        "{}",
+        "Hide (reversible)",
+    ),
+    b(
+        Triage,
+        Both,
+        Key::ArrowUp,
+        false,
+        "↑",
+        "triage.fav",
+        "{}",
+        "Favorite and keep",
+    ),
+    b(
+        Triage,
+        Def,
+        Key::S,
+        false,
+        "S",
+        "triage.fav",
+        "{}",
+        "Favorite and keep",
+    ),
+    b(
+        Triage,
+        Lh,
+        Key::W,
+        true,
+        "W",
+        "triage.fav",
+        "{}",
+        "Favorite and keep",
+    ),
+    b(
+        Triage,
+        Both,
+        Key::ArrowLeft,
+        false,
+        "←",
+        "triage.undo",
+        "{}",
+        "Undo the last decision",
+    ),
+    b(
+        Triage,
+        Lh,
+        Key::A,
+        true,
+        "A",
+        "triage.undo",
+        "{}",
+        "Undo the last decision",
+    ),
+    b(
+        Triage,
+        Both,
+        Key::Escape,
+        false,
+        "Esc",
+        "triage.exit",
+        "{}",
+        "Leave triage",
+    ),
+    b(
+        Triage,
+        Lh,
+        Key::Q,
+        true,
+        "Q",
+        "triage.exit",
+        "{}",
+        "Leave triage",
+    ),
+    b(
+        Triage,
+        Both,
+        Key::Space,
+        false,
+        "Space",
+        "player.toggle",
+        "{}",
+        "Play / pause",
+    ),
+    shifted(b(
+        Triage,
+        Both,
+        Key::ArrowLeft,
+        false,
+        "Shift+←",
+        "player.seek",
+        r#"{"delta":-5}"#,
+        "Back 5 s",
+    )),
+    shifted(b(
+        Triage,
+        Both,
+        Key::ArrowRight,
+        false,
+        "Shift+→",
+        "player.seek",
+        r#"{"delta":5}"#,
+        "Forward 5 s",
+    )),
+    b(
+        Triage,
+        Both,
+        Key::M,
+        false,
+        "M",
+        "player.mute",
+        "{}",
+        "Mute",
+    ),
+    b(
+        Triage,
+        Def,
+        Key::F,
+        false,
+        "F",
+        "player.fullscreen",
+        "{}",
+        "Fullscreen",
+    ),
+    b(
+        Triage,
+        Lh,
+        Key::G,
+        true,
+        "G",
+        "player.fullscreen",
+        "{}",
+        "Fullscreen",
+    ),
+];
+
 /// Does `ev` trigger `bind`?
 pub fn hit(ev: &Event, bind: &Binding) -> bool {
     let Event::Key {
@@ -867,8 +1054,15 @@ fn mods_match(m: &Modifiers, bind: &Binding) -> bool {
 
 /// Bindings active in `ctx` for the chosen preset.
 pub fn active(ctx: Ctx, left_hand: bool) -> impl Iterator<Item = &'static Binding> {
-    KEYMAP
+    // Triage rows come first so they win over anything global.
+    let triage: &'static [Binding] = if ctx == Ctx::Triage {
+        TRIAGE_KEYMAP
+    } else {
+        &[]
+    };
+    triage
         .iter()
+        .chain(KEYMAP.iter())
         .filter(move |x| (x.ctx == ctx || x.ctx == Ctx::Global) && x.preset.active(left_hand))
 }
 

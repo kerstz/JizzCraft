@@ -153,6 +153,15 @@ struct Page {
     items: Vec<Media>,
 }
 
+/// Keyboard triage of the inbox. Nothing here deletes anything: hiding is a
+/// reversible database flag.
+struct Triage {
+    /// `(media id, list index, favorite, hidden, inbox)` before each action.
+    undo: Vec<(i64, u64, bool, bool, bool)>,
+    start_total: u64,
+    done: u32,
+}
+
 #[derive(Default)]
 struct Slideshow {
     active: bool,
@@ -192,6 +201,7 @@ pub struct JizzApp {
     view_label: String,
     seed: u32,
     slideshow: Slideshow,
+    triage: Option<Triage>,
     save_view: Option<String>,
     sidebar: Option<sidebar::SidebarCache>,
     tree_expanded: HashSet<PathBuf>,
@@ -297,6 +307,7 @@ impl JizzApp {
                 interval: 5,
                 ..Default::default()
             },
+            triage: None,
             save_view: None,
             sidebar: None,
             tree_expanded: HashSet::new(),
@@ -417,6 +428,82 @@ impl JizzApp {
     fn selected_media(&self) -> Option<Media> {
         let id = self.selected?;
         self.db.get(id).ok().flatten()
+    }
+
+    /// Slim status strip shown while triaging.
+    fn triage_strip(&mut self, ctx: &egui::Context) {
+        let Some(t) = &self.triage else { return };
+        if matches!(self.view, View::Library) {
+            return;
+        }
+        let left = self.cfg.left_hand;
+        let keys = if left {
+            "D KEEP · S HIDE · W FAVORITE · A UNDO · Q EXIT"
+        } else {
+            "→ KEEP · ↓ HIDE · ↑ FAVORITE · ← UNDO · ESC EXIT"
+        };
+        let text = format!(
+            "TRIAGE · {} OF {} · {keys}",
+            (t.done as u64 + 1).min(t.start_total.max(1)),
+            t.start_total
+        );
+        egui::Area::new(egui::Id::new("triage-strip"))
+            .anchor(Align2::CENTER_TOP, vec2(0.0, 104.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(BG.gamma_multiply(0.9))
+                    .stroke(Stroke::new(1.0, LINE_STRONG))
+                    .inner_margin(egui::Margin::symmetric(12, 6))
+                    .show(ui, |ui| {
+                        ui.label(theme::hud(&text, TEXT));
+                    });
+            });
+    }
+
+    fn current_index(&self) -> Option<u64> {
+        match &self.view {
+            View::Image(iv) => Some(iv.index),
+            View::Player(pv) => pv.index,
+            View::Library => None,
+        }
+    }
+
+    /// Apply one triage decision to the open item and move on.
+    fn triage_act(&mut self, favorite: Option<bool>, hidden: Option<bool>) {
+        let (Some(id), Some(idx)) = (self.selected, self.current_index()) else {
+            return;
+        };
+        let Some(m) = self.db.get(id).ok().flatten() else {
+            return;
+        };
+        let patch = jizzcraft_core::MediaPatch {
+            favorite,
+            hidden,
+            inbox: Some(false),
+            ..Default::default()
+        };
+        if self.db.patch(id, &patch).is_err() {
+            return;
+        }
+        if let Some(t) = &mut self.triage {
+            t.undo.push((id, idx, m.favorite, m.hidden, m.inbox));
+            t.done += 1;
+        }
+        self.refresh();
+        self.triage_show(idx);
+    }
+
+    /// Open the item now at `idx`, or finish when the inbox is empty.
+    fn triage_show(&mut self, idx: u64) {
+        if self.total == 0 {
+            let done = self.triage.as_ref().map_or(0, |t| t.done);
+            self.triage = None;
+            self.close_view();
+            self.toast(ToastKind::Info, format!("Inbox zero · {done} triaged"));
+            return;
+        }
+        self.open_index(idx.min(self.total - 1));
     }
 
     /// Autoplay-next: when a video ends, count down three seconds, then step.
@@ -824,6 +911,7 @@ impl JizzApp {
         let typing = ctx.egui_wants_keyboard_input();
         let kctx = match &self.view {
             View::Library => keys::Ctx::Library,
+            _ if self.triage.is_some() => keys::Ctx::Triage,
             View::Image(_) => keys::Ctx::Viewer,
             View::Player(_) => keys::Ctx::Player,
         };
@@ -1868,6 +1956,7 @@ impl eframe::App for JizzApp {
         }
         self.central(ui);
         self.save_view_dialog(&ctx);
+        self.triage_strip(&ctx);
         self.toasts_ui(&ctx);
         self.docs_window(&ctx);
 
@@ -2120,6 +2209,84 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({ "active": app.slideshow.active, "paused": app.slideshow.paused }))
         },
     );
+    reg.register(
+        "triage.start",
+        "Review the inbox one item at a time: nothing is ever deleted",
+        |app, _| {
+            let spec = jizzcraft_core::view::builtin("inbox")
+                .map(|b| (b.spec)())
+                .unwrap_or_default();
+            app.tab = Tab::Library;
+            app.sort = spec.sort;
+            app.sort_desc = spec.desc;
+            app.extra = Some(spec);
+            app.view_label = "Inbox".into();
+            app.search.clear();
+            app.refresh();
+            if app.total == 0 {
+                app.toast(ToastKind::Info, "Inbox is empty");
+                return Ok(json!({ "started": false }));
+            }
+            app.triage = Some(Triage {
+                undo: Vec::new(),
+                start_total: app.total,
+                done: 0,
+            });
+            app.open_index(0);
+            Ok(json!({ "started": true, "items": app.total }))
+        },
+    );
+    reg.register(
+        "triage.keep",
+        "Keep the item and leave the inbox",
+        |app, _| {
+            app.triage_act(None, None);
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "triage.hide",
+        "Hide the item (reversible, database only)",
+        |app, _| {
+            app.triage_act(None, Some(true));
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "triage.fav",
+        "Favorite the item and leave the inbox",
+        |app, _| {
+            app.triage_act(Some(true), None);
+            Ok(json!({}))
+        },
+    );
+    reg.register("triage.undo", "Undo the last triage decision", |app, _| {
+        let Some(t) = &mut app.triage else {
+            return Ok(json!({}));
+        };
+        let Some((id, idx, fav, hidden, inbox)) = t.undo.pop() else {
+            return Ok(json!({}));
+        };
+        t.done = t.done.saturating_sub(1);
+        let patch = jizzcraft_core::MediaPatch {
+            favorite: Some(fav),
+            hidden: Some(hidden),
+            inbox: Some(inbox),
+            ..Default::default()
+        };
+        app.db.patch(id, &patch)?;
+        app.refresh();
+        app.triage_show(idx);
+        Ok(json!({}))
+    });
+    reg.register("triage.exit", "Leave triage", |app, _| {
+        app.triage = None;
+        app.close_view();
+        app.extra = None;
+        app.view_label.clear();
+        app.refresh();
+        Ok(json!({}))
+    });
     reg.register("sidebar.toggle", "Show or hide the sidebar", |app, _| {
         app.cfg.sidebar_closed = !app.cfg.sidebar_closed;
         app.save_cfg();
