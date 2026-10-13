@@ -1,37 +1,8 @@
+mod common;
+
 use jizzcraft_media::preview::{PREVIEW_W, PreviewService, bucket_for};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-fn make_video(path: &std::path::Path, frames: u32) {
-    let st = Command::new("gst-launch-1.0")
-        .args([
-            "-q",
-            "videotestsrc",
-            &format!("num-buffers={frames}"),
-            "pattern=ball",
-            "!",
-        ])
-        .args([
-            "video/x-raw,width=640,height=360,framerate=30/1",
-            "!",
-            "videoconvert",
-            "!",
-        ])
-        .args([
-            "vp8enc",
-            "deadline=1",
-            "keyframe-max-dist=15",
-            "!",
-            "webmmux",
-            "!",
-            "filesink",
-        ])
-        .arg(format!("location={}", path.display()))
-        .status()
-        .unwrap();
-    assert!(st.success());
-}
 
 fn wait_for<T>(secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
     let end = Instant::now() + Duration::from_secs(secs);
@@ -46,10 +17,13 @@ fn wait_for<T>(secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
 
 #[test]
 fn preview_frame_is_small_cached_and_drop_is_quick() {
+    if !common::clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let src = tmp.path().join("p.webm");
-    make_video(&src, 150);
+    common::make_video(&src, 150, 640, 360);
     let md = std::fs::metadata(&src).unwrap();
     let mk = || {
         PreviewService::new(

@@ -1,33 +1,6 @@
-use jizzcraft_media::{probe, thumbs};
-use std::process::Command;
+mod common;
 
-fn make_video(path: &std::path::Path) {
-    // Fixed pipeline; only the temp path is interpolated.
-    let st = Command::new("gst-launch-1.0")
-        .args([
-            "-q",
-            "videotestsrc",
-            "num-buffers=60",
-            "pattern=ball",
-            "!",
-            "video/x-raw,width=640,height=360,framerate=30/1",
-        ])
-        .args([
-            "!",
-            "videoconvert",
-            "!",
-            "vp8enc",
-            "deadline=1",
-            "!",
-            "webmmux",
-            "!",
-            "filesink",
-        ])
-        .arg(format!("location={}", path.display()))
-        .status()
-        .expect("gst-launch-1.0");
-    assert!(st.success());
-}
+use jizzcraft_media::{probe, thumbs};
 
 #[test]
 fn image_thumbnail_is_bounded_and_cached() {
@@ -59,9 +32,12 @@ fn image_thumbnail_is_bounded_and_cached() {
 
 #[test]
 fn video_thumbnail_and_probe() {
+    if !common::clips_ready() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("v.webm");
-    make_video(&src);
+    common::make_video(&src, 60, 640, 360);
     let t = thumbs::video_thumb(&src).expect("video thumb");
     assert!(t.width() <= 320 && t.height() <= 320);
     assert_eq!(

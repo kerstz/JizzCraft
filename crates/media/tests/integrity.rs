@@ -1,43 +1,17 @@
+mod common;
+
 use jizzcraft_core::MediaKind;
 use jizzcraft_media::integrity::{CacheKind, CheckMode, check_media, clear_cache};
-use std::process::Command;
 use std::sync::atomic::AtomicBool;
-
-fn make_video(path: &std::path::Path, frames: u32) {
-    let st = Command::new("gst-launch-1.0")
-        .args([
-            "-q",
-            "videotestsrc",
-            &format!("num-buffers={frames}"),
-            "pattern=ball",
-            "!",
-        ])
-        .args([
-            "video/x-raw,width=320,height=180,framerate=30/1",
-            "!",
-            "videoconvert",
-            "!",
-        ])
-        .args([
-            "vp8enc",
-            "deadline=1",
-            "keyframe-max-dist=15",
-            "!",
-            "webmmux",
-            "!",
-            "filesink",
-        ])
-        .arg(format!("location={}", path.display()))
-        .status()
-        .unwrap();
-    assert!(st.success());
-}
 
 #[test]
 fn good_video_passes_both_modes() {
+    if !common::clips_ready() || !common::ready(&["fakesink"]) {
+        return;
+    }
     let t = tempfile::tempdir().unwrap();
     let p = t.path().join("ok.webm");
-    make_video(&p, 60);
+    common::make_video(&p, 60, 320, 180);
     let c = AtomicBool::new(false);
     assert_eq!(
         check_media(&p, MediaKind::Video, CheckMode::Quick, &c),
