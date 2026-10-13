@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod fingerprint;
 pub mod history;
 pub mod markers;
 pub mod model;

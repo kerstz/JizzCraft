@@ -13,6 +13,8 @@ use walkdir::WalkDir;
 pub struct ScanReport {
     pub added: u64,
     pub updated: u64,
+    /// Files recognised by fingerprint as a moved or renamed known item.
+    pub relinked: u64,
     pub unchanged: u64,
     /// Files that disappeared since the last scan (kept in the library, flagged).
     pub marked_missing: u64,
@@ -26,6 +28,7 @@ impl ScanReport {
     fn merge(&mut self, o: &ScanReport) {
         self.added += o.added;
         self.updated += o.updated;
+        self.relinked += o.relinked;
         self.unchanged += o.unchanged;
         self.marked_missing += o.marked_missing;
         self.skipped_symlinks += o.skipped_symlinks;
@@ -99,6 +102,12 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
         )?;
         let mut touch =
             tx.prepare("UPDATE media SET missing = 0, scan_gen = ?2 WHERE path = ?1")?;
+        let mut cands = tx.prepare(crate::fingerprint::candidate_sql())?;
+        let mut relink = tx.prepare(
+            "UPDATE media SET folder_id = ?2, path = ?3, name = ?4, name_lc = ?5, dir = ?6,
+                              mtime = ?7, missing = 0, scan_gen = ?8
+             WHERE id = ?1",
+        )?;
 
         let walker = WalkDir::new(root)
             .follow_links(false)
@@ -160,6 +169,24 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                 }
                 None => {
                     let name = entry.file_name().to_string_lossy().into_owned();
+                    // A new path whose size matches a fingerprinted item that has
+                    // vanished may simply be that item, moved or renamed.
+                    if let Some(old_id) =
+                        find_moved(&mut cands, entry.path(), &name, size, kind.as_i64())?
+                    {
+                        relink.execute(params![
+                            old_id,
+                            folder_id,
+                            blob,
+                            name,
+                            name.to_lowercase(),
+                            parent_blob(entry.path()),
+                            mtime,
+                            gen_
+                        ])?;
+                        rep.relinked += 1;
+                        continue;
+                    }
                     let (w, h) = probe_dims(entry.path(), kind);
                     insert.execute(params![
                         folder_id,
@@ -196,6 +223,29 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
     )? as u64;
     tx.commit()?;
     Ok(rep)
+}
+
+/// Match a new file against fingerprinted rows whose files are gone.
+fn find_moved(
+    cands: &mut rusqlite::Statement<'_>,
+    new_path: &Path,
+    new_name: &str,
+    size: i64,
+    kind: i64,
+) -> Result<Option<i64>> {
+    let rows: Vec<_> = cands
+        .query_map(params![size, kind], crate::fingerprint::candidate_row)?
+        .collect::<std::result::Result<_, _>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    Ok(crate::fingerprint::pick_moved(
+        rows,
+        new_path,
+        new_name,
+        size as u64,
+        None,
+    ))
 }
 
 /// Cheap header read; videos are probed later by the `media` crate.

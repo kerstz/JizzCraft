@@ -123,6 +123,39 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     });
     register_userdata(reg);
     register_views(reg);
+    reg.register(
+        "library.fingerprint",
+        "Fingerprint files for move detection: {all?, limit?}",
+        |c, a| {
+            let all = a.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let limit = a.get("limit").and_then(Value::as_u64);
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let rep = crate::fingerprint::fingerprint_pending(
+                c.db(),
+                !all,
+                limit,
+                &cancel,
+                &mut |_, _| {},
+            )?;
+            Ok(serde_json::to_value(rep).expect("report"))
+        },
+    );
+    reg.register(
+        "media.relink",
+        "Merge a vanished entry into its new location: {from, to}",
+        |c, a| {
+            let from = a
+                .get("from")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| Error::Invalid("missing integer argument `from`".into()))?;
+            let to = a
+                .get("to")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| Error::Invalid("missing integer argument `to`".into()))?;
+            c.db().merge_into(from, to)?;
+            Ok(json!({ "id": to }))
+        },
+    );
 }
 
 fn register_views<C: HasLibrary>(reg: &mut Registry<C>) {
