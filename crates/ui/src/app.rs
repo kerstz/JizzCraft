@@ -174,6 +174,7 @@ pub struct JizzApp {
     scroll_to: Option<u64>,
     grid_scroll: (f32, f32),
     focus_search: bool,
+    marker_cache: Option<(i64, u64, Vec<jizzcraft_core::Marker>)>,
     stats: Stats,
     total: u64,
     generation: u64,
@@ -267,6 +268,7 @@ impl JizzApp {
             scroll_to: None,
             grid_scroll: (0.0, 0.0),
             focus_search: false,
+            marker_cache: None,
             stats: Stats::default(),
             total: 0,
             generation: 1,
@@ -307,7 +309,7 @@ impl JizzApp {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            app.open_player(None, name, &file);
+            app.open_player(None, name, &file, None);
             app.bench = Some(BenchState::new(file, secs));
         } else if let Some(dir) = app.opts.import.clone() {
             app.start_scan(Some(dir));
@@ -372,6 +374,28 @@ impl JizzApp {
     fn selected_media(&self) -> Option<Media> {
         let id = self.selected?;
         self.db.get(id).ok().flatten()
+    }
+
+    /// Markers of one item, cached per library generation.
+    fn markers_of(&mut self, id: i64) -> Vec<jizzcraft_core::Marker> {
+        if let Some((cid, gen_, v)) = &self.marker_cache
+            && *cid == id
+            && *gen_ == self.generation
+        {
+            return v.clone();
+        }
+        let v = self.db.markers(id).unwrap_or_default();
+        self.marker_cache = Some((id, self.generation, v.clone()));
+        v
+    }
+
+    /// The item a user-data command applies to: explicit id, else the open
+    /// video, else the selection.
+    fn target_id(&self, args: &Value) -> Option<i64> {
+        args.get("id").and_then(Value::as_i64).or(match &self.view {
+            View::Player(pv) => pv.media_id.or(self.selected),
+            _ => self.selected,
+        })
     }
 
     /// Select the item at `idx` and scroll it into view.
@@ -470,12 +494,18 @@ impl JizzApp {
                     });
                 }
                 let name = m.name.clone();
-                self.open_player(Some(index), name, &m.path);
+                self.open_player(Some(index), name, &m.path, Some(&m));
             }
         }
     }
 
-    fn open_player(&mut self, index: Option<u64>, name: String, path: &std::path::Path) {
+    fn open_player(
+        &mut self,
+        index: Option<u64>,
+        name: String,
+        path: &std::path::Path,
+        media: Option<&Media>,
+    ) {
         self.close_view();
         let ctx = self.ctx.clone();
         let vol = f64::from(self.cfg.volume.unwrap_or(0.8));
@@ -483,12 +513,58 @@ impl JizzApp {
         // a 1 ms delay gives exactly one pass per decoded frame.
         let wake = Arc::new(move || ctx.request_repaint_after(Duration::from_millis(1)));
         let player = Player::open(path, vol, wake);
-        self.view = View::Player(Box::new(PlayerView::new(index, name, player)));
+        let mut pv = PlayerView::new(index, name, player);
+        if let Some(m) = media {
+            pv.media_id = Some(m.id);
+            pv.duration_hint = m.duration_ms;
+            // Offer to continue where it stopped, unless resume is switched off.
+            if let Some(ms) = m.resume_ms
+                && ms >= 5_000
+                && self.db.resume_enabled()
+            {
+                let at = Duration::from_millis(ms);
+                pv.player.seek(at, true);
+                pv.resumed = Some((at, Instant::now()));
+            }
+        }
+        self.view = View::Player(Box::new(pv));
+    }
+
+    /// Persist playback progress (resume point, play count) for the open video.
+    fn flush_progress(&mut self) {
+        let View::Player(pv) = &mut self.view else {
+            return;
+        };
+        let Some(id) = pv.media_id else { return };
+        let state = pv.player.state();
+        if matches!(state, PlayState::Loading | PlayState::Error) {
+            return;
+        }
+        let dur = pv
+            .player
+            .duration()
+            .map(|d| d.as_millis() as u64)
+            .or(pv.duration_hint);
+        let mut pos = pv.player.position().as_millis() as u64;
+        if state == PlayState::Ended {
+            pos = dur.unwrap_or(pos);
+        }
+        // A play counts once 10 s (or 20 % of a short clip) has been watched.
+        let threshold = dur.map_or(10_000, |d| (d / 5).min(10_000));
+        let count = !pv.counted && pos >= threshold;
+        if let Ok(p) = self.db.record_progress(id, pos, dur, count)
+            && p.counted
+        {
+            pv.counted = true;
+        }
+        pv.last_write = Instant::now();
+        self.generation += 1;
     }
 
     /// Leave the current view, freeing its GPU resources. Dropping a `Player`
     /// only sends a message: pipeline teardown happens on its own thread.
     fn close_view(&mut self) {
+        self.flush_progress();
         if let View::Player(pv) = &mut self.view {
             pv.release(self.render_state.as_ref());
             if pv.fullscreen {
@@ -1021,15 +1097,96 @@ impl JizzApp {
                 widgets::kv(ui, "Codec", m.codec.as_deref().unwrap_or("—"));
                 widgets::kv(ui, "Added", &fmt_date(m.added_at));
                 widgets::kv(ui, "Favorite", if m.favorite { "yes" } else { "no" });
+                let show_history = !discreet && !self.cfg.hide_history;
+                if show_history {
+                    widgets::kv(ui, "Plays", &m.play_count.to_string());
+                    widgets::kv(
+                        ui,
+                        "Last played",
+                        &m.last_played_at.map_or("—".into(), fmt_date),
+                    );
+                    if let Some(ms) = m.resume_ms {
+                        widgets::kv(ui, "Resume at", &fmt_duration(ms));
+                    }
+                }
+                if m.damaged > 0 {
+                    ui.add_space(S);
+                    let note = m.check_note.as_deref().unwrap_or("damaged");
+                    ui.label(theme::spaced(
+                        &format!("Damaged · {note}"),
+                        10.0,
+                        1.2,
+                        DANGER,
+                    ));
+                } else if let Some(at) = m.checked_at {
+                    widgets::kv(ui, "Checked", &fmt_date(at));
+                }
                 if m.missing {
                     ui.add_space(S);
                     ui.label(theme::spaced("File missing on disk", 10.0, 1.2, DANGER));
                 }
-                ui.add_space(S * 2.0);
-                let label = if m.favorite { "Unfavorite" } else { "Favorite" };
-                if widgets::button_outline(ui, label).clicked() {
-                    self.push("media.favorite.toggle", json!({ "id": m.id }));
+                ui.add_space(S);
+                ui.label(theme::hud("Rating", theme::FAINT));
+                if let Some(r) = widgets::rating_stars(ui, m.rating, 16.0) {
+                    self.push("media.rate", json!({ "id": m.id, "rating": r }));
                 }
+                if m.kind == MediaKind::Video {
+                    ui.add_space(S);
+                    widgets::eyebrow(ui, "", "Markers", "");
+                    let marks = self.markers_of(m.id);
+                    if marks.is_empty() {
+                        ui.label(
+                            egui::RichText::new("None yet")
+                                .size(11.0)
+                                .color(theme::FAINT),
+                        );
+                    }
+                    for mk in marks.iter().take(20) {
+                        ui.horizontal(|ui| {
+                            let label = if discreet || mk.label.is_empty() {
+                                "—".to_owned()
+                            } else {
+                                mk.label.clone()
+                            };
+                            let r = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{}  {}",
+                                        fmt_duration(mk.pos_ms),
+                                        label
+                                    ))
+                                    .size(11.0)
+                                    .color(TEXT),
+                                )
+                                .sense(Sense::click()),
+                            );
+                            if r.clicked() {
+                                self.push(
+                                    "player.seek",
+                                    json!({ "pos": mk.pos_ms as f64 / 1000.0 }),
+                                );
+                            }
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("Remove marker")
+                                .clicked()
+                            {
+                                self.push("markers.remove", json!({ "marker_id": mk.id }));
+                            }
+                        });
+                    }
+                }
+                ui.add_space(S * 2.0);
+                ui.horizontal(|ui| {
+                    let label = if m.favorite { "Unfavorite" } else { "Favorite" };
+                    if widgets::button_outline(ui, label).clicked() {
+                        self.push("media.favorite.toggle", json!({ "id": m.id }));
+                    }
+                    let hide = if m.hidden { "Unhide" } else { "Hide" };
+                    if widgets::button_outline(ui, hide).clicked() {
+                        self.push("media.hide", json!({ "id": m.id }));
+                    }
+                });
             });
     }
 
@@ -1538,6 +1695,21 @@ impl eframe::App for JizzApp {
         }
 
         let t0 = Instant::now();
+        let due = match &mut self.view {
+            View::Player(pv) if pv.media_id.is_some() => {
+                let ended = pv.player.state() == PlayState::Ended && !pv.ended_flushed;
+                if ended {
+                    pv.ended_flushed = true;
+                }
+                ended
+                    || (pv.player.state() == PlayState::Playing
+                        && pv.last_write.elapsed() >= Duration::from_secs(5))
+            }
+            _ => false,
+        };
+        if due {
+            self.flush_progress();
+        }
         if let (View::Player(pv), Some(rs)) = (&mut self.view, &self.render_state) {
             pv.pump(rs);
             if pv.player.state() == PlayState::Playing {
@@ -1598,6 +1770,107 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             let fav = app.db.toggle_favorite(id)?;
             app.refresh();
             Ok(json!({ "id": id, "favorite": fav }))
+        },
+    );
+    reg.register(
+        "media.rate",
+        "Set star rating: {rating: 0..5, id?}",
+        |app, args| {
+            let id = app
+                .target_id(&args)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("nothing selected".into()))?;
+            let r = args
+                .get("rating")
+                .and_then(Value::as_u64)
+                .filter(|r| *r <= 5)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("`rating` must be 0..=5".into()))?
+                as u8;
+            app.db.set_rating(id, r)?;
+            app.refresh();
+            Ok(json!({ "id": id, "rating": r }))
+        },
+    );
+    reg.register(
+        "media.hide",
+        "Hide or unhide in the library (database only): {id?, hidden?}",
+        |app, args| {
+            let id = app
+                .target_id(&args)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("nothing selected".into()))?;
+            let hidden = match args.get("hidden").and_then(Value::as_bool) {
+                Some(h) => {
+                    app.db.set_hidden(id, h)?;
+                    h
+                }
+                None => app.db.toggle_hidden(id)?,
+            };
+            app.refresh();
+            Ok(json!({ "id": id, "hidden": hidden }))
+        },
+    );
+    reg.register(
+        "markers.add",
+        "Add a marker at a position: {pos_ms?, label?, id?} (current position by default)",
+        |app, args| {
+            let id = app
+                .target_id(&args)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("nothing selected".into()))?;
+            let pos = match args.get("pos_ms").and_then(Value::as_u64) {
+                Some(p) => p,
+                None => match &app.view {
+                    View::Player(pv) => pv.player.position().as_millis() as u64,
+                    _ => return Err(jizzcraft_core::Error::Invalid("no video is playing".into())),
+                },
+            };
+            let label = args.get("label").and_then(Value::as_str).unwrap_or("");
+            let m = app.db.add_marker(id, pos, label)?;
+            app.generation += 1;
+            Ok(serde_json::to_value(m).expect("marker"))
+        },
+    );
+    reg.register(
+        "markers.remove",
+        "Delete a marker: {marker_id}",
+        |app, args| {
+            let mid = args
+                .get("marker_id")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `marker_id`".into()))?;
+            let removed = app.db.remove_marker(mid)?;
+            app.generation += 1;
+            Ok(json!({ "removed": removed }))
+        },
+    );
+    reg.register(
+        "history.clear",
+        "Forget play history and resume points: {id?}",
+        |app, args| {
+            let id = args.get("id").and_then(Value::as_i64);
+            let n = app.db.clear_history(id)?;
+            app.refresh();
+            Ok(json!({ "cleared": n }))
+        },
+    );
+    reg.register(
+        "history.pause",
+        "Stop (true) or resume (false) recording history: {paused}",
+        |app, args| {
+            let paused = args
+                .get("paused")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `paused`".into()))?;
+            app.db
+                .set_setting("history.enabled", if paused { "0" } else { "1" })?;
+            Ok(json!({ "paused": paused }))
+        },
+    );
+    reg.register(
+        "history.visible.toggle",
+        "Show or hide play history in the UI",
+        |app, _| {
+            app.cfg.hide_history = !app.cfg.hide_history;
+            app.save_cfg();
+            Ok(json!({ "hidden": app.cfg.hide_history }))
         },
     );
     reg.register("view.filter", "Switch tab: {tab}", |app, args| {
@@ -1987,10 +2260,21 @@ fn draw_tile(
     p.text(
         badge.center(),
         Align2::CENTER_CENTER,
-        m.kind.label(),
+        if m.hidden { "HIDDEN" } else { m.kind.label() },
         FontId::new(9.0, FontFamily::Monospace),
-        MUTED,
+        if m.hidden { DANGER } else { MUTED },
     );
+    if m.rating > 0 {
+        let at = rect.right_bottom() + vec2(-48.0, -22.0);
+        widgets::star_icon(p, at, 9.0, true, APP);
+        p.text(
+            at + vec2(7.0, 0.0),
+            Align2::LEFT_CENTER,
+            m.rating.to_string(),
+            FontId::new(10.0, FontFamily::Monospace),
+            MUTED,
+        );
+    }
     // Faint index number, top right.
     p.text(
         rect.right_top() + vec2(-8.0, 8.0),

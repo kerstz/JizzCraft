@@ -99,6 +99,11 @@ const fn ctrl(mut x: Binding) -> Binding {
     x
 }
 
+const fn alt(mut x: Binding) -> Binding {
+    x.alt = true;
+    x
+}
+
 const fn shifted(mut x: Binding) -> Binding {
     x.shift = Shift::On;
     x
@@ -143,6 +148,66 @@ pub const KEYMAP: &[Binding] = &[
         "library.rescan",
         "{}",
         "Rescan the library",
+    )),
+    alt(b(
+        Global,
+        Both,
+        Key::Num0,
+        true,
+        "Alt+0",
+        "media.rate",
+        r#"{"rating":0}"#,
+        "Clear the rating",
+    )),
+    alt(b(
+        Global,
+        Both,
+        Key::Num1,
+        true,
+        "Alt+1",
+        "media.rate",
+        r#"{"rating":1}"#,
+        "Rate 1 star",
+    )),
+    alt(b(
+        Global,
+        Both,
+        Key::Num2,
+        true,
+        "Alt+2",
+        "media.rate",
+        r#"{"rating":2}"#,
+        "Rate 2 stars",
+    )),
+    alt(b(
+        Global,
+        Both,
+        Key::Num3,
+        true,
+        "Alt+3",
+        "media.rate",
+        r#"{"rating":3}"#,
+        "Rate 3 stars",
+    )),
+    alt(b(
+        Global,
+        Both,
+        Key::Num4,
+        true,
+        "Alt+4",
+        "media.rate",
+        r#"{"rating":4}"#,
+        "Rate 4 stars",
+    )),
+    alt(b(
+        Global,
+        Both,
+        Key::Num5,
+        true,
+        "Alt+5",
+        "media.rate",
+        r#"{"rating":5}"#,
+        "Rate 5 stars",
     )),
     // ---- library ----------------------------------------------------------
     b(
@@ -535,6 +600,16 @@ pub const KEYMAP: &[Binding] = &[
         "media.favorite.toggle",
         "{}",
         "Favorite",
+    ),
+    b(
+        Viewer,
+        Both,
+        Key::X,
+        true,
+        "X",
+        "media.hide",
+        "{}",
+        "Hide / unhide (database only)",
     ),
     // ---- video player -----------------------------------------------------
     b(

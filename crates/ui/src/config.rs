@@ -17,6 +17,8 @@ pub struct Config {
     /// Last sort: key name and direction.
     pub sort: Option<String>,
     pub sort_desc: bool,
+    /// Hide play history (recently played, resume info) in the UI.
+    pub hide_history: bool,
 }
 
 pub fn path() -> PathBuf {

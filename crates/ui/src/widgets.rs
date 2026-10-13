@@ -7,7 +7,7 @@ use crate::theme::{
 };
 use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, Sense, Stroke,
-    StrokeKind, Ui, vec2,
+    StrokeKind, Ui, pos2, vec2,
 };
 
 /// `+` / corner registration ticks at the four corners of a rect (11 px).
@@ -228,6 +228,38 @@ pub fn star_icon(painter: &egui::Painter, center: Pos2, size: f32, filled: bool,
         fill,
         Stroke::new(1.5, color),
     ));
+}
+
+/// Five clickable stars. Returns the new rating when clicked (clicking the
+/// current value clears it).
+pub fn rating_stars(ui: &mut Ui, rating: u8, size: f32) -> Option<u8> {
+    let gap = 4.0;
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2((size + gap) * 5.0 - gap, size + 6.0), Sense::click());
+    let hover = resp
+        .hover_pos()
+        .map(|p| (((p.x - rect.left()) / (size + gap)).floor() as i32 + 1).clamp(1, 5) as u8);
+    for i in 1..=5u8 {
+        let c = pos2(
+            rect.left() + (i as f32 - 1.0) * (size + gap) + size / 2.0,
+            rect.center().y,
+        );
+        let shown = hover.unwrap_or(rating);
+        star_icon(
+            ui.painter(),
+            c,
+            size,
+            i <= shown,
+            if i <= shown { APP } else { FAINT },
+        );
+    }
+    paint_focus(ui, &resp);
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.clicked() {
+        let v = hover.unwrap_or(0);
+        return Some(if v == rating { 0 } else { v });
+    }
+    None
 }
 
 #[allow(dead_code)]
