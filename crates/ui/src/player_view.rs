@@ -575,8 +575,12 @@ impl PlayerView {
             }
         }
 
-        // Track, buffered-ahead band, elapsed portion, playhead.
-        painter.rect_filled(track, CornerRadius::ZERO, theme::LINE);
+        // Track, buffered-ahead band, elapsed portion, playhead. A live
+        // stream has no timeline to show: no bar, no playhead, no seeking.
+        let live = self.player.is_live();
+        if !live {
+            painter.rect_filled(track, CornerRadius::ZERO, theme::LINE);
+        }
         if let (Some(d), Some(b)) = (dur.filter(|d| !d.is_zero()), self.player.buffered_until()) {
             let bx =
                 track.left() + (b.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0) * track.width();
@@ -591,11 +595,13 @@ impl PlayerView {
             _ => 0.0,
         };
         let x = track.left() + frac * track.width();
-        painter.rect_filled(
-            Rect::from_min_max(track.min, pos2(x, track.max.y)),
-            CornerRadius::ZERO,
-            MUTED,
-        );
+        if !live {
+            painter.rect_filled(
+                Rect::from_min_max(track.min, pos2(x, track.max.y)),
+                CornerRadius::ZERO,
+                MUTED,
+            );
+        }
         // A-B loop window.
         let (la, lb) = self.player.loop_points();
         if let Some(d) = dur.filter(|d| !d.is_zero()) {
@@ -630,11 +636,13 @@ impl PlayerView {
                 );
             }
         }
-        painter.rect_filled(
-            Rect::from_center_size(pos2(x, track.center().y), vec2(3.0, 14.0)),
-            CornerRadius::ZERO,
-            ACCENT,
-        );
+        if !live {
+            painter.rect_filled(
+                Rect::from_center_size(pos2(x, track.center().y), vec2(3.0, 14.0)),
+                CornerRadius::ZERO,
+                ACCENT,
+            );
+        }
         // Scrub preview popup.
         let hover_at = match (dur, ui.input(|i| i.pointer.hover_pos())) {
             (Some(d), Some(h)) if resp.hovered() => Some((d, d.mul_f32(frac_at(h.x)), h.x)),
@@ -668,7 +676,11 @@ impl PlayerView {
         painter.text(
             pos2(rect.left() + margin, rect.bottom() - 18.0),
             Align2::LEFT_CENTER,
-            format!("{} / {}", fmt_clock(pos), total),
+            if live {
+                fmt_clock(pos)
+            } else {
+                format!("{} / {}", fmt_clock(pos), total)
+            },
             FontId::new(12.0, FontFamily::Monospace),
             TEXT,
         );
@@ -783,11 +795,13 @@ impl PlayerView {
                 }
             }
             if self.player.is_live() {
-                child.label(
-                    egui::RichText::new("LIVE")
-                        .color(theme::ACCENT_INK)
-                        .background_color(ACCENT),
-                );
+                child
+                    .label(
+                        egui::RichText::new(crate::i18n::tr("LIVE"))
+                            .color(theme::ACCENT_INK)
+                            .background_color(ACCENT),
+                    )
+                    .on_hover_text(crate::i18n::tr("Live stream: seeking is not available"));
             }
             let looping = la.is_some() || lb.is_some();
             let label = match (la.is_some(), lb.is_some()) {

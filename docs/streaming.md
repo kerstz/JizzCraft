@@ -13,7 +13,8 @@ below is something you configure yourself, in the network build
 | a result of a source you defined | `fetch.play {result}` | same as `stream.open` on the result's media address |
 | a magnet or torrent | `fetch.play` | unchanged |
 
-HLS (`.m3u8`, TS and fMP4) and DASH (`.mpd`, on-demand) are read **inside the
+HLS (`.m3u8`, TS and fMP4, on demand or live) and DASH (`.mpd`, on-demand)
+are read **inside the
 fetch crate**: it parses the manifest, downloads the segments and hands the
 player plain bytes with timestamps. The player still never receives a URL, and
 it still refuses a manifest if one ever reaches it.
@@ -27,9 +28,27 @@ it still refuses a manifest if one ever reaches it.
   itself after repeated stalls and says so.
 - **Seeking** works on on-demand streams; the buffered-ahead part is drawn on
   the timeline.
+- **Live HLS** (a playlist without `#EXT-X-ENDLIST`). The player shows a
+  `LIVE` chip ("Direct" in French) instead of a timeline: no length, no seek
+  bar, no playhead, and seeking, speed and A-B loops are off. Playback starts
+  three segments from the live edge. The playlist is reloaded every target
+  duration (half of it while nothing changed, never faster than once a second)
+  and each segment is played once, tracked by media sequence number. If you
+  were away longer than the window, playback resumes at the oldest segment
+  the server still lists; a hole, a restarted numbering or
+  `#EXT-X-DISCONTINUITY` break the timeline cleanly. A segment that is
+  missing is skipped (five in a row end the stream). The quality is fixed at
+  the one the master selected (no quality chip). The stream ends cleanly on
+  `ENDLIST` or after 12 hours of listening, and with "The live stream ended."
+  when the playlist cannot be reloaded three times in a row or does not change
+  for two minutes. Only a short tail behind the playhead and the usual
+  prefetch (60 s, 64 MiB) are kept in memory; nothing is written to disk.
+  Every reload and segment obeys the same address checks and the
+  *Block the network without a proxy* switch as any other request.
 - **Encryption.** Plain AES-128 HLS is supported when the key address is
   reachable like any other address. DRM (SAMPLE-AES, Widevine, PlayReady,
-  FairPlay) is refused with a clear sentence.
+  FairPlay) is refused with a clear sentence, also on a live playlist, also
+  when it only appears in a later reload.
 
 ## Declarative sources
 
@@ -165,7 +184,7 @@ What is refused, and why:
   web pages the app does not do that: you get "cannot be streamed without
   saving it" and no file, not even a partial one, is left in the download
   folder.
-- **Separate video and audio tracks, live streams and encrypted streams** are
+- **Separate video and audio tracks, live DASH and DRM-protected streams** are
   refused with their own sentences (see above).
 - **A rate limit** from the site ends the attempt with "limiting requests";
   wait before trying again. The app does not retry in a loop.
@@ -188,11 +207,13 @@ again; if that fails, you see "The link expired."
 
 ## Not done yet
 
-Live streams, separate audio and video tracks (most DASH), subtitles, saving a
-stream while watching it, and a proxy-aware key fetch UI. Muxed on-demand
+Separate audio and video tracks (most DASH), subtitles for streams, saving a
+stream while watching it, quality switching and seeking inside a live window,
+and a proxy-aware key fetch UI. Muxed on-demand
 streams are what plays today; anything else is refused with "This stream
 format is not supported."
 
 ## Will not be done
 
-DRM, live DASH and low-latency HLS, and bundled sources of any kind.
+DRM, live DASH and low-latency HLS (`#EXT-X-PART`), and bundled sources of
+any kind.

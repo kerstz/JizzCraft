@@ -312,8 +312,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "O servidor está ocupado. Tente novamente mais tarde.",
     ),
     (
-        "Live streams are not supported.",
-        "As transmissões em direto não são suportadas.",
+        "Live DASH streams are not supported.",
+        "As transmissões DASH em direto não são suportadas.",
     ),
     (
         "This stream has separate video and audio tracks, which are not supported.",
@@ -572,6 +572,11 @@ pub const TABLE: &[(&str, &str)] = &[
     (
         "Some codecs are missing: run `jizzcraft --doctor` for the fix.",
         "Faltam codecs: executa `jizzcraft --doctor` para ver a solução.",
+    ),
+    ("LIVE", "EM DIRETO"),
+    (
+        "Live stream: seeking is not available",
+        "Em direto: não é possível avançar nem recuar",
     ),
     (
         "Stream quality: click to cycle",

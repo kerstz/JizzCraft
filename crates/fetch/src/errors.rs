@@ -26,7 +26,7 @@ pub const FORBIDDEN: &str = "The server refused access.";
 pub const EXPIRED: &str = "The link expired.";
 pub const TIMEOUT: &str = "The server took too long to answer.";
 pub const SERVER_BUSY: &str = "The server is busy. Try again later.";
-pub const LIVE_UNSUPPORTED: &str = "Live streams are not supported.";
+pub const LIVE_UNSUPPORTED: &str = "Live DASH streams are not supported.";
 pub const SEPARATE_TRACKS: &str =
     "This stream has separate video and audio tracks, which are not supported.";
 pub const CLOCK_SKEW: &str = "The secure connection failed. Check the computer's date and time.";

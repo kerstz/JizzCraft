@@ -452,6 +452,73 @@ fn s06_hls_ts_vod_plays_and_seeks_within_a_segment() {
     base.assert_settled();
 }
 
+/// A live HLS playlist that grows one segment per second, then ends.
+fn live_server(segs: &[Vec<u8>], window: usize) -> Server {
+    let segs: Vec<Arc<Vec<u8>>> = segs.iter().cloned().map(Arc::new).collect();
+    let t0 = Instant::now();
+    Server::start(Arc::new(move |r: &Req| {
+        let n = segs.len();
+        // Four segments at once, then one more each second.
+        let head = (4 + t0.elapsed().as_secs() as usize).min(n);
+        if r.path == "/v/live.m3u8" {
+            let first = head.saturating_sub(window);
+            let mut p = format!(
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{first}\n"
+            );
+            for i in first..head {
+                p.push_str(&format!("#EXTINF:1.000,\nseg{i}.ts\n"));
+            }
+            if head == n {
+                p.push_str("#EXT-X-ENDLIST\n");
+            }
+            return Reply::ok(M3U8, p.into_bytes());
+        }
+        let found = r
+            .path
+            .strip_prefix("/v/seg")
+            .and_then(|r| r.strip_suffix(".ts"))
+            .and_then(|i| i.parse::<usize>().ok())
+            .filter(|i| *i < head && *i + window >= head);
+        match found {
+            Some(i) => Reply::shared("video/mp2t", segs[i].clone()),
+            None => Reply::status(404),
+        }
+    }))
+}
+
+#[test]
+fn s06b_live_hls_plays_from_the_edge_and_ends_cleanly() {
+    let _g = serial();
+    if !ready(TS) {
+        return;
+    }
+    let segs = fixtures::ts_segments(320, 240, 7).expect("encode TS");
+    let srv = live_server(&segs, 4);
+    let base = Baseline::take();
+    {
+        let s = Svc::plain();
+        let p = timed(open(&s, srv.url("/v/live.m3u8")).expect("ticket"));
+        let mut pump = Pump::new(&p);
+        first_frame(&mut pump);
+        // A live stream has no length and cannot seek.
+        assert!(p.is_live() && !p.seekable());
+        assert_eq!(p.duration(), None);
+        p.seek(Duration::from_secs(3), true);
+        // The playlist keeps being reloaded until ENDLIST, then it ends.
+        pump.to_end(60);
+        assert!(pump.frames > 20, "frames {}", pump.frames);
+        assert!(srv.hits_for("/v/live.m3u8") >= 3);
+        assert_eq!(s.downloaded_files(), 0);
+        pump.assert_memory();
+        drop(p);
+    }
+    // Closing the player closes the reload loop: no request after the end.
+    let hits = srv.hits_for("/v/live.m3u8");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(srv.hits_for("/v/live.m3u8"), hits);
+    base.assert_settled();
+}
+
 #[test]
 fn s07_hls_fmp4_with_a_map() {
     let _g = serial();

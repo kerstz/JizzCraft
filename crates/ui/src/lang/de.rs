@@ -312,8 +312,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "Der Server ist ausgelastet. Bitte später erneut versuchen.",
     ),
     (
-        "Live streams are not supported.",
-        "Livestreams werden nicht unterstützt.",
+        "Live DASH streams are not supported.",
+        "Live-DASH-Streams werden nicht unterstützt.",
     ),
     (
         "This stream has separate video and audio tracks, which are not supported.",
@@ -563,6 +563,11 @@ pub const TABLE: &[(&str, &str)] = &[
     (
         "Some codecs are missing: run `jizzcraft --doctor` for the fix.",
         "Es fehlen Codecs: `jizzcraft --doctor` zeigt die Lösung.",
+    ),
+    ("LIVE", "LIVE"),
+    (
+        "Live stream: seeking is not available",
+        "Live: Vorspulen ist nicht möglich",
     ),
     (
         "Stream quality: click to cycle",

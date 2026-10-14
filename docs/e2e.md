@@ -48,6 +48,7 @@ about three minutes in a debug build; CI runs it in its own `e2e` job.
 | `s05_expiring_url_fails_with_the_expired_sentence` | A signed address that starts answering 403 ends in "The link expired.", with nothing about the address. |
 | `s05b_expiring_url_recovers_through_the_resolver` | The same expiry on an address from a resolver is renewed by asking the resolver again (unix only). |
 | `s06_hls_ts_vod_plays_and_seeks_within_a_segment` | HLS with TS segments, through `open_any` -> `Timed` -> `Player::open_timed`; an accurate seek lands within one segment. |
+| `s06b_live_hls_plays_from_the_edge_and_ends_cleanly` | A sliding HLS playlist (no `ENDLIST` until the end): starts near the live edge, `is_live`, no duration, seeking ignored, plays until `ENDLIST`, and the reload loop stops with the player. |
 | `s07_hls_fmp4_with_a_map` | HLS fMP4 with `#EXT-X-MAP` (init segment first). |
 | `s08_hls_aes_128` | AES-128 segments with the key fetched from the server and the media-sequence IV. |
 | `s09_abr_goes_down_when_throttled_and_up_when_released` | With a short `AbrConfig`, a throttled top variant makes the player go down then up (`current_variant()` is seen as 1, 0, 1). |

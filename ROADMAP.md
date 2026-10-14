@@ -9,7 +9,7 @@ client (librqbit), user-configured Torznab indexers (Jackett, Prowlarr), and
 streaming from sources you configure: direct video addresses, HLS and DASH on
 demand, resolvers, a quality chip and a buffered-ahead band on the timeline.
 
-Not done yet: live streams, separate audio and video tracks, subtitles,
+Not done yet: live DASH, separate audio and video tracks, subtitles,
 saving a stream as a feature, tags and full-text search, multi-select, the
 encrypted vault, and validation on real Windows and macOS machines.
 
