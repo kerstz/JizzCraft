@@ -22,3 +22,7 @@ jizzcraft-fetch = { workspace = true, optional = true }
 [features]
 # Off by default: the default build links no network code.
 network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
+
+[dev-dependencies]
+tempfile.workspace = true
+image.workspace = true

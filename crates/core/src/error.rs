@@ -34,3 +34,18 @@ impl From<std::io::Error> for Error {
         Error::Io(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_name_the_kind_and_keep_the_detail() {
+        assert_eq!(Error::Invalid("x".into()).to_string(), "invalid input: x");
+        assert_eq!(Error::NotFound("y".into()).to_string(), "not found: y");
+        let io: Error = std::io::Error::from(std::io::ErrorKind::NotFound).into();
+        assert!(io.to_string().starts_with("I/O error"));
+        let db: Error = rusqlite::Error::QueryReturnedNoRows.into();
+        assert!(db.to_string().starts_with("database error"));
+    }
+}

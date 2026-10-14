@@ -2513,10 +2513,12 @@ name = "jizzcraft-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "image",
  "jizzcraft-core",
  "jizzcraft-fetch",
  "jizzcraft-media",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
