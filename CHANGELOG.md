@@ -17,6 +17,19 @@ anything may change between minor versions.
   covered yet.
 
 ### Streaming
+- Audio track choice. New setting "Audio language" in Settings, General
+  (saved as `audio_lang` in `config.json`): the interface language by default,
+  a language code, or "Default track". It is passed to `StreamOpts::audio_lang`
+  on every stream that opens. When a stream keeps several audio tracks, the
+  player shows an "Audio" chip with one entry per track (language code, or
+  "Track N"; never a name or an address) and `player.audio {index}` switches:
+  the stream is reopened at the same position and keeps its paused state.
+  Engine: `TimedSource::audio_tracks` / `current_audio` (default: none),
+  `StreamOpts::audio_index`, `segmented::AudioPref`. Limits: the switch
+  reopens the source (a short rebuffer, not a hot swap); live streams with
+  separate audio are still refused; tracks of the same language are told
+  apart by number only. Tests: language/persistence unit tests, track list
+  and index selection on loopback DASH and HLS servers.
 - Separate audio and video tracks (issue #8). A DASH manifest with its own
   audio adaptation set, or an HLS master whose variants use an
   `#EXT-X-MEDIA` audio group, now plays instead of being refused. Both

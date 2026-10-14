@@ -65,6 +65,9 @@ pub struct StreamOpts {
     /// Preferred audio language (`fr`, `pt-BR`) when a stream keeps its
     /// audio in separate tracks. `None` plays the default one.
     pub audio_lang: Option<String>,
+    /// A track picked by position in the list the player showed; wins over
+    /// `audio_lang`.
+    pub audio_index: Option<usize>,
 }
 
 impl StreamOpts {
@@ -75,6 +78,15 @@ impl StreamOpts {
             quality,
             headers: r.media_headers.clone(),
             audio_lang: None,
+            audio_index: None,
+        }
+    }
+
+    /// The audio choice as the segmented readers take it.
+    pub fn audio_pref(&self) -> crate::segmented::AudioPref {
+        match (self.audio_index, &self.audio_lang) {
+            (Some(i), _) => crate::segmented::AudioPref::Index(i),
+            (None, l) => l.clone().into(),
         }
     }
 }

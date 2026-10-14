@@ -10,7 +10,7 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
-use jizzcraft_core::timed::{Chunk, TimedSource, VariantInfo};
+use jizzcraft_core::timed::{AudioTrackInfo, Chunk, TimedSource, VariantInfo};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -122,6 +122,9 @@ struct Shared {
     live: AtomicBool,
     timed: Arc<TimedStats>,
     variants: Mutex<Vec<VariantInfo>>,
+    audio_tracks: Mutex<Vec<AudioTrackInfo>>,
+    /// Index of the playing audio track; `UNKNOWN` when there is no choice.
+    audio_current: AtomicU64,
     notice: Mutex<Option<&'static str>>,
     mailbox: Mutex<Option<gst::Sample>>,
 }
@@ -249,6 +252,7 @@ impl Player {
         shared.loop_b.store(UNKNOWN, Relaxed);
         shared.timed.buffered_ns.store(UNKNOWN, Relaxed);
         shared.timed.variant.store(UNKNOWN, Relaxed);
+        shared.audio_current.store(UNKNOWN, Relaxed);
         let (tx, rx) = channel();
         let sh = Arc::clone(&shared);
         std::thread::Builder::new()
@@ -393,6 +397,19 @@ impl Player {
 
     pub fn variants(&self) -> Vec<VariantInfo> {
         self.shared.variants.lock().unwrap().clone()
+    }
+
+    /// Separate audio tracks the stream offers (empty: nothing to choose).
+    pub fn audio_tracks(&self) -> Vec<AudioTrackInfo> {
+        self.shared.audio_tracks.lock().unwrap().clone()
+    }
+
+    /// Index in [`Player::audio_tracks`] of the track being played.
+    pub fn current_audio(&self) -> Option<usize> {
+        match self.shared.audio_current.load(Relaxed) {
+            UNKNOWN => None,
+            n => Some(n as usize),
+        }
     }
 
     pub fn current_variant(&self) -> Option<usize> {
@@ -1151,6 +1168,10 @@ fn control_thread(
             None => shared.live.store(true, Relaxed),
         }
         *shared.variants.lock().unwrap() = src.variants();
+        *shared.audio_tracks.lock().unwrap() = src.audio_tracks();
+        shared
+            .audio_current
+            .store(src.current_audio().map_or(UNKNOWN, |v| v as u64), Relaxed);
         let cur = src.current_variant().map_or(UNKNOWN, |v| v as u64);
         shared.timed.variant.store(cur, Relaxed);
         let verdict = match sniff_timed(&mut **src, &rx, &shared) {

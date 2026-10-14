@@ -47,6 +47,45 @@ pub struct Config {
     /// Subtitle choice: `"off"`, a language tag (`"fr"`), or `"-"` for the
     /// untagged sidecar. None: automatic (interface language, else first).
     pub subs: Option<String>,
+    /// Preferred audio language for streams that keep their audio in
+    /// separate tracks: a tag (`"fr"`), `""` for the stream's own default
+    /// track. None: the interface language.
+    pub audio_lang: Option<String>,
+}
+
+/// Language codes offered for the audio preference, in menu order.
+pub const AUDIO_LANGS: [&str; 12] = [
+    "en", "fr", "es", "de", "it", "pt", "nl", "pl", "ru", "ja", "zh", "ko",
+];
+
+/// Short, safe tag for the config: letters and `-` only, at most 12.
+fn clean_tag(s: &str) -> Option<String> {
+    jizzcraft_core::timed::clean_lang(s)
+}
+
+impl Config {
+    /// The language to ask a stream for: the saved one, else the interface
+    /// language. `None` means "the stream's default track".
+    pub fn effective_audio_lang(&self, interface: &str) -> Option<String> {
+        match self.audio_lang.as_deref() {
+            None => clean_tag(interface),
+            Some(s) => clean_tag(s),
+        }
+    }
+
+    /// Store a choice: `None` = follow the interface, `Some("")` = default
+    /// track, otherwise a tag. Unusable tags are ignored (returns false).
+    pub fn set_audio_lang(&mut self, choice: Option<&str>) -> bool {
+        match choice {
+            None => self.audio_lang = None,
+            Some("") => self.audio_lang = Some(String::new()),
+            Some(t) => match clean_tag(t) {
+                Some(t) => self.audio_lang = Some(t.to_ascii_lowercase()),
+                None => return false,
+            },
+        }
+        true
+    }
 }
 
 pub fn path() -> PathBuf {
@@ -79,6 +118,59 @@ impl Config {
             {
                 let _ = std::fs::remove_file(&tmp);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_language_defaults_to_the_interface() {
+        let c = Config::default();
+        assert_eq!(c.audio_lang, None);
+        assert_eq!(c.effective_audio_lang("fr"), Some("fr".to_owned()));
+    }
+
+    #[test]
+    fn audio_language_empty_means_the_default_track() {
+        let mut c = Config::default();
+        assert!(c.set_audio_lang(Some("")));
+        assert_eq!(c.effective_audio_lang("fr"), None);
+    }
+
+    #[test]
+    fn audio_language_explicit_choice_wins_and_is_cleaned() {
+        let mut c = Config::default();
+        assert!(c.set_audio_lang(Some("PT-br")));
+        assert_eq!(c.audio_lang.as_deref(), Some("pt-br"));
+        assert_eq!(c.effective_audio_lang("de"), Some("pt-br".to_owned()));
+        assert!(!c.set_audio_lang(Some("not a tag!")));
+        assert_eq!(c.audio_lang.as_deref(), Some("pt-br"));
+        assert!(c.set_audio_lang(None));
+        assert_eq!(c.audio_lang, None);
+    }
+
+    #[test]
+    fn audio_language_survives_a_json_round_trip() {
+        for v in [None, Some(String::new()), Some("ja".to_owned())] {
+            let c = Config {
+                audio_lang: v.clone(),
+                ..Config::default()
+            };
+            let back: Config = serde_json::from_slice(&serde_json::to_vec(&c).unwrap()).unwrap();
+            assert_eq!(back.audio_lang, v);
+        }
+        // An older config without the key reads as "follow the interface".
+        let old: Config = serde_json::from_str(r#"{"volume":0.5}"#).unwrap();
+        assert_eq!(old.audio_lang, None);
+    }
+
+    #[test]
+    fn every_offered_code_is_a_clean_tag() {
+        for c in AUDIO_LANGS {
+            assert_eq!(clean_tag(c).as_deref(), Some(c));
         }
     }
 }

@@ -63,7 +63,7 @@ use aes::Aes128;
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use jizzcraft_core::manifest::looks_like_manifest;
-use jizzcraft_core::timed::{Chunk, TimedSource, VariantInfo};
+use jizzcraft_core::timed::{AudioTrackInfo, Chunk, TimedSource, VariantInfo};
 use reqwest::Url;
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
@@ -516,6 +516,50 @@ pub struct SegmentedReader {
     sh: Arc<Shared>,
     /// The separate audio track, when the stream has one.
     pair: Option<Box<Pair>>,
+    /// The audio tracks on offer and the one in `pair`.
+    audio_meta: (Vec<AudioTrackInfo>, Option<usize>),
+}
+
+/// Which separate audio track to open: the choice made by the caller.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AudioPref {
+    /// The track the stream marks default, else the first.
+    #[default]
+    Default,
+    /// A language tag (`fr`, `pt-BR`), falling back like `Default`.
+    Lang(String),
+    /// The n-th track of the list the reader reported (a track picked in the
+    /// player, even when several share a language).
+    Index(usize),
+}
+
+impl From<Option<String>> for AudioPref {
+    fn from(l: Option<String>) -> Self {
+        match l.filter(|l| !l.trim().is_empty()) {
+            Some(l) => AudioPref::Lang(l),
+            None => AudioPref::Default,
+        }
+    }
+}
+
+impl AudioPref {
+    fn pick(&self, choices: &[(Option<&str>, bool)]) -> usize {
+        match self {
+            AudioPref::Index(i) if *i < choices.len() => *i,
+            AudioPref::Lang(l) => pick_audio(choices, Some(l)),
+            _ => pick_audio(choices, None),
+        }
+    }
+}
+
+fn track_infos(choices: &[(Option<&str>, bool)]) -> Vec<AudioTrackInfo> {
+    choices
+        .iter()
+        .map(|(l, d)| AudioTrackInfo {
+            lang: l.and_then(jizzcraft_core::timed::clean_lang),
+            default: *d,
+        })
+        .collect()
 }
 
 /// The audio half of a stream that keeps picture and sound apart, with the
@@ -1160,6 +1204,7 @@ fn finish(
         handle,
         sh,
         pair: None,
+        audio_meta: (Vec::new(), None),
     }
 }
 
@@ -1240,7 +1285,16 @@ pub async fn open_hls_with(
     headers: Vec<(String, String)>,
     tuning: LiveTuning,
 ) -> Result<SegmentedReader, String> {
-    open_hls_audio(handle, client, url, quality, headers, tuning, None).await
+    open_hls_audio(
+        handle,
+        client,
+        url,
+        quality,
+        headers,
+        tuning,
+        AudioPref::Default,
+    )
+    .await
 }
 
 /// [`open_hls_with`] with a preferred audio language (`fr`, `pt-BR`...) for a
@@ -1253,8 +1307,9 @@ pub async fn open_hls_audio(
     quality: Quality,
     headers: Vec<(String, String)>,
     tuning: LiveTuning,
-    audio_lang: Option<String>,
+    audio_pref: impl Into<AudioPref>,
 ) -> Result<SegmentedReader, String> {
+    let want: AudioPref = audio_pref.into();
     let p = probe(client.clone(), &url, headers.clone(), tuning);
     let raw = get_bytes(&p, &url, None, hls::MAX_TEXT).await?;
     let text = String::from_utf8(raw).map_err(|_| "no media".to_owned())?;
@@ -1314,6 +1369,7 @@ pub async fn open_hls_audio(
             // audio rendition of the chosen variant's group is combined with
             // the video; quality choices stay within that group.
             let mut audio_uri: Option<String> = None;
+            let mut audio_meta: (Vec<AudioTrackInfo>, Option<usize>) = (Vec::new(), None);
             let mut drop_v = separate_audio.clone();
             if separate_audio.iter().all(|s| *s) {
                 let all: Vec<(Option<u32>, u64)> =
@@ -1328,9 +1384,9 @@ pub async fn open_hls_audio(
                     .iter()
                     .map(|a| (a.lang.as_deref(), a.default))
                     .collect();
-                let rend = cands
-                    .get(pick_audio(&choice, audio_lang.as_deref()))
-                    .ok_or_else(|| "separate tracks".to_owned())?;
+                let at = want.pick(&choice);
+                audio_meta = (track_infos(&choice), Some(at));
+                let rend = cands.get(at).ok_or_else(|| "separate tracks".to_owned())?;
                 let rel = rend.uri.as_deref().unwrap_or_default();
                 audio_uri = Some(resolve(&url, rel, &url)?);
                 drop_v = groups.iter().map(|g| *g != group).collect();
@@ -1376,6 +1432,7 @@ pub async fn open_hls_audio(
                             (handle, client, url, headers, quality, tuning),
                         )
                         .await?;
+                        r.audio_meta = audio_meta;
                     }
                     Ok(r)
                 }
@@ -1407,7 +1464,7 @@ pub async fn open_dash(
     quality: Quality,
     headers: Vec<(String, String)>,
 ) -> Result<SegmentedReader, String> {
-    open_dash_audio(handle, client, url, quality, headers, None).await
+    open_dash_audio(handle, client, url, quality, headers, AudioPref::Default).await
 }
 
 /// [`open_dash`] with a preferred audio language for a manifest that keeps
@@ -1419,8 +1476,10 @@ pub async fn open_dash_audio(
     url: String,
     quality: Quality,
     headers: Vec<(String, String)>,
-    audio_lang: Option<String>,
+    audio: impl Into<AudioPref>,
 ) -> Result<SegmentedReader, String> {
+    let audio: AudioPref = audio.into();
+    let mut audio_meta: (Vec<AudioTrackInfo>, Option<usize>) = (Vec::new(), None);
     let tuning = LiveTuning::default();
     let p = probe(client.clone(), &url, headers.clone(), tuning);
     let raw = get_bytes(&p, &url, None, dash::MAX_TEXT).await?;
@@ -1436,9 +1495,9 @@ pub async fn open_dash_audio(
             .collect();
         let choice: Vec<(Option<&str>, bool)> =
             sets.iter().map(|s| (s.lang.as_deref(), false)).collect();
-        let set = sets
-            .get(pick_audio(&choice, audio_lang.as_deref()))
-            .ok_or_else(|| "separate tracks".to_owned())?;
+        let at = audio.pick(&choice);
+        audio_meta = (track_infos(&choice), Some(at));
+        let set = sets.get(at).ok_or_else(|| "separate tracks".to_owned())?;
         // Audio quality follows the preference, not the video's cap.
         let pairs: Vec<(Option<u32>, u64)> = set.reps.iter().map(|r| (None, r.bandwidth)).collect();
         let q = Quality {
@@ -1488,14 +1547,16 @@ pub async fn open_dash_audio(
     );
     match audio_track {
         Some(at) => {
-            with_audio(
+            let mut r = with_audio(
                 r,
                 &p,
                 &vtrack,
                 at,
                 (handle, client, url, headers, quality, tuning),
             )
-            .await
+            .await?;
+            r.audio_meta = audio_meta;
+            Ok(r)
         }
         None => Ok(r),
     }
@@ -2095,6 +2156,14 @@ impl TimedSource for SegmentedReader {
     fn wants_downgrade(&mut self) -> bool {
         let mut st = self.sh.lock();
         std::mem::take(&mut st.rebuild)
+    }
+
+    fn audio_tracks(&self) -> Vec<AudioTrackInfo> {
+        self.audio_meta.0.clone()
+    }
+
+    fn current_audio(&self) -> Option<usize> {
+        self.audio_meta.1
     }
 }
 

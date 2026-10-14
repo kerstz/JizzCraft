@@ -98,6 +98,8 @@ pub struct PlayerView {
     pub marker_ticks: Vec<u64>,
     /// Stream quality picked by the user (None = automatic).
     pub manual_variant: Option<usize>,
+    /// Position (and paused flag) to restore once a reopened stream plays.
+    pub pending_resume: Option<(Duration, bool)>,
     /// `(path, size, mtime)` for the preview service.
     pub source: Option<(PathBuf, u64, i64)>,
     pub previews_enabled: bool,
@@ -116,6 +118,15 @@ pub struct PlayerView {
     pub stream_probe: Option<Box<dyn Fn() -> StreamFacts + Send>>,
     /// Local `.srt` / `.vtt` sidecars, drawn as an overlay (no pipeline).
     pub subs: crate::subs::Subs,
+}
+
+/// Menu label of an audio track: its language code, else its number. Never a
+/// name or an address (the source only ever hands over a cleaned tag).
+pub fn audio_label(lang: Option<&str>, index: usize) -> String {
+    match lang {
+        Some(l) => l.to_ascii_uppercase(),
+        None => crate::i18n::trf("Track {}", &[&(index + 1).to_string()]),
+    }
 }
 
 impl PlayerView {
@@ -139,6 +150,7 @@ impl PlayerView {
             resumed: None,
             marker_ticks: Vec::new(),
             manual_variant: None,
+            pending_resume: None,
             source: None,
             previews_enabled: true,
             blur_previews: false,
@@ -774,6 +786,41 @@ impl PlayerView {
                 .on_hover_text(crate::i18n::tr("Subtitles: pick a track or turn them off"));
                 self.subs_menu(&chip);
             }
+            // Streams that keep several audio tracks apart.
+            let tracks = self.player.audio_tracks();
+            if tracks.len() > 1 {
+                let cur = self.player.current_audio();
+                let name = cur.map_or_else(String::new, |i| {
+                    format!(
+                        " · {}",
+                        audio_label(tracks.get(i).and_then(|t| t.lang.as_deref()), i)
+                    )
+                });
+                let chip = widgets::toggle_chip(
+                    &mut child,
+                    &format!("{}{}", crate::i18n::tr("Audio"), name),
+                    false,
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "Audio track: the stream reopens at the same position",
+                ));
+                let actions = &mut self.actions;
+                egui::Popup::menu(&chip)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                    .show(|ui| {
+                        ui.set_min_width(140.0);
+                        widgets::mono_label(ui, crate::i18n::tr("Audio"), MUTED);
+                        for (i, t) in tracks.iter().enumerate() {
+                            let l = audio_label(t.lang.as_deref(), i);
+                            if ui.selectable_label(cur == Some(i), l).clicked() {
+                                actions.push((
+                                    "player.audio".into(),
+                                    serde_json::json!({ "index": i }),
+                                ));
+                            }
+                        }
+                    });
+            }
             // Streams: quality and live state.
             let variants = self.player.variants();
             if variants.len() > 1 {
@@ -1049,5 +1096,19 @@ mod stream_note_tests {
             StreamNote::WaitingForPeers(5).text(),
             "Waiting for peers (5)"
         );
+    }
+}
+
+#[cfg(test)]
+mod audio_label_tests {
+    use super::audio_label;
+
+    #[test]
+    fn label_is_the_code_or_a_number() {
+        assert_eq!(audio_label(Some("fr"), 0), "FR");
+        assert_eq!(audio_label(Some("pt-BR"), 1), "PT-BR");
+        // The word is translated (the language is process-wide): the number
+        // is what must be there.
+        assert!(audio_label(None, 2).contains('3'));
     }
 }

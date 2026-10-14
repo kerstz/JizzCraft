@@ -64,12 +64,17 @@ impl JizzApp {
         let mut pv = crate::player_view::PlayerView::new(None, shown, player);
         pv.autoplay_on = false;
         pv.previews_enabled = false;
+        // A track switch reopens the stream: continue where it was.
+        pv.pending_resume = self.downloads.resume_at.take();
         self.view = super::View::Player(Box::new(pv));
         self.autoplay_at = None;
     }
 
     /// Act on a ticket whose flow finished: file player, stream or external.
     pub(super) fn open_ticket(&mut self, t: StreamTicket, external: bool) {
+        if !matches!(t, StreamTicket::Timed { .. }) {
+            self.downloads.resume_at = None;
+        }
         match t {
             StreamTicket::Done(path) if external => match open_external(&path) {
                 Ok(()) => self.toast(ToastKind::Info, "Opened in an external player."),
