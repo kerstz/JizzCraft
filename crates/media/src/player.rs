@@ -5,17 +5,24 @@
 //! and tears it down. The UI only reads atomics and takes the latest
 //! `gst::Sample` from a one-slot mailbox (ref-counted: no pixel copy).
 
+use crate::stream::{Feeder, ReadSeek};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const UNKNOWN: u64 = u64::MAX;
+
+/// What a player reads from.
+enum Input {
+    File(PathBuf),
+    Stream { reader: Box<dyn ReadSeek>, len: u64 },
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlayState {
@@ -154,17 +161,33 @@ impl Player {
     /// construction, state changes) happens on the control thread.
     /// `wake` is called whenever the UI should repaint (new frame, state change).
     pub fn open(path: &Path, volume: f64, wake: Arc<dyn Fn() + Send + Sync>) -> Player {
+        Self::spawn(Input::File(path.to_path_buf()), volume, wake)
+    }
+
+    /// Plays from an in-process reader of `len` bytes that may still be
+    /// filling up (a download in progress). No URL, no socket: bytes are
+    /// pulled from `reader` and pushed into an `appsrc`. `WouldBlock` from the
+    /// reader means "not downloaded yet" and shows as buffering.
+    pub fn open_stream(
+        reader: Box<dyn ReadSeek>,
+        len: u64,
+        volume: f64,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Player {
+        Self::spawn(Input::Stream { reader, len }, volume, wake)
+    }
+
+    fn spawn(input: Input, volume: f64, wake: Arc<dyn Fn() + Send + Sync>) -> Player {
         let shared = Arc::new(Shared::default());
         shared.duration_ns.store(UNKNOWN, Relaxed);
         shared.rate_bits.store(1.0f64.to_bits(), Relaxed);
         shared.loop_a.store(UNKNOWN, Relaxed);
         shared.loop_b.store(UNKNOWN, Relaxed);
         let (tx, rx) = channel();
-        let path = path.to_path_buf();
         let sh = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("jizzcraft-player".into())
-            .spawn(move || control_thread(path, volume, sh, rx, wake))
+            .spawn(move || control_thread(input, volume, sh, rx, wake))
             .expect("spawn player thread");
         Player {
             tx,
@@ -627,14 +650,24 @@ impl Ctl {
     }
 }
 
+/// A pipeline, its refusal flag and (for streams) the feeder to stop last.
+type Built = (
+    gst::Element,
+    Arc<AtomicBool>,
+    Option<Arc<Mutex<Option<Feeder>>>>,
+);
+
 fn build_pipeline(
-    path: &Path,
+    input: Input,
     volume: f64,
     shared: &Arc<Shared>,
     wake: &Arc<dyn Fn() + Send + Sync>,
-) -> Result<(gst::Element, Arc<AtomicBool>), String> {
+) -> Result<Built, String> {
     crate::init()?;
-    let uri = crate::file_uri(path)?;
+    let (uri, stream) = match input {
+        Input::File(path) => (crate::file_uri(&path)?, None),
+        Input::Stream { reader, len } => ("appsrc://".to_owned(), Some((reader, len))),
+    };
     let mk = |name: &str, hint: &str| {
         gst::ElementFactory::make(name)
             .build()
@@ -642,12 +675,29 @@ fn build_pipeline(
     };
 
     let playbin = mk("playbin", "install gst-plugins-base")?;
-    let refused = crate::guard::watch(
-        playbin
-            .downcast_ref::<gst::Bin>()
-            .ok_or("playbin is not a bin")?,
-    );
+    let bin_ref = playbin
+        .downcast_ref::<gst::Bin>()
+        .ok_or("playbin is not a bin")?;
+    // Only a stream pipeline may contain an appsrc; fetchers stay refused.
+    let refused = if stream.is_some() {
+        crate::guard::watch_with(bin_ref, &["appsrc"])
+    } else {
+        crate::guard::watch(bin_ref)
+    };
     playbin.set_property("uri", &uri);
+    let feeder_slot = stream.map(|(reader, len)| {
+        let slot: Arc<Mutex<Option<Feeder>>> = Arc::new(Mutex::new(None));
+        let (s, reader) = (Arc::clone(&slot), Mutex::new(Some(reader)));
+        playbin.connect("source-setup", false, move |args| {
+            let el = args.get(1)?.get::<gst::Element>().ok()?;
+            let src = el.downcast::<gst_app::AppSrc>().ok()?;
+            if let Some(r) = reader.lock().unwrap().take() {
+                *s.lock().unwrap() = Some(crate::stream::start(&src, r, len));
+            }
+            None
+        });
+        slot
+    });
     playbin.set_property("volume", volume);
     // Keep pitch at non-1.0 rates. Optional: absent plugin = pitch shifts.
     if let Ok(st) = gst::ElementFactory::make("scaletempo").build() {
@@ -712,18 +762,85 @@ fn build_pipeline(
             }
         });
     }
-    Ok((playbin, refused))
+    Ok((playbin, refused, feeder_slot))
+}
+
+/// How long a stream may show nothing at all before it is called broken.
+const STREAM_LOAD_LIMIT: Duration = Duration::from_secs(20);
+/// How long the first bytes of a stream may take to arrive.
+const SNIFF_LIMIT: Duration = Duration::from_secs(30);
+
+/// Read the first bytes of a stream, waiting on `WouldBlock` (shown as
+/// buffering) and honouring `Stop`. `None` = the player was dropped.
+fn sniff_head(
+    reader: &mut dyn ReadSeek,
+    rx: &Receiver<Cmd>,
+    shared: &Shared,
+) -> Option<Result<Vec<u8>, String>> {
+    use std::io::{ErrorKind, SeekFrom};
+    let mut head = vec![0u8; 4096];
+    let mut got = 0;
+    let start = Instant::now();
+    shared.buffering.store(0, Relaxed);
+    while got < head.len() {
+        match reader.read(&mut head[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
+                if start.elapsed() > SNIFF_LIMIT {
+                    return Some(Err("could not start this video".into()));
+                }
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Cmd::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+            Err(_) => return Some(Err("the download stopped being readable".into())),
+        }
+        // A tiny file ends before 4 KiB: what we have is the whole head.
+        if got > 0 && got < head.len() && start.elapsed() > Duration::from_millis(200) {
+            break;
+        }
+    }
+    shared.buffering.store(100, Relaxed);
+    head.truncate(got);
+    if reader.seek(SeekFrom::Start(0)).is_err() {
+        return Some(Err("the download stopped being readable".into()));
+    }
+    Some(Ok(head))
 }
 
 fn control_thread(
-    path: std::path::PathBuf,
+    mut input: Input,
     volume: f64,
     shared: Arc<Shared>,
     rx: Receiver<Cmd>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
     shared.buffering.store(100, Relaxed);
-    let (pipeline, refused) = match build_pipeline(&path, volume, &shared, &wake) {
+    let is_stream = matches!(input, Input::Stream { .. });
+    if let Input::Stream { reader, .. } = &mut input {
+        // Refuse a playlist before any pipeline exists.
+        let verdict = match sniff_head(&mut **reader, &rx, &shared) {
+            None => return,
+            Some(Ok(head)) if crate::guard::looks_like_manifest(&head) => {
+                Some(crate::guard::REFUSED.to_owned())
+            }
+            Some(Ok(_)) => None,
+            Some(Err(e)) => Some(e),
+        };
+        if let Some(e) = verdict {
+            *shared.error.lock().unwrap() = Some(e);
+            shared.state.store(PlayState::Error as u8, Relaxed);
+            wake();
+            while rx.recv().is_ok_and(|c| !matches!(c, Cmd::Stop)) {}
+            return;
+        }
+    }
+    let loading_since = Instant::now();
+    let (pipeline, refused, feeder) = match build_pipeline(input, volume, &shared, &wake) {
         Ok(p) => p,
         Err(e) => {
             *shared.error.lock().unwrap() = Some(e);
@@ -778,6 +895,15 @@ fn control_thread(
             ctl.on_message(&msg);
         }
         ctl.enforce_loop();
+        // A stream that never starts must not sit on "Loading" forever.
+        if is_stream
+            && !ctl.dead
+            && shared.state.load(Relaxed) == PlayState::Loading as u8
+            && shared.buffering.load(Relaxed) >= 100
+            && loading_since.elapsed() > STREAM_LOAD_LIMIT
+        {
+            ctl.fail("could not start this video".into());
+        }
         if last_poll.elapsed() >= Duration::from_millis(100) {
             last_poll = Instant::now();
             let st = shared.state.load(Relaxed);
@@ -791,6 +917,10 @@ fn control_thread(
             }
         }
     }
-    // Teardown off the UI thread.
+    // Teardown off the UI thread. The feeder is stopped and joined after the
+    // pipeline is Null, so nothing pushes into a dead appsrc.
     let _ = pipeline.set_state(gst::State::Null);
+    if let Some(slot) = feeder {
+        drop(slot.lock().unwrap().take());
+    }
 }
