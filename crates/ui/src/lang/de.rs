@@ -461,4 +461,15 @@ pub const TABLE: &[(&str, &str)] = &[
         "The resolver failed or took too long.",
         "Der Resolver ist fehlgeschlagen oder zu langsam.",
     ),
+    ("Streaming sources", "Streaming-Quellen"),
+    (
+        "None is included. Add a JSON file you wrote; keys stay in fetch.json.",
+        "Keine ist enthalten. Füge eine selbst geschriebene JSON-Datei hinzu; Schlüssel bleiben in fetch.json.",
+    ),
+    ("key", "Schlüssel"),
+    ("Add a source file…", "Quelldatei hinzufügen…"),
+    (
+        "Resolvers are programs you installed: add them with resolvers.add.",
+        "Resolver sind Programme, die du installiert hast: mit resolvers.add hinzufügen.",
+    ),
 ];
