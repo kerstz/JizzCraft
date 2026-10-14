@@ -21,10 +21,42 @@ pub fn init() -> Result<(), String> {
         gstreamer::init().map_err(|e| {
             format!("GStreamer is not usable: {e}. Install gstreamer + gst-plugins-base.")
         })?;
+        scan_bundled_plugins();
         guard::harden_registry();
         Ok(())
     })
     .clone()
+}
+
+/// Plugin folders shipped with a packaged build, relative to the executable.
+/// Windows zip: `gstreamer/lib/gstreamer-1.0`; macOS bundle:
+/// `../Resources/gstreamer/lib/gstreamer-1.0`; relocatable Linux tree:
+/// `../lib/gstreamer-1.0`. A system install needs none of this.
+fn bundled_plugin_dirs(exe_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    [
+        "gstreamer/lib/gstreamer-1.0",
+        "../Resources/gstreamer/lib/gstreamer-1.0",
+        "../lib/gstreamer-1.0",
+    ]
+    .iter()
+    .map(|r| exe_dir.join(r))
+    .filter(|p| p.is_dir())
+    .collect()
+}
+
+/// Add packaged plugins to this process's registry (no environment changes).
+/// Runs before `harden_registry`, so network elements shipped in a bundle are
+/// taken out like any other.
+fn scan_bundled_plugins() {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    for p in bundled_plugin_dirs(&dir) {
+        let _ = gstreamer::Registry::get().scan_path(&p);
+    }
 }
 
 /// A `file://` URI for a local path. Never produces anything else.
@@ -64,5 +96,20 @@ pub(crate) fn debug_detail(text: &mut String, detail: &str) {
         text.push_str(" (");
         text.push_str(detail);
         text.push(')');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_plugin_dirs_are_found_next_to_the_executable() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(bundled_plugin_dirs(d.path()).is_empty());
+        std::fs::create_dir_all(d.path().join("gstreamer/lib/gstreamer-1.0")).unwrap();
+        let found = bundled_plugin_dirs(d.path());
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("gstreamer/lib/gstreamer-1.0"));
     }
 }

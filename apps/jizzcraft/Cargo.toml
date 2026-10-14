@@ -19,3 +19,26 @@ jizzcraft-fetch = { workspace = true, optional = true }
 [features]
 # Opt-in network build: Torznab indexers and a BitTorrent client.
 network = ["jizzcraft-ui/network", "dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
+
+[package.metadata.deb]
+name = "jizzcraft"
+section = "video"
+priority = "optional"
+maintainer = "JizzCraft contributors <noreply@example.invalid>"
+copyright = "JizzCraft contributors"
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = "Private, local-first media library and player for images and videos. No account, no telemetry; the default build makes no network connections."
+depends = "$auto, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav"
+recommends = "gstreamer1.0-plugins-bad, gstreamer1.0-vaapi"
+assets = [
+  ["../../target/release/jizzcraft", "usr/bin/jizzcraft", "755"],
+  ["../../assets/org.jizzcraft.JizzCraft.desktop", "usr/share/applications/org.jizzcraft.JizzCraft.desktop", "644"],
+  ["../../assets/local.Viewer.desktop", "usr/share/applications/local.Viewer.desktop", "644"],
+  ["../../assets/org.jizzcraft.JizzCraft.metainfo.xml", "usr/share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml", "644"],
+  ["../../assets/icons/hicolor/16x16/apps/*.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
+  ["../../assets/icons/hicolor/24x24/apps/*.png", "usr/share/icons/hicolor/24x24/apps/", "644"],
+  ["../../assets/icons/hicolor/32x32/apps/*.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
+  ["../../assets/icons/hicolor/128x128/apps/*.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+  ["../../assets/icons/hicolor/256x256/apps/*.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+  ["../../README.md", "usr/share/doc/jizzcraft/README.md", "644"],
+]

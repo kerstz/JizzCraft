@@ -16,3 +16,9 @@ jizzcraft-data/
 .vscode/
 *.swp
 .DS_Store
+
+# packaging build output
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/*.pkg.tar.*
+dist/
