@@ -53,6 +53,9 @@ pub struct Options {
     pub commands: Vec<(String, Value)>,
     /// Play this file for N seconds and print a performance report.
     pub bench: Option<(PathBuf, u32)>,
+    /// Launched with the neutral "Viewer" identity: stay in discreet mode and
+    /// keep the title neutral even if discreet mode is toggled off.
+    pub disguised: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -273,7 +276,11 @@ impl JizzApp {
         let db = Db::open(&db_path).map_err(|e| format!("cannot open library: {e}"))?;
         let (tx, rx) = channel();
         let persist_cfg = opts.config.is_none();
-        let cfg = opts.config.clone().unwrap_or_else(Config::load);
+        let mut cfg = opts.config.clone().unwrap_or_else(Config::load);
+        if opts.disguised {
+            // Start neutral: discreet mode on, even if the saved config says off.
+            cfg.discreet = true;
+        }
 
         let mut registry = Registry::new();
         register_core::<JizzApp>(&mut registry);
@@ -943,13 +950,13 @@ impl JizzApp {
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
-        let title = if self.discreet() {
+        let title = if self.discreet() || self.opts.disguised {
             "Viewer"
         } else {
             "JizzCraft"
         };
         if self.last_title != title {
-            let icon = if self.discreet() {
+            let icon = if self.discreet() || self.opts.disguised {
                 &self.icon_viewer
             } else {
                 &self.icon_peach
@@ -2310,6 +2317,20 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         app.refresh();
         Ok(json!({}))
     });
+    reg.register(
+        "app.disguise.set",
+        "Launch as \"Viewer\" from the next start: {on: bool}",
+        |app, args| {
+            let on = args
+                .get("on")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `on`".into()))?;
+            app.cfg.disguise = on;
+            app.save_cfg();
+            app.toast(ToastKind::Info, "Takes effect at the next launch");
+            Ok(json!({ "disguise": on }))
+        },
+    );
     reg.register("sidebar.toggle", "Show or hide the sidebar", |app, _| {
         app.cfg.sidebar_closed = !app.cfg.sidebar_closed;
         app.save_cfg();

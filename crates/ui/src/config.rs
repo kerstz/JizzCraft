@@ -21,6 +21,8 @@ pub struct Config {
     pub sort_desc: bool,
     /// Hide play history (recently played, resume info) in the UI.
     pub hide_history: bool,
+    /// Launch as "Viewer" (app ID, title, discreet) from the next start.
+    pub disguise: bool,
     /// Play the next item when a video ends.
     pub autoplay_next: bool,
     /// Do not generate scrub previews on the timeline.

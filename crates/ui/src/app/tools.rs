@@ -95,6 +95,16 @@ impl JizzApp {
         item(ui, "Clear watch history", "history.clear", json!({}));
         item(
             ui,
+            if self.cfg.disguise {
+                "Launch as JizzCraft (next start)"
+            } else {
+                "Launch as \"Viewer\" (next start)"
+            },
+            "app.disguise.set",
+            json!({ "on": !self.cfg.disguise }),
+        );
+        item(
+            ui,
             "Clear preview cache",
             "cache.clear",
             json!({ "what": "previews" }),

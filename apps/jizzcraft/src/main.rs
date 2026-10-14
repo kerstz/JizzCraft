@@ -19,6 +19,7 @@ OPTIONS:
   --seconds <N>             bench duration (default 30)
   --bench-gst-play          also measure gst-play-1.0 on the same file
   --assume-adult            (screenshots only) skip the age gate without saving
+  --disguise                launch as a neutral \"Viewer\" (window name, app ID, discreet mode)
   --portable                keep database, config and cache in ./jizzcraft-data next to the executable
   --home <DIR>              keep database, config and cache under DIR
   -h, --help                show this help
@@ -45,6 +46,7 @@ fn main() -> eframe::Result {
     let mut bench_file: Option<PathBuf> = None;
     let mut bench_secs = 30u32;
     let mut bench_gst = false;
+    let mut disguise_flag = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--screenshot" => opts.screenshot = args.next().map(PathBuf::from),
@@ -68,6 +70,7 @@ fn main() -> eframe::Result {
             "--seconds" => bench_secs = args.next().and_then(|v| v.parse().ok()).unwrap_or(30),
             "--bench-gst-play" => bench_gst = true,
             "--assume-adult" => assume_adult = true,
+            "--disguise" => disguise_flag = true,
             "--portable" => {
                 if let Some(h) = jizzcraft_core::paths::portable_home() {
                     jizzcraft_core::paths::set_home(h);
@@ -118,13 +121,21 @@ fn main() -> eframe::Result {
         });
     }
 
+    // The identity is fixed for the whole run (the app ID cannot change later).
+    let saved = opts
+        .config
+        .as_ref()
+        .map(|c| c.disguise)
+        .unwrap_or_else(|| Config::load().disguise);
+    let identity = jizzcraft_ui::identity::launch_identity(saved, disguise_flag);
+    opts.disguised = identity.disguised;
     let native = eframe::NativeOptions {
-        viewport: egui_viewport(),
+        viewport: egui_viewport(&identity),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
-        "JizzCraft",
+        identity.app_name,
         native,
         Box::new(move |cc| match JizzApp::new(cc, opts) {
             Ok(app) => Ok(Box::new(app)),
@@ -133,10 +144,10 @@ fn main() -> eframe::Result {
     )
 }
 
-fn egui_viewport() -> eframe::egui::ViewportBuilder {
+fn egui_viewport(id: &jizzcraft_ui::identity::Identity) -> eframe::egui::ViewportBuilder {
     eframe::egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([760.0, 480.0])
-        .with_title("JizzCraft")
-        .with_app_id("org.jizzcraft.JizzCraft")
+        .with_title(id.title)
+        .with_app_id(id.app_id)
 }
