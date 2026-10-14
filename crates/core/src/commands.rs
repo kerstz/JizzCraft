@@ -80,6 +80,7 @@ pub mod names {
     pub const LIBRARY_REMOVE: &str = "library.remove";
     pub const LIBRARY_STATS: &str = "library.stats";
     pub const MEDIA_QUERY: &str = "media.query";
+    pub const MEDIA_SEARCH: &str = "media.search";
     pub const MEDIA_GET: &str = "media.get";
     pub const MEDIA_FAVORITE_TOGGLE: &str = "media.favorite.toggle";
 }
@@ -108,6 +109,21 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
                 .remove_folder(std::path::Path::new(&path))?
                 .ok_or_else(|| Error::NotFound("imported folder".into()))?;
             Ok(json!({ "removed_media": removed }))
+        },
+    );
+    reg.register(
+        MEDIA_SEARCH,
+        "Full-text search over names, tags, categories and marker notes: {query, limit?, offset?}",
+        |c, a| {
+            let q = str_arg(&a, "query")?;
+            let limit = a
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .min(10_000);
+            let offset = a.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            let items = c.db().search(&q, limit, offset)?;
+            Ok(json!({ "count": items.len(), "items": items }))
         },
     );
     reg.register(LIBRARY_STATS, "Library counters", |c, _| {

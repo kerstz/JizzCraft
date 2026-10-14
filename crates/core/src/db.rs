@@ -91,6 +91,64 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX labels_parent ON labels(parent_id);
     CREATE TABLE media_labels (label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE, media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE, added_at INTEGER NOT NULL, PRIMARY KEY (label_id, media_id)) WITHOUT ROWID;
     CREATE INDEX media_labels_media ON media_labels(media_id, label_id);",
+    // v4: full-text index (SQLite FTS5, built into the bundled SQLite) over
+    // file names, tag and category names, and marker notes. `media_fts.rowid`
+    // is `media.id`. Triggers keep it current on scan, labelling, marker edits
+    // and folder removal. Private tags and categories (and anything under a
+    // private category) are never indexed, so discreet mode cannot leak them
+    // through search.
+    "CREATE VIEW media_fts_src AS
+        SELECT m.id AS id, m.name AS name,
+            COALESCE((SELECT group_concat(l.name, ' ') FROM media_labels ml JOIN labels l ON l.id = ml.label_id
+                WHERE ml.media_id = m.id AND l.kind = 2 AND l.private = 0), '') AS tags,
+            COALESCE((SELECT group_concat(l.name, ' ') FROM media_labels ml JOIN labels l ON l.id = ml.label_id
+                WHERE ml.media_id = m.id AND l.kind = 1
+                AND NOT EXISTS (WITH RECURSIVE up(id) AS (SELECT l.id UNION SELECT p.parent_id FROM labels p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL)
+                                SELECT 1 FROM labels x JOIN up ON x.id = up.id WHERE x.private = 1)), '') AS cats,
+            COALESCE((SELECT group_concat(k.label, ' ') FROM markers k WHERE k.media_id = m.id AND k.label <> ''), '') AS notes
+        FROM media m;
+    CREATE VIRTUAL TABLE media_fts USING fts5(name, tags, cats, notes, tokenize = 'unicode61 remove_diacritics 2', prefix = '1 2 3');
+    INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src;
+    CREATE TRIGGER media_fts_ai AFTER INSERT ON media BEGIN
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER media_fts_au AFTER UPDATE OF name ON media BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.id;
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER media_fts_ad AFTER DELETE ON media BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.id;
+    END;
+    CREATE TRIGGER media_fts_ml_ai AFTER INSERT ON media_labels BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_ml_ad AFTER DELETE ON media_labels
+    WHEN EXISTS (SELECT 1 FROM media WHERE id = OLD.media_id) BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.media_id;
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = OLD.media_id;
+    END;
+    CREATE TRIGGER media_fts_lb_au AFTER UPDATE OF name, private, parent_id ON labels BEGIN
+        DELETE FROM media_fts WHERE rowid IN (
+            WITH RECURSIVE sub(id) AS (SELECT NEW.id UNION SELECT c.id FROM labels c JOIN sub ON c.parent_id = sub.id)
+            SELECT ml.media_id FROM media_labels ml JOIN sub ON ml.label_id = sub.id);
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id IN (
+            WITH RECURSIVE sub(id) AS (SELECT NEW.id UNION SELECT c.id FROM labels c JOIN sub ON c.parent_id = sub.id)
+            SELECT ml.media_id FROM media_labels ml JOIN sub ON ml.label_id = sub.id);
+    END;
+    CREATE TRIGGER media_fts_mk_ai AFTER INSERT ON markers BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_mk_au AFTER UPDATE OF label ON markers BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_mk_ad AFTER DELETE ON markers
+    WHEN EXISTS (SELECT 1 FROM media WHERE id = OLD.media_id) BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.media_id;
+        INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = OLD.media_id;
+    END;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -98,6 +156,14 @@ pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 const COLS: &str = "id, path, name, kind, size, mtime, width, height, duration_ms, codec, \
                     added_at, missing, favorite, rating, resume_ms, play_count, \
                     last_played_at, hidden, inbox, damaged, check_note, checked_at, fp";
+
+/// `COLS` with each column prefixed (for joins).
+pub(crate) fn row_to_media_cols(prefix: &str) -> String {
+    COLS.split(", ")
+        .map(|c| format!("{prefix}{c}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Sort key for library queries. Mapped to SQL through a fixed whitelist.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -161,6 +227,10 @@ impl SortKey {
     /// History-derived keys are hidden in discreet mode by the UI.
     pub fn is_history(self) -> bool {
         matches!(self, SortKey::LastPlayed | SortKey::PlayCount)
+    }
+
+    pub(crate) fn column_name(self) -> &'static str {
+        self.column()
     }
 
     fn column(self) -> &'static str {
@@ -617,7 +687,19 @@ impl Db {
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
                 .replace('_', "\\_");
-            conds.push("name_lc LIKE ? ESCAPE '\\'".into());
+            // Full-text match (names, tags, categories, marker notes, prefix
+            // and accent insensitive) or, as before, a substring of the name.
+            match crate::search::fts_query(n) {
+                Some(q) => {
+                    conds.push(
+                        "(media.id IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?) \
+                         OR name_lc LIKE ? ESCAPE '\\')"
+                            .into(),
+                    );
+                    args.push(Value::Text(q));
+                }
+                None => conds.push("name_lc LIKE ? ESCAPE '\\'".into()),
+            }
             args.push(Value::Text(format!("%{esc}%")));
         }
         crate::organize::push_conds(&f.org, &mut conds, &mut args);
@@ -813,7 +895,7 @@ impl Db {
     }
 }
 
-fn row_to_media(r: &Row<'_>) -> rusqlite::Result<Media> {
+pub(crate) fn row_to_media(r: &Row<'_>) -> rusqlite::Result<Media> {
     Ok(Media {
         id: r.get(0)?,
         path: blob_to_path(r.get(1)?),

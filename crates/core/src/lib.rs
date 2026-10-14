@@ -19,6 +19,7 @@ pub mod portability;
 pub mod privacy;
 pub mod report;
 pub mod scan;
+pub mod search;
 pub mod timed;
 pub mod view;
 
