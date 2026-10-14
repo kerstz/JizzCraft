@@ -9,7 +9,7 @@ before the code exists, and records what each step has actually shipped.
 | --- | --- | --- |
 | 0 | This document, `SECURITY.md`, README wording | done |
 | 1 | SQLite replaced by SQLCipher (same behaviour, nothing encrypted) | done |
-| 2 | Key derivation and header file (pure crypto) | not started |
+| 2 | Key derivation and header file (pure crypto, `core::vault`) | done |
 | 3 | Opening the database with a key | not started |
 | 4 | Plain to encrypted conversion, crash recovery | not started |
 | 5 | Encrypted thumbnails and previews | not started |
@@ -82,7 +82,7 @@ tags, ratings, history and every other piece of data in the database are lost.
 - Secrets never go through argv, environment variables, `--cmd` JSON, logs,
   toasts, errors or crash reports.
 
-### Header file `library.vault` (version 1, 135 bytes, little-endian)
+### Header file `library.vault` (version 1, 111 bytes, little-endian)
 
 It sits next to `library.db`.
 
@@ -97,6 +97,9 @@ It sits next to `library.db`.
 | 23 | 16 | salt |
 | 39 | 24 | XChaCha20-Poly1305 nonce |
 | 63 | 48 | wrapped DEK (32 bytes) + Poly1305 tag (16 bytes) |
+
+The fields add up to 111 bytes (an earlier draft of this page said 135, which
+was an arithmetic slip; the field table above is the format).
 
 The associated data of the AEAD is the first 39 bytes. Defaults: 64 MiB
 (65536 KiB), 3 iterations, 1 lane. Parameters read from a file are bounded
