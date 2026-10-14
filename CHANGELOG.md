@@ -29,7 +29,7 @@ anything may change between minor versions.
 - `cargo xtask dist --edition offline|online [--browser]` (`--network` kept as
   an alias).
 
-## [0.1.0]
+## [0.1.0] - 2026-10-14
 
 First public alpha.
 
