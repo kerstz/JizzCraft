@@ -313,6 +313,7 @@ impl Spawn for RealSpawn {
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("no stdout"))?;
+        #[cfg(unix)]
         let pid = child.id();
         Ok(Started {
             to: Box::new(to),

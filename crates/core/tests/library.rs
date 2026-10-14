@@ -1,3 +1,4 @@
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_core::{Db, Filter, MediaKind, Registry, register_core, scan};
 use serde_json::json;
 use std::fs;

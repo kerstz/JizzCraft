@@ -1,3 +1,4 @@
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_fetch::config::{FetchConfig, Indexer};
 use jizzcraft_fetch::redact::redact_url;
 use jizzcraft_fetch::secret::Secret;

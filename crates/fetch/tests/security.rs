@@ -4,6 +4,7 @@
 //! secrets that must never reach an error, a toast or a listing.
 //! Synthetic data only; everything stays on loopback.
 
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_fetch::sources::{self, SourceDef};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};

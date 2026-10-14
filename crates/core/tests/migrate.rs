@@ -1,4 +1,5 @@
 #![cfg(unix)] // symlinks, raw byte file names and POSIX modes
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_core::Db;
 use rusqlite::Connection;
 use std::os::unix::ffi::OsStrExt;

@@ -1,6 +1,6 @@
 //! `stream.open` path: seekable HTTP through `Range`, no file written.
 #![cfg(feature = "network")]
-
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::sync::Arc;

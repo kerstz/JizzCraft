@@ -521,6 +521,7 @@ impl WebHost for JizzApp {
 
 #[cfg(test)]
 mod tests {
+    #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
     use super::*;
 
     fn found(path: &str, v: &str, age: Option<u32>) -> Found {

@@ -5,6 +5,7 @@ use std::time::Instant;
 
 /// Linux USER_HZ is 100 on every mainstream architecture.
 /// The other architectures know what they did.
+#[cfg(target_os = "linux")]
 const CLK_TCK: f64 = 100.0;
 
 #[cfg(not(target_os = "linux"))]
