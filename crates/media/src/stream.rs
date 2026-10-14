@@ -379,6 +379,9 @@ fn feed_timed(
     }
 }
 
+/// No request for this long after a stalled read was served: the queues are full.
+const QUEUES_FULL: Duration = Duration::from_millis(400);
+
 fn post_buffering(app: &gst_app::AppSrc, pct: i32) {
     let _ = app.post_message(gst::message::Buffering::new(pct));
 }
@@ -389,6 +392,12 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl, h
     let mut idle_since: Option<Instant> = None;
     let mut since_stall: u64 = 0;
     let mut buf = vec![0u8; CHUNK];
+    // Bytes of the current chunk already read. A reader may answer short
+    // (at a request unit or a piece boundary) without being at the end; the
+    // demuxer pulls with exact lengths and takes a short buffer for the end
+    // of the file, so a chunk is pushed only when it is whole.
+    let mut filled: usize = 0;
+    let mut last_push = Instant::now();
     // When the sink last delivered a new frame, as seen from here.
     let mut seen_frames = health.frames.load(Ordering::Relaxed);
     let mut frame_at = Instant::now();
@@ -409,6 +418,7 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl, h
                 return;
             }
             pos = off;
+            filled = 0;
             idle_since = None;
         }
         let frames = health.frames.load(Ordering::Relaxed);
@@ -417,6 +427,14 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl, h
             frame_at = Instant::now();
         }
         if !want {
+            // The pipeline stopped asking: its queues hold all they take. A
+            // stall is over by then, whatever the byte count says (a heavy
+            // clip fills the queues before RESUME_SECS of bytes arrive, and
+            // a paused pipeline never asks again).
+            if stalled && since_stall > 0 && last_push.elapsed() >= QUEUES_FULL {
+                stalled = false;
+                post_buffering(app, 100);
+            }
             continue;
         }
         if pos >= len {
@@ -426,9 +444,16 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl, h
             continue;
         }
         let max = CHUNK.min((len - pos) as usize);
-        match reader.read(&mut buf[..max]) {
+        match reader.read(&mut buf[filled..max]) {
             Ok(0) => std::thread::sleep(TICK),
+            Ok(n) if filled + n < max => {
+                // Short read, not the end: keep the part, ask for the rest.
+                filled += n;
+                idle_since = None;
+            }
             Ok(n) => {
+                let n = filled + n;
+                filled = 0;
                 {
                     // A seek that arrived while reading makes this chunk stale.
                     let mut s = ctl.state.lock().unwrap();
@@ -445,6 +470,7 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl, h
                     return; // flushing or torn down
                 }
                 pos += n as u64;
+                last_push = Instant::now();
                 health.bytes.fetch_add(n as u64, Ordering::Relaxed);
                 idle_since = None;
                 if stalled {

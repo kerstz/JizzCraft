@@ -40,6 +40,10 @@ pub struct Config {
     pub panic_video: Option<PathBuf>,
     /// Unix seconds of the last start-up cache prune (at most once a day).
     pub cache_pruned_at: Option<u64>,
+    /// Interface zoom, 0.75 to 2.0. None: 1.0.
+    pub ui_zoom: Option<f32>,
+    /// No UI animations (fades, easing).
+    pub reduce_motion: bool,
 }
 
 pub fn path() -> PathBuf {

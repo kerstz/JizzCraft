@@ -20,8 +20,8 @@ pub const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf1, 0xee);
 pub const TEXT_STRONG: Color32 = Color32::WHITE;
 /// 60 % warm white.
 pub const MUTED: Color32 = warm(0x99);
-/// 38 % warm white.
-pub const FAINT: Color32 = warm(0x61);
+/// 50 % warm white (was 38 %, 3.2:1 on BG; WCAG AA needs 4.5:1).
+pub const FAINT: Color32 = warm(0x80);
 /// 15 % warm white.
 pub const LINE: Color32 = warm(0x26);
 /// 40 % warm white.
@@ -37,6 +37,49 @@ pub const APP_INK: Color32 = Color32::from_rgb(0xff, 0xb3, 0x9e);
 
 /// Consistent 8 px rhythm.
 pub const S: f32 = 8.0;
+
+pub const ZOOM_MIN: f32 = 0.75;
+pub const ZOOM_MAX: f32 = 2.0;
+
+/// Keep a zoom factor inside the supported range (NaN falls back to 1.0).
+pub fn clamp_zoom(z: f32) -> f32 {
+    if z.is_finite() {
+        z.clamp(ZOOM_MIN, ZOOM_MAX)
+    } else {
+        1.0
+    }
+}
+
+/// Animations off (or back to egui's default 1/12 s).
+pub fn set_reduce_motion(ctx: &egui::Context, reduce: bool) {
+    let t = if reduce { 0.0 } else { 1.0 / 12.0 };
+    ctx.all_styles_mut(|s| s.animation_time = t);
+}
+
+/// Contrast ratio of two opaque colours (WCAG 2.x relative luminance).
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    fn lum(c: Color32) -> f32 {
+        let f = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+    }
+    let (la, lb) = (lum(a), lum(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// `fg` (possibly translucent) composited over opaque `bg`.
+pub fn over(fg: Color32, bg: Color32) -> Color32 {
+    let a = u16::from(fg.a());
+    // fg is premultiplied: out = fg + bg * (1 - a)
+    let m = |f: u8, b: u8| (u16::from(f) + u16::from(b) * (255 - a) / 255).min(255) as u8;
+    Color32::from_rgb(m(fg.r(), bg.r()), m(fg.g(), bg.g()), m(fg.b(), bg.b()))
+}
 
 pub fn hairline() -> Stroke {
     Stroke::new(1.0, LINE)

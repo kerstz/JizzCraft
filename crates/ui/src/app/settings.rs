@@ -221,6 +221,32 @@ impl JizzApp {
         if widgets::button_outline(ui, tr("Welcome tour")).clicked() {
             super::onboarding::reopen(ui.ctx());
         }
+        ui.add_space(6.0);
+        widgets::eyebrow(ui, "", tr("Appearance"), "");
+        let mut z = ui.ctx().zoom_factor();
+        ui.horizontal(|ui| {
+            ui.label(tr("Interface zoom"));
+            if ui
+                .add(
+                    egui::Slider::new(&mut z, crate::theme::ZOOM_MIN..=crate::theme::ZOOM_MAX)
+                        .step_by(0.05)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                )
+                .changed()
+            {
+                ui.ctx().set_zoom_factor(crate::theme::clamp_zoom(z));
+            }
+            if widgets::button_outline(ui, tr("Reset")).clicked() {
+                ui.ctx().set_zoom_factor(1.0);
+            }
+        });
+        ui.label(RichText::new(tr("Ctrl+= / Ctrl+- / Ctrl+0 also change the zoom.")).color(FAINT));
+        let mut rm = self.cfg.reduce_motion;
+        if ui.checkbox(&mut rm, tr("Reduce motion")).changed() {
+            self.cfg.reduce_motion = rm;
+            crate::theme::set_reduce_motion(ui.ctx(), rm);
+            self.save_cfg();
+        }
         let _ = cmds;
         if edition::EDITION == Edition::Offline {
             ui.add_space(6.0);

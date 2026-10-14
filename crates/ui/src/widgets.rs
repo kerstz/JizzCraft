@@ -74,6 +74,17 @@ fn button_inner(ui: &mut Ui, label: &str, look: Look, height: f32, side_pad: f32
     let pos = rect.center() - galley.size() / 2.0;
     ui.painter().galley(pos, galley, fg);
     paint_focus(ui, &resp);
+    // Painted text is invisible to a screen reader: name the widget.
+    match look {
+        Look::Chip { on } => {
+            resp.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label)
+            });
+        }
+        _ => {
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        }
+    }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -124,6 +135,9 @@ pub fn nav_tab(ui: &mut Ui, label: &str, active: bool) -> Response {
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, fg);
     paint_focus(ui, &resp);
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label)
+    });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -254,6 +268,13 @@ pub fn rating_stars(ui: &mut Ui, rating: u8, size: f32) -> Option<u8> {
         );
     }
     paint_focus(ui, &resp);
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("Rating, {rating} of 5 stars"),
+        )
+    });
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.clicked() {
         let v = hover.unwrap_or(0);
