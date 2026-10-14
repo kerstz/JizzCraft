@@ -8,6 +8,7 @@ pub mod player;
 pub mod preview;
 pub mod probe;
 pub mod service;
+pub mod stream;
 pub mod thumbs;
 
 use std::sync::OnceLock;

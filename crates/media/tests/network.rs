@@ -109,6 +109,35 @@ fn player_never_connects() {
     assert_no_connections(&trap, "player");
 }
 
+/// The in-process stream source is the one place an `appsrc` is allowed. A
+/// playlist pushed through it must be refused like any other, not followed.
+#[test]
+fn stream_player_never_connects() {
+    if !common::ready(common::PLAYBACK) || !common::ready(&["appsrc"]) {
+        return;
+    }
+    let trap = Trap::new();
+    let dir = tempfile::tempdir().unwrap();
+    for f in trap.files(dir.path()) {
+        let bytes = std::fs::read(&f).unwrap();
+        let len = bytes.len() as u64;
+        let p = Player::open_stream(
+            Box::new(std::io::Cursor::new(bytes)),
+            len,
+            0.0,
+            Arc::new(|| {}),
+        );
+        let end = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < end && p.state() != PlayState::Error {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(p.state(), PlayState::Error, "{}", f.display());
+        assert_eq!(p.error().as_deref(), Some(guard::REFUSED));
+        drop(p);
+    }
+    assert_no_connections(&trap, "stream player");
+}
+
 #[test]
 fn thumbnails_and_probe_never_connect() {
     if !common::ready(common::PLAYBACK) {

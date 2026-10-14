@@ -12,6 +12,11 @@
 //! 2. [`watch`], on every pipeline: if such an element, or any source other
 //!    than `filesrc`, is created anyway, nothing reaches its sink pads, the
 //!    pipeline posts a [`REFUSED`] error and its owner sets it to `Null`.
+//!
+//! One pipeline kind is allowed one more source: the in-process stream player
+//! (`Player::open_stream`) feeds bytes it read from a local reader through an
+//! `appsrc`. That is [`watch_with`] with `["appsrc"]`; the fetchers are still
+//! refused there, so a playlist streamed through it is caught like any other.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -81,6 +86,39 @@ pub fn can_reach_network(f: &gst::ElementFactory) -> bool {
     })
 }
 
+/// Does this file head look like a streaming manifest or a list of locations
+/// (HLS, DASH, Smooth Streaming, SDP, plain URL list) rather than media?
+/// Used on in-process streams before any pipeline exists, so a playlist
+/// pushed through the stream source is refused up front.
+pub fn looks_like_manifest(head: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(&head[..head.len().min(1024)]);
+    let t = text.trim_start_matches('\u{feff}').trim_start();
+    if t.starts_with("#EXTM3U") || t.starts_with("v=0") && t.contains("\no=") {
+        return true;
+    }
+    if t.starts_with('<') && (t.contains("<MPD") || t.contains("<SmoothStreamingMedia")) {
+        return true;
+    }
+    // text/uri-list: every non-comment line is `scheme://…`.
+    let mut lines = t
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'));
+    let mut n = 0;
+    for l in lines.by_ref() {
+        let ok = l.split_once("://").is_some_and(|(s, _)| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+        }) && !l.contains(char::is_whitespace);
+        if !ok {
+            return false;
+        }
+        n += 1;
+    }
+    n > 0 && t.is_ascii()
+}
+
 /// Does a missing-plugin installer detail ask for a streaming manifest?
 pub fn is_manifest_detail(detail: &str) -> bool {
     MANIFEST_CAPS.iter().any(|c| detail.contains(c))
@@ -114,11 +152,22 @@ fn starve(pad: &gst::Pad) {
 /// Watch a whole pipeline. The flag turns `true` when an element was refused;
 /// the pipeline has then posted a [`REFUSED`] error.
 pub(crate) fn watch(pipeline: &gst::Bin) -> Arc<AtomicBool> {
+    watch_with(pipeline, &[])
+}
+
+/// [`watch`], additionally allowing the named source elements.
+pub(crate) fn watch_with(
+    pipeline: &gst::Bin,
+    extra_sources: &'static [&'static str],
+) -> Arc<AtomicBool> {
     let refused = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&refused);
     pipeline.connect_deep_element_added(move |top, _, el| {
         let Some(f) = el.factory() else { return };
-        let stray_source = klass_has(&f, "Source") && !SOURCES.contains(&f.name().as_str());
+        let name = f.name();
+        let stray_source = klass_has(&f, "Source")
+            && !SOURCES.contains(&name.as_str())
+            && !extra_sources.contains(&name.as_str());
         if !stray_source && !can_reach_network(&f) {
             return;
         }
@@ -175,6 +224,50 @@ mod tests {
                 assert_eq!(f.rank(), gst::Rank::NONE, "{name}");
             }
         }
+    }
+
+    #[test]
+    fn manifests_are_recognised_by_their_head() {
+        assert!(looks_like_manifest(b"#EXTM3U\n#EXT-X-VERSION:3\n"));
+        assert!(looks_like_manifest(b"\xef\xbb\xbf  #EXTM3U\n"));
+        assert!(looks_like_manifest(
+            b"<?xml version=\"1.0\"?>\n<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\">"
+        ));
+        assert!(looks_like_manifest(b"v=0\no=- 1 1 IN IP4 127.0.0.1\ns=x\n"));
+        assert!(looks_like_manifest(
+            b"# list\nhttp://127.0.0.1/a.mp4\nhttp://127.0.0.1/b.mp4\n"
+        ));
+        // Media and ordinary text are not manifests.
+        assert!(!looks_like_manifest(&[0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00]));
+        assert!(!looks_like_manifest(b"\x00\x00\x00\x18ftypmp42"));
+        assert!(!looks_like_manifest(b"hello world\n"));
+        assert!(!looks_like_manifest(b""));
+    }
+
+    #[test]
+    fn appsrc_is_refused_unless_allowed() {
+        crate::init().unwrap();
+        let (Ok(a), Ok(b), Ok(t)) = (
+            gst::ElementFactory::make("appsrc").build(),
+            gst::ElementFactory::make("appsrc").build(),
+            gst::ElementFactory::make("videotestsrc").build(),
+        ) else {
+            return;
+        };
+        let strict = gst::Pipeline::new();
+        let r1 = watch(strict.upcast_ref());
+        strict.add(&a).unwrap();
+        assert!(
+            r1.load(Ordering::SeqCst),
+            "appsrc must trip the strict watch"
+        );
+
+        let lenient = gst::Pipeline::new();
+        let r2 = watch_with(lenient.upcast_ref(), &["appsrc"]);
+        lenient.add(&b).unwrap();
+        assert!(!r2.load(Ordering::SeqCst), "appsrc allowed for streams");
+        lenient.add(&t).unwrap();
+        assert!(r2.load(Ordering::SeqCst), "other sources still refused");
     }
 
     #[test]
