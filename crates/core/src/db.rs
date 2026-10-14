@@ -91,7 +91,7 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX labels_parent ON labels(parent_id);
     CREATE TABLE media_labels (label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE, media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE, added_at INTEGER NOT NULL, PRIMARY KEY (label_id, media_id)) WITHOUT ROWID;
     CREATE INDEX media_labels_media ON media_labels(media_id, label_id);",
-    // v4: full-text index (SQLite FTS5, built into the bundled SQLite) over
+    // v4: full-text index (SQLite FTS5, built into the bundled SQLCipher) over
     // file names, tag and category names, and marker notes. `media_fts.rowid`
     // is `media.id`. Triggers keep it current on scan, labelling, marker edits
     // and folder removal. Private tags and categories (and anything under a

@@ -1,1 +1,5 @@
 JizzCraft. Copyright (c) 2026 the JizzCraft contributors. Licensed under MIT OR Apache-2.0 (see LICENSE-MIT, LICENSE-APACHE). Bundled fonts and other assets: see ATTRIBUTION.md.
+
+This product includes SQLCipher (Copyright (c) Zetetic LLC, BSD-3-Clause) and
+software developed by the OpenSSL Project (OpenSSL 3, Apache-2.0), statically
+linked through the `rusqlite` crate. SQLite itself is in the public domain.

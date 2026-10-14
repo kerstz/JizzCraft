@@ -93,6 +93,12 @@ Add behaviour as a command first, UI second.
   player still has exactly one `appsrc` and never sees a second source. Every segment, key and manifest URL
   passes `inward_ok` and `proxy_blocked`. Recents and quality choices are never
   written to disk.
+- **`openssl-sys` is allowed for SQLCipher only.** `rusqlite` is built with
+  `bundled-sqlcipher-vendored-openssl` (vendored OpenSSL as crypto provider,
+  needs perl and make to build; `OPENSSL_NO_VENDOR=1` links the system one).
+  Its only direct dependent may be `libsqlite3-sys`; `openssl`, `native-tls`
+  and every HTTP/TLS crate stay banned (`offline_deps`). SQLCipher embeds an
+  older SQLite (3.51): migrations must not use newer SQL. See `docs/vault.md`.
 - **No shell** built from filenames. Pass paths as argv or through the APIs.
 - **No full paths or filenames in logs** unless `JIZZCRAFT_DEBUG=1`.
 - Tests, fixtures and screenshots are **100 % SFW and synthetic**. Never commit

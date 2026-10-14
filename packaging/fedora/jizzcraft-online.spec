@@ -9,7 +9,7 @@ Summary:        Private, local-first media library and player
 License:        MIT OR Apache-2.0
 URL:            https://github.com/kerstz/JizzCraft
 Source0:        %{url}/archive/v%{version}/JizzCraft-%{version}.tar.gz
-BuildRequires:  rust, cargo, pkgconfig(gstreamer-1.0), pkgconfig(gstreamer-plugins-base-1.0), pkgconfig(gstreamer-app-1.0), pkgconfig(gstreamer-video-1.0), pkgconfig(gstreamer-pbutils-1.0), desktop-file-utils, libappstream-glib
+BuildRequires:  rust, cargo, gcc, make, perl-interpreter, perl-core, pkgconfig(gstreamer-1.0), pkgconfig(gstreamer-plugins-base-1.0), pkgconfig(gstreamer-app-1.0), pkgconfig(gstreamer-video-1.0), pkgconfig(gstreamer-pbutils-1.0), desktop-file-utils, libappstream-glib
 Provides:       jizzcraft = %{version}-%{release}
 Conflicts:      jizzcraft
 Obsoletes:      jizzcraft < %{version}

@@ -34,7 +34,7 @@ JizzCraft is an independent project and is not affiliated with or endorsed by th
 
 ## Libraries
 
-eframe/egui/wgpu, gstreamer-rs, rusqlite (bundled SQLite), image, rfd,
+eframe/egui/wgpu, gstreamer-rs, rusqlite (bundled SQLCipher), image, rfd,
 directories, walkdir, blake3, clap, serde. See `Cargo.lock` for exact versions.
 
 Licences of the Rust dependencies (checked with `cargo metadata`): almost all
@@ -52,5 +52,13 @@ option applies.
 
 System libraries, linked dynamically and not shipped in this repository:
 GStreamer and its plugins (LGPL-2.1+, some plugins under other licences), and
-the Vulkan loader and GPU drivers. SQLite is public domain and compiled in by
-`rusqlite`.
+the Vulkan loader and GPU drivers.
+
+Compiled in by `rusqlite` (build dependencies, so they are not in
+`THIRD-PARTY.html`):
+
+- SQLCipher 4.x, Copyright (c) Zetetic LLC, BSD-3-Clause. It embeds SQLite,
+  which is public domain.
+- OpenSSL 3.x (via `openssl-src`, vendored and statically linked as
+  SQLCipher's crypto provider), Apache-2.0, Copyright (c) The OpenSSL Project
+  Authors.

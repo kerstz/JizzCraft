@@ -110,6 +110,9 @@ jobs:
           "$gstRoot\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
           $env:PKG_CONFIG_PATH = $pc
           pkg-config --list-all | Select-String glib
+      # SQLCipher: the vendored OpenSSL needs Perl (preinstalled) and NASM.
+      - name: NASM
+        uses: ilammy/setup-nasm@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-about --locked --features cli

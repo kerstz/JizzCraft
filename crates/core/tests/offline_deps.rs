@@ -18,7 +18,10 @@ const BANNED: &[&str] = &[
     "native-tls",
     "rustls",
     "openssl",
-    "openssl-sys",
+    // `openssl-sys` is NOT listed: SQLCipher (rusqlite feature
+    // `bundled-sqlcipher-vendored-openssl`) statically links a vendored
+    // OpenSSL libcrypto for its cipher. `only_sqlcipher_pulls_openssl_sys`
+    // pins who may depend on it; `openssl` and `native-tls` stay banned.
     "h2",
     "tungstenite",
     "webbrowser",
@@ -122,4 +125,43 @@ fn browser_engine_stays_in_the_helper() {
             assert!(!names.iter().any(|n| n == b), "{pkg} depends on {b}");
         }
     }
+}
+
+/// `openssl-sys` is allowed for one reason only: SQLCipher's libcrypto. The
+/// only direct dependent may be `libsqlite3-sys`; a TLS stack would show up
+/// as `openssl`, `native-tls` or another dependent and fail here (and in
+/// `BANNED`).
+#[test]
+fn only_sqlcipher_pulls_openssl_sys() {
+    for extra in [vec![], vec!["--features", "network"]] {
+        let mut args = vec!["--workspace", "-i", "openssl-sys", "--depth", "1"];
+        args.extend(extra);
+        let names = tree(&args);
+        assert_eq!(names.first().map(String::as_str), Some("openssl-sys"));
+        let dependents: Vec<&String> = names.iter().skip(1).collect();
+        assert_eq!(
+            dependents,
+            ["libsqlite3-sys"],
+            "unexpected dependents of openssl-sys"
+        );
+    }
+}
+
+/// Positive control for the SQLCipher build: a plain SQLite would return no
+/// row for `PRAGMA cipher_version`.
+#[test]
+fn sqlcipher_is_linked() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let v: String = conn
+        .query_row("PRAGMA cipher_version", [], |r| r.get(0))
+        .expect("PRAGMA cipher_version must return a row");
+    assert!(!v.trim().is_empty(), "empty cipher_version");
+    let fts: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(fts, 1, "FTS5 missing from the SQLCipher build");
 }

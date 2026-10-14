@@ -7,6 +7,21 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Security
+- Encrypted vault, step 0 and 1 of issue #13. **Nothing is encrypted yet**:
+  the vault is not delivered and `SECURITY.md` and the README say so.
+  `docs/vault.md` records the threat model, the `library.vault` header format,
+  what is not protected and that a forgotten passphrase means permanent loss.
+  The database engine is now SQLCipher 4.14 (`rusqlite` feature
+  `bundled-sqlcipher-vendored-openssl`) with no change of behaviour: same
+  schema, FTS5 and migrations, perf budgets unchanged. New build needs: C
+  compiler, `make`, `perl` (NASM on Windows); `OPENSSL_NO_VENDOR=1` links the
+  system OpenSSL. `openssl-sys` is now in the tree, restricted by
+  `offline_deps` to `libsqlite3-sys`; `openssl` and `native-tls` stay banned.
+  The embedded SQLite is 3.51.3, older than before: migrations must not use
+  newer SQL. OpenSSL (Apache-2.0) and SQLCipher (BSD-3) are credited in
+  `NOTICE` and `ATTRIBUTION.md`.
+
 ### Tooling
 - Performance budgets (issue #17, engine part). `cargo xtask perf` builds a
   synthetic 10k-file library and times scan (cold and rescan), database open,
