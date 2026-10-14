@@ -6,7 +6,7 @@
 
 **The porn viewer you already know how to use.**
 
-Your library, in a native app written entirely in Rust. Open source, offline, and yours.
+Your library, in a native app written entirely in Rust. Open source, offline, and yours. Fully usable with one hand, which we are told is an accessibility feature, and we are sticking to that.
 
 ![100% Rust](https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square)
 ![Linux](https://img.shields.io/badge/platform-Linux-2f7bf5?style=flat-square)
@@ -20,13 +20,42 @@ Your library, in a native app written entirely in Rust. Open source, offline, an
 
 ![JizzCraft library grid](docs/screenshots/library.png)
 
+Yes, the name is exactly what you think it is. Everything else here tries hard to be more serious than the name: the code is tested, the claims below match it, and the only thing the app ever talks to is your own disk.
+
 ## Why JizzCraft
 
-- 🎛️ **Familiar by design.** If you know a file browser, you already know JizzCraft: a top bar, a grid, an inspector. Open a folder, see your files.
-- ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs. A left-hand preset keeps everything on `WASD` for one-handed use.
+- 🎛️ **Familiar by design.** If you know a file browser, you already know JizzCraft: a top bar, a grid, an inspector. Open a folder, see your files. If you can operate a file manager, you are overqualified.
+- ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs.
+- ✋ **One hand is enough.** A left-hand preset puts browsing, opening, playback, seeking, volume, favorites, ratings and the boss key around `WASD`. [Details and honest footnote below](#one-hand-is-enough).
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
 - 🔒 **Private by default.** No account, no telemetry, no network connections: GStreamer's network-capable elements are switched off inside the app, so even a streaming playlist renamed to `.mp4` is refused, not fetched. A boss key, a discreet mode and a screen-share-safe mode are built in.
 - 🤖 **Agent-ready.** One registry of named commands drives the menus, the shortcuts and a JSON CLI.
+
+## One hand is enough
+
+*The left-hand preset keeps every routine action under the left hand. What the right hand does in the meantime is outside the scope of this README.*
+
+Turn it on once: press `?` in the library and click *Left-hand keys*, or start the app with `jizzcraft --cmd app.left_hand.toggle`. The choice is saved. Letters match the physical key, so on AZERTY the same keys sit under `ZQSD`.
+
+| | Library | Image viewer | Video player |
+| --- | --- | --- | --- |
+| Move / step | `W` `A` `S` `D` move the selection | `A` / `D` previous / next | `A` / `D` back / forward 5 s |
+| Open / play | `E` or `Space` | | `Space` play / pause |
+| Up / down | | `W` / `S` zoom, `Z` fit | `W` / `S` volume |
+| Favorite | `F` | `F` | `F` |
+| Back | `Q` clears the search | `Q` back to the library | `Q` leaves fullscreen, then goes back |
+| Also | `1`–`4` switch tabs | `X` hide / unhide | `X` mute, `G` fullscreen, `Shift+A` / `Shift+D` previous / next item |
+
+Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key (a one-hand chord, with a mild stretch to `H`). Inbox triage: `D` keep, `S` or `X` hide, `W` favorite, `A` undo, `Q` leave. Press `?` in the app for the full list of both presets.
+
+**Honest footnote: what still wants the other hand or a pointer.**
+
+- Turning the preset on: one click in the `?` window, or the `--cmd` above.
+- Keys on the right side of the keyboard: `?`, `/` and typing a search, `Home` / `End`, `Alt+0` (clear a rating).
+- The folder picker behind `Ctrl+O`: it is the system dialog, not ours.
+- Dragging the timeline and its hover previews, panning a zoomed image, the sidebar (views, folder tree), sorting, shuffle, *Save view*, the *Library* menu, the inspector and the player-bar chips (speed, A-B loop, autoplay).
+- Starting triage (`jizzcraft --cmd triage.start`, no key yet) and seeking during triage (`Shift+←` / `Shift+→`).
+- The bindings are checked by tests as a table (no duplicate chords, physical keys on AZERTY) but have not yet been verified by hand; see [Status](#status).
 
 ## Features
 
@@ -92,7 +121,7 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 | Images | PNG, JPEG, WebP, GIF, BMP |
 | Videos | whatever your GStreamer can decode (MP4/H.264, WebM/VP8/VP9, MKV, …) |
 | Inspector | name, path, type, size, resolution, duration, codec, added date |
-| Shortcuts | `?` lists every binding (generated from one table). Anywhere: `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Alt+0`–`5` rate. Library: arrows move, `Enter` opens, `Home`/`End`, `/` search, `1`–`4` tabs, `S` favorite. Viewer: `←`/`→`, `0` fit, `1` 100 %, `+`/`-` zoom, `X` hide. Player: `Space`, `←`/`→` ±5 s, `↑`/`↓` volume, `M` mute, `F` fullscreen, `Page Up`/`Page Down` previous/next, `Home` restart. Triage: `→` keep, `↓` hide, `↑` favorite, `←` undo. A left-hand preset keeps everything on `WASD`. Digits and left-hand keys match the physical key, so they work on AZERTY. Shuffle, saved views, speed, A-B loop and autoplay are on-screen controls; random pick, slideshow, triage, frame step and markers have no shortcut yet |
+| Shortcuts | `?` lists every binding (generated from one table). Anywhere: `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Alt+0`–`5` rate. Library: arrows move, `Enter` opens, `Home`/`End`, `/` search, `1`–`4` tabs, `S` favorite. Viewer: `←`/`→`, `0` fit, `1` 100 %, `+`/`-` zoom, `X` hide. Player: `Space`, `←`/`→` ±5 s, `↑`/`↓` volume, `M` mute, `F` fullscreen, `Page Up`/`Page Down` previous/next, `Home` restart. Triage: `→` keep, `↓` hide, `↑` favorite, `←` undo. A left-hand preset keeps everything on `WASD` (see [One hand is enough](#one-hand-is-enough)). Digits and left-hand keys match the physical key, so they work on AZERTY. Shuffle, saved views, speed, A-B loop and autoplay are on-screen controls; random pick, slideshow, triage, frame step and markers have no shortcut yet |
 | Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network connections |
 
 ## Built for agents
@@ -201,20 +230,20 @@ cargo xtask screenshots       # render README images through the app itself
 
 **"missing GStreamer plugin: …"** — install the plugin sets listed above (`gst-plugins-good/bad/ugly`, `gst-libav`). The error names what is missing. Check with `gst-inspect-1.0 avdec_h264`.
 
-**"refused: this file refers to network media…"** — the file is a streaming playlist (HLS, DASH, Smooth Streaming) or SDP description, not a video. JizzCraft does not follow the URLs inside it, by design; installing plugins will not change that.
+**"refused: this file refers to network media…"** — the file is a streaming playlist (HLS, DASH, Smooth Streaming) or SDP description, not a video. JizzCraft does not follow the URLs inside it, by design; installing plugins will not change that, and neither will asking nicely.
 
-**Black window or wgpu error at startup** — check your Vulkan driver (`vulkaninfo` should list your GPU) and install the right `vulkan-*` package for your hardware. Vulkan is the only backend that has been tested.
+**Black window or wgpu error at startup** — check your Vulkan driver (`vulkaninfo` should list your GPU) and install the right `vulkan-*` package for your hardware. Vulkan is the only backend that has been tested. A black window is discreet, but not the kind of discreet we were going for.
 
 **Wayland** — JizzCraft runs natively on Wayland. If your compositor misbehaves, try X11 (XWayland) with `WAYLAND_DISPLAY= jizzcraft`. The folder chooser uses the XDG desktop portal: make sure `xdg-desktop-portal` and a backend for your desktop are running.
 
-**Playback stutters on 4K** — see the [benchmark notes](docs/bench.md); software colour conversion is the bottleneck in this MVP.
+**Playback stutters on 4K** — your fans are not judging you; they are converting colours on the CPU, which is the bottleneck in this MVP. See the [benchmark notes](docs/bench.md).
 
-**Need to see file names in logs** — they are redacted by default. Run with `JIZZCRAFT_DEBUG=1` to log full paths and the chosen decoder.
+**Need to see file names in logs** — they are redacted by default. Run with `JIZZCRAFT_DEBUG=1` to log full paths and the chosen decoder, and redact before sharing: an issue tracker is a very public place to find out what your files are called.
 
 ## Status
 
 > [!IMPORTANT]
-> JizzCraft is **early alpha**. Here is what is true today.
+> JizzCraft is **early alpha**, held together by clippy and optimism. Here is what is true today, and which of the two is doing the work.
 >
 > **Verified by automated tests**: library scan/search/favorites/persistence, schema migration, ratings, hide/inbox, history settings, markers, filters, saved views, folder tree, stable shuffle, fingerprint relink and merge, backup and metadata export/import, bit-rot detection, "the engine never touches media" (hashes a tree before and after every command); image and video thumbnails, scrub previews, integrity checks; the player state machine on a real GStreamer pipeline (play, pause, seek, coalesced scrubbing, EOS and replay, speed, frame step, A-B loop, errors); the network guard (zero connections from playlists disguised as videos); keymap invariants (no duplicate chords, physical keys on AZERTY). CLI examples above were run end to end. Playback benchmarks on one machine (H.264, VA-API, AMD GPU, Wayland).
 >
@@ -223,6 +252,8 @@ cargo xtask screenshots       # render README images through the app itself
 > **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only.
 
 ## Privacy guarantees
+
+*The boring section. Boring is the point.*
 
 - No accounts, telemetry, analytics, cloud sync, ads or network connections. The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
 - No scraping, no downloaders, no external feeds.
@@ -240,11 +271,13 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). Report v
 
 ## Inspiration
 
-The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
+The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. One-handed use was raised as an accessibility point and has been implemented as one, with a completely straight face. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
 
 ## Parody disclaimer
 
 JizzCraft started as a joke imitating the "Crafting Apps" family (PhotoCraft, FilmCraft, LightCraft…). It is a parody and is **not affiliated with, endorsed by or connected to the ArtCraft team**. The name, the README layout and the look of the interface imitate that family; the code, assets, icons, logos and wordmark are this project's own, and nothing was copied from those projects. App ID: `org.jizzcraft.JizzCraft`.
+
+The resemblance is intentional; the endorsement is not. If the name made you wince, the disclaimer is working as designed.
 
 ## License and credits
 
