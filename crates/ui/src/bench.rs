@@ -6,6 +6,12 @@ use std::time::Instant;
 /// Linux USER_HZ is 100 on every mainstream architecture.
 const CLK_TCK: f64 = 100.0;
 
+#[cfg(not(target_os = "linux"))]
+pub fn cpu_seconds_of(_pid: &str) -> Option<f64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 pub fn cpu_seconds_of(pid: &str) -> Option<f64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Fields after the parenthesised comm; utime and stime are the 12th/13th.
@@ -16,6 +22,13 @@ pub fn cpu_seconds_of(pid: &str) -> Option<f64> {
 }
 
 /// (current RSS MB, peak RSS MB)
+#[cfg(not(target_os = "linux"))]
+pub fn rss_mb_of(_pid: &str) -> Option<(f64, f64)> {
+    None
+}
+
+/// (current RSS MB, peak RSS MB)
+#[cfg(target_os = "linux")]
 pub fn rss_mb_of(pid: &str) -> Option<(f64, f64)> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     let kb = |key: &str| -> Option<f64> {

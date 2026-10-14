@@ -4,8 +4,6 @@
 use crate::error::{Error, Result};
 use crate::model::{Media, MediaKind, MediaMeta, Stats};
 use rusqlite::{Connection, OptionalExtension, Row, params, types::Value};
-use std::ffi::OsString;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 /// Each entry migrates from version `index` to `index + 1`. SQL is append-only;
@@ -256,11 +254,11 @@ pub struct Db {
 }
 
 pub fn path_to_blob(p: &Path) -> Vec<u8> {
-    p.as_os_str().as_bytes().to_vec()
+    crate::pathbytes::path_to_bytes(p)
 }
 
 pub fn blob_to_path(b: Vec<u8>) -> PathBuf {
-    PathBuf::from(OsString::from_vec(b))
+    crate::pathbytes::bytes_to_path(b)
 }
 
 /// Parent directory of `p` as raw bytes (empty when there is none).
@@ -444,13 +442,13 @@ impl Db {
         }
         if let Some(d) = &f.dir {
             let mut blob = path_to_blob(d);
-            while blob.len() > 1 && blob.last() == Some(&b'/') {
+            while blob.len() > 1 && blob.last() == Some(&crate::pathbytes::SEP) {
                 blob.pop();
             }
             if f.recursive {
                 let mut prefix = blob.clone();
-                if prefix.last() != Some(&b'/') {
-                    prefix.push(b'/');
+                if prefix.last() != Some(&crate::pathbytes::SEP) {
+                    prefix.push(crate::pathbytes::SEP);
                 }
                 conds.push("(dir = ? OR substr(dir, 1, ?) = ?)".into());
                 args.push(Value::Blob(blob));
