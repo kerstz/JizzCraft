@@ -247,6 +247,48 @@ impl JizzApp {
             crate::theme::set_reduce_motion(ui.ctx(), rm);
             self.save_cfg();
         }
+        ui.add_space(6.0);
+        let same = tr("Same as the interface");
+        let none = tr("Default track");
+        let shown = match self.cfg.audio_lang.as_deref() {
+            None => same.to_owned(),
+            Some("") => none.to_owned(),
+            Some(c) => c.to_ascii_uppercase(),
+        };
+        let mut pick: Option<Option<&str>> = None;
+        ui.horizontal(|ui| {
+            ui.label(tr("Audio language"));
+            egui::ComboBox::from_id_salt("audio_lang")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    let cur = self.cfg.audio_lang.as_deref();
+                    if ui.selectable_label(cur.is_none(), same).clicked() {
+                        pick = Some(None);
+                    }
+                    if ui.selectable_label(cur == Some(""), none).clicked() {
+                        pick = Some(Some(""));
+                    }
+                    for c in crate::config::AUDIO_LANGS {
+                        if ui
+                            .selectable_label(cur == Some(c), c.to_ascii_uppercase())
+                            .clicked()
+                        {
+                            pick = Some(Some(c));
+                        }
+                    }
+                });
+        });
+        if let Some(p) = pick
+            && self.cfg.set_audio_lang(p)
+        {
+            self.save_cfg();
+        }
+        ui.label(
+            RichText::new(tr(
+                "Language of the audio track when a stream offers several.",
+            ))
+            .color(FAINT),
+        );
         let _ = cmds;
         if edition::EDITION == Edition::Offline {
             ui.add_space(6.0);

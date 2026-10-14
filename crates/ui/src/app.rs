@@ -2478,6 +2478,21 @@ impl eframe::App for JizzApp {
         {
             self.toast(ToastKind::Info, n);
         }
+        // A reopened stream (audio switch) goes back to where it was.
+        if let View::Player(pv) = &mut self.view
+            && let Some((at, paused)) = pv.pending_resume
+            && matches!(
+                pv.player.state(),
+                jizzcraft_media::player::PlayState::Playing
+                    | jizzcraft_media::player::PlayState::Paused
+            )
+        {
+            pv.pending_resume = None;
+            pv.player.seek(at, true);
+            if paused {
+                pv.player.pause();
+            }
+        }
         if std::mem::take(&mut self.pending_minimize) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }

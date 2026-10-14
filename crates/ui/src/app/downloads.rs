@@ -7,7 +7,7 @@
 //! reaches a toast or a log; failures are mapped to fixed sentences by
 //! `jizzcraft_fetch::errors::classify`.
 
-use super::{JizzApp, ToastKind};
+use super::{JizzApp, ToastKind, View};
 use crate::theme::{FAINT, MUTED};
 use crate::widgets;
 use egui::{ProgressBar, RichText, TextEdit};
@@ -115,6 +115,12 @@ pub(super) struct Downloads {
     probe: Option<Arc<TorrentProbe>>,
     /// The last Play command, in memory only, for `fetch.play.retry`.
     pub(super) last_play: Option<(&'static str, Value)>,
+    /// Audio track picked in the player for the reopening that follows
+    /// (consumed when the stream is opened).
+    audio_pick: Option<usize>,
+    /// Where to continue, and whether it was paused, once the reopened
+    /// stream is up (consumed by `open_ticket`).
+    pub(super) resume_at: Option<(Duration, bool)>,
     /// A retryable failure (fixed sentence) shown with a Retry button.
     retry_note: Option<String>,
     load_error_dismissed: bool,
@@ -178,6 +184,8 @@ impl Downloads {
             src_key: std::collections::HashMap::new(),
             probe: None,
             last_play: None,
+            audio_pick: None,
+            resume_at: None,
             retry_note: None,
             load_error_dismissed: false,
             ask_dismissed: false,
@@ -341,6 +349,39 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         },
     );
     reg.register(
+        "player.audio",
+        "Switch the audio track of the playing stream: {index: n}. The stream reopens at the same position",
+        |app, a| {
+            let idx = a
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("missing `index`"))? as usize;
+            let View::Player(pv) = &app.view else {
+                return Err(invalid("nothing is playing"));
+            };
+            let n = pv.player.audio_tracks().len();
+            if idx >= n {
+                return Err(invalid("no such audio track"));
+            }
+            if pv.player.current_audio() == Some(idx) {
+                return Ok(json!({ "index": idx }));
+            }
+            if pv.player.is_live() {
+                return Err(invalid("a live stream cannot switch audio"));
+            }
+            let (name, args) = app
+                .downloads
+                .last_play
+                .clone()
+                .ok_or_else(|| invalid("nothing to reopen"))?;
+            let paused = pv.player.state() == jizzcraft_media::player::PlayState::Paused;
+            app.downloads.resume_at = Some((pv.player.position(), paused));
+            app.downloads.audio_pick = Some(idx);
+            app.push(name, args);
+            Ok(json!({ "index": idx }))
+        },
+    );
+    reg.register(
         "fetch.search.cancel",
         "Cancel the running search",
         |app, _| {
@@ -366,10 +407,8 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
             if let Some(u) = a.get("url").and_then(Value::as_str)
                 && !is_torrent_url(u)
             {
-                let rx = app
-                    .downloads
-                    .host
-                    .open_any(u.to_owned(), jizzcraft_fetch::service::StreamOpts::default())?;
+                let opts = app.stream_opts(jizzcraft_fetch::service::StreamOpts::default());
+                let rx = app.downloads.host.open_any(u.to_owned(), opts)?;
                 app.downloads.flow.begin_opening(rx);
                 app.downloads.open = true;
                 return Ok(json!({}));
@@ -386,6 +425,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                     r,
                     jizzcraft_fetch::pick::Quality::default(),
                 );
+                let opts = app.stream_opts(opts);
                 let rx = app.downloads.host.open_any(u, opts)?;
                 app.downloads.flow.begin_opening(rx);
                 app.downloads.open = true;
@@ -543,10 +583,8 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 return Err(invalid("a torrent is not a direct video"));
             }
             app.downloads.last_play = Some(("stream.open", a.clone()));
-            let rx = app
-                .downloads
-                .host
-                .open_any(u.to_owned(), jizzcraft_fetch::service::StreamOpts::default())?;
+            let opts = app.stream_opts(jizzcraft_fetch::service::StreamOpts::default());
+            let rx = app.downloads.host.open_any(u.to_owned(), opts)?;
             app.downloads.flow.begin_opening(rx);
             app.downloads.open = true;
             Ok(json!({}))
@@ -698,12 +736,25 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
 }
 
 impl JizzApp {
+    /// Add the audio choice to the options of a stream about to open: the
+    /// track picked in the player (once), else the saved language, which
+    /// follows the interface language by default.
+    pub(super) fn stream_opts(
+        &mut self,
+        mut o: jizzcraft_fetch::service::StreamOpts,
+    ) -> jizzcraft_fetch::service::StreamOpts {
+        o.audio_lang = self.cfg.effective_audio_lang(crate::i18n::current().code());
+        o.audio_index = self.downloads.audio_pick.take();
+        o
+    }
+
     fn poll_flow(&mut self) {
         let d = &mut self.downloads;
         let ev = d.flow.step(&mut FetchBackend { host: &mut d.host });
         match ev {
             FlowEvent::Error(m) => {
                 self.downloads.probe = None;
+                self.downloads.resume_at = None;
                 if is_retryable(&m) && self.downloads.last_play.is_some() {
                     self.downloads.retry_note = Some(m);
                 } else {

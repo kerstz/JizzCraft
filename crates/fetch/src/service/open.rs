@@ -168,7 +168,7 @@ async fn open_direct(
                 opts.quality,
                 headers,
                 crate::segmented::LiveTuning::default(),
-                opts.audio_lang.clone(),
+                opts.audio_pref(),
             )
             .await?;
             Ok(Some(StreamTicket::Timed {
@@ -183,7 +183,7 @@ async fn open_direct(
                 url,
                 opts.quality,
                 headers,
-                opts.audio_lang.clone(),
+                opts.audio_pref(),
             )
             .await?;
             Ok(Some(StreamTicket::Timed {

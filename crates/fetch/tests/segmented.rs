@@ -15,8 +15,8 @@ use jizzcraft_fetch::FetchConfig;
 use jizzcraft_fetch::errors;
 use jizzcraft_fetch::pick::{Prefer, Quality};
 use jizzcraft_fetch::segmented::{
-    AbrConfig, LiveTuning, SegmentedReader, open_dash, open_dash_audio, open_hls, open_hls_audio,
-    open_hls_with,
+    AbrConfig, AudioPref, LiveTuning, SegmentedReader, open_dash, open_dash_audio, open_hls,
+    open_hls_audio, open_hls_with,
 };
 use jizzcraft_fetch::service::FetchService;
 
@@ -1446,6 +1446,46 @@ fn dash_video_and_audio_tracks_are_combined_in_time_order() {
     let (chunks, err) = drain(&mut r);
     assert!(err.is_none());
     assert_eq!(tag_of(&chunks[2].bytes), b"F0");
+}
+
+#[test]
+fn separate_tracks_are_listed_and_can_be_picked_by_index() {
+    let _g = serial();
+    reset_policy();
+    let port = serve(split_handler(init_mp4(b"soun", b"mp4a")), hits());
+    let rt = rt();
+    let r = open_split(&rt, port, None).unwrap();
+    let tracks = r.audio_tracks();
+    let langs: Vec<Option<&str>> = tracks.iter().map(|t| t.lang.as_deref()).collect();
+    assert_eq!(langs, vec![Some("en"), Some("fr")]);
+    assert_eq!(r.current_audio(), Some(0));
+    drop(r);
+    let mut r = rt
+        .block_on(open_dash_audio(
+            rt.handle().clone(),
+            reqwest::Client::new(),
+            format!("http://127.0.0.1:{port}/s.mpd"),
+            Quality::default(),
+            Vec::new(),
+            AudioPref::Index(1),
+        ))
+        .unwrap();
+    assert_eq!(r.current_audio(), Some(1));
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none());
+    assert_eq!(tag_of(&chunks[2].bytes), b"F0");
+    // Out of range falls back to the default track.
+    let r = rt
+        .block_on(open_dash_audio(
+            rt.handle().clone(),
+            reqwest::Client::new(),
+            format!("http://127.0.0.1:{port}/s.mpd"),
+            Quality::default(),
+            Vec::new(),
+            AudioPref::Index(9),
+        ))
+        .unwrap();
+    assert_eq!(r.current_audio(), Some(0));
 }
 
 #[test]
