@@ -47,6 +47,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # offline_deps runs `cargo tree --offline` on the network feature: the
+      # crates must be on disk first. The test itself stays offline.
+      - name: Fetch all crates
+        run: cargo fetch --locked
+
       - name: Test
         run: cargo test --workspace
 
@@ -90,16 +95,23 @@ jobs:
         run: cargo run -q -p xtask -- check-packaging
 
   windows:
-    name: windows · build · test
+    name: windows · build · test (experimental)
     runs-on: windows-latest
+    # Never run on real hardware yet: failures here are logged, not blocking.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - name: GStreamer (MSVC runtime + devel)
         shell: pwsh
         run: |
-          $v = '1.26.6'
+          $v = '1.26.11'
           foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
-            Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi" -OutFile "$k.msi"
+            $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
+            Invoke-WebRequest $base -OutFile "$k.msi"
+            Invoke-WebRequest "$base.sha256sum" -OutFile "$k.msi.sha256sum"
+            $want = ((Get-Content "$k.msi.sha256sum" -Raw).Trim() -split '\s+')[0].ToLower()
+            $got = (Get-FileHash "$k.msi" -Algorithm SHA256).Hash.ToLower()
+            if ($want -ne $got) { throw "checksum mismatch for $k" }
             Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
           }
           "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
@@ -123,4 +135,22 @@ jobs:
           cargo run -q -p xtask -- fixtures fixtures
           cargo run --release -p jizzcraft -- --import fixtures --screenshot out.png --assume-adult
           if (-not (Test-Path out.png)) { throw 'no screenshot' }
+
+  install-e2e:
+    name: install · tarball → install.sh → doctor → uninstall
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install GStreamer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Stage and pack
+        run: cargo run -q -p xtask -- dist --destdir target/stage --prefix /usr --tarball
+      - name: Install, check, uninstall
+        run: sh packaging/smoke-install.sh dist/jizzcraft-*-linux.tar.xz
 
