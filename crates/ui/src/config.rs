@@ -52,8 +52,13 @@ impl Config {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // Temp file then rename: a crash mid-write must not reset settings
+        // (including the age confirmation).
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(p, bytes);
+            let tmp = p.with_extension("json.tmp");
+            if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &p).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
 }

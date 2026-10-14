@@ -73,3 +73,28 @@ fn indexer_ids_never_repeat_and_limits_roundtrip() {
     let txt = std::fs::read_to_string(&p).unwrap();
     assert!(!txt.contains("disguised"));
 }
+
+#[test]
+fn a_proxy_switches_off_everything_it_cannot_carry() {
+    let open = FetchConfig {
+        listen_incoming: true,
+        ..Default::default()
+    };
+    let p = open.net_policy();
+    assert!(p.dht && p.trackers && p.listen);
+
+    let proxied = FetchConfig {
+        listen_incoming: true,
+        proxy: Some(Secret::new("socks5://127.0.0.1:9050")),
+        ..Default::default()
+    };
+    let p = proxied.net_policy();
+    assert!(!p.dht && !p.trackers && !p.listen, "{p:?}");
+
+    // An empty proxy string means "no proxy".
+    let empty = FetchConfig {
+        proxy: Some(Secret::new("")),
+        ..Default::default()
+    };
+    assert!(empty.net_policy().dht);
+}
