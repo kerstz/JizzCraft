@@ -233,10 +233,12 @@ pub(crate) fn pick_moved(
     new_name: &str,
     size: u64,
     new_duration_ms: Option<i64>,
+    same_name_only: bool,
 ) -> Option<i64> {
     let mut live: Vec<Candidate> = candidates
         .into_iter()
         .filter(|c| !c.path.exists() && c.root.exists())
+        .filter(|c| !same_name_only || c.name == new_name)
         .filter(|c| match (c.duration_ms, new_duration_ms) {
             (Some(a), Some(b)) => (a - b).abs() <= 1000,
             _ => true,
