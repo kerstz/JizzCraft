@@ -4,7 +4,8 @@ Today: local library, thumbnails, image viewer, GStreamer player, favorites,
 ratings, hide, resume and history, markers, A-B loop, speed and frame step,
 scrub previews, views and folder tree, triage, fingerprint relink, integrity
 check, backup and metadata export, portable mode, age gate, boss key, discreet
-mode, CLI, network guard for GStreamer.
+mode, CLI, network guard for GStreamer. Opt-in `network` build: BitTorrent
+client (librqbit) and user-configured Torznab indexers (Jackett, Prowlarr).
 
 ## Next milestones (explicitly out of scope until the MVP is solid)
 
@@ -27,7 +28,7 @@ mode, CLI, network guard for GStreamer.
 - **Extensibility**: plugins.
 - **Website**: project site and docs.
 
-Not planned, ever: accounts, cloud sync, telemetry, downloaders, scrapers,
-remote URLs, media generation. This repository stays offline: any networked
-companion would be a separate project with its own binary, so the offline
-guarantee never weakens.
+Not planned, ever: accounts, cloud sync, telemetry, bundled indexers or site
+scrapers, remote URLs in the player, media generation. The default build stays
+offline and is tested to link no network crate; networking exists only in the
+opt-in `network` build, with no bundled sites.

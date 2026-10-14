@@ -8,12 +8,15 @@ Rust (egui/eframe + wgpu, GStreamer, SQLite). It is a parody project.
 ```
 crates/core    model, SQLite, scan, command registry. No UI, no GStreamer.
 crates/media   thumbnails, codec probing, GStreamer player, network guard.
+crates/fetch   Torznab indexers + BitTorrent (librqbit). Network deps only
+               behind the off-by-default `network` feature.
 crates/ui      egui app: theme, grid, viewer, player, inspector.
 apps/jizzcraft       desktop app          apps/jizzcraft-cli   CLI
 xtask          fixtures, icons, screenshots
 ```
 
-`core` must never depend on `media` or `ui`.
+`core` must never depend on `media`, `ui` or `fetch`; `media` never on `fetch`;
+`ui` and the apps only optionally, through the `network` feature.
 
 ## Commands
 
@@ -53,11 +56,23 @@ Add behaviour as a command first, UI second.
 ## Rules
 
 - **Never** modify, move or delete user media. Thumbnails go to the XDG cache dir.
-- **No network** of any kind. No remote URLs in the player. No telemetry.
+- **The default build has no network of any kind**, proven by `offline_deps`
+  (`cargo tree`) and `tests/network.rs` (zero connections). Network code lives
+  only in `crates/fetch`, behind the off-by-default `network` feature
+  (`cargo build -p jizzcraft --features network`). No telemetry in any build.
+  The player stays `file://`-only in every build: nothing is streamed from a
+  URL, a download is played from disk.
   GStreamer only gets `file://` URIs from `jizzcraft_media::file_uri`; call
   `jizzcraft_media::init()` before building any pipeline (it removes
   network-capable elements from the process registry) and pass every new
   pipeline to `guard::watch`. `tests/network.rs` must stay at zero connections.
+- **Network build rules.** Indexer keys live only in `fetch.json` (mode 0600),
+  never in the database, backups, exports, logs, errors or toasts. No indexer,
+  tracker or site is hard-coded: the user supplies them. No `tracing`
+  subscriber (librqbit logs torrent names). `fetch.remove` never deletes files,
+  torrents never overwrite files, unsafe torrent paths are refused. Toasts
+  carry counts only. Nothing connects before the user acts. Schema changes go
+  in `MIGRATIONS` regardless of features.
 - **No shell** built from filenames. Pass paths as argv or through the APIs.
 - **No full paths or filenames in logs** unless `JIZZCRAFT_DEBUG=1`.
 - Tests, fixtures and screenshots are **100 % SFW and synthetic**. Never commit
