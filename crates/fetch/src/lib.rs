@@ -8,6 +8,7 @@
 pub mod config;
 pub mod detect;
 pub mod errors;
+pub mod inbox;
 pub mod pick;
 pub mod redact;
 pub mod secret;

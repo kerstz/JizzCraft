@@ -329,3 +329,113 @@ fn play_path_streams_before_the_download_is_complete() {
     drop(reader);
     assert!(!svc.list().is_empty() || true);
 }
+
+/// Serve `body` on 127.0.0.1 with a Content-Length, in slow chunks.
+fn serve_slowly(body: Vec<u8>) -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let mut s = s.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            for c in body.chunks(32 * 1024) {
+                if s.write_all(c).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+    });
+    port
+}
+
+#[test]
+fn http_source_streams_then_renames_and_never_overwrites() {
+    use jizzcraft_fetch::service::StreamTicket;
+    use std::io::{Read, Seek, SeekFrom};
+    let data: Vec<u8> = (0..400_000u32).map(|i| (i % 249) as u8).collect();
+    let port = serve_slowly(data.clone());
+    let dl = tempfile::tempdir().unwrap();
+    let st = tempfile::tempdir().unwrap();
+    // A file with that name already exists: the download must pick another.
+    std::fs::write(dl.path().join("clip.mp4"), b"mine").unwrap();
+    let svc = FetchService::new(
+        FetchConfig {
+            download_dir: Some(dl.path().into()),
+            dht: false,
+            ..Default::default()
+        },
+        st.path().into(),
+    )
+    .unwrap();
+    let t = svc
+        .play_http(format!("http://127.0.0.1:{port}/files/clip.mp4?token=abc"))
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap()
+        .expect("ticket");
+    let StreamTicket::Live {
+        mut reader, len, ..
+    } = t
+    else {
+        panic!("expected a live stream");
+    };
+    assert_eq!(len, data.len() as u64);
+    let mut got = Vec::new();
+    let mut buf = [0u8; 8192];
+    let t0 = Instant::now();
+    while got.len() < data.len() {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("{e}"),
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30));
+    }
+    assert_eq!(got, data);
+    reader.seek(SeekFrom::Start(100)).unwrap();
+    let mut b = [0u8; 4];
+    reader.read_exact(&mut b).unwrap();
+    assert_eq!(b, [100, 101, 102, 103]);
+    // Renamed to a free name; the existing file is untouched; no .part left.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(std::fs::read(dl.path().join("clip.mp4")).unwrap(), b"mine");
+    assert_eq!(std::fs::read(dl.path().join("clip (1).mp4")).unwrap(), data);
+    assert!(!dl.path().join("clip (1).mp4.part").exists());
+}
+
+#[test]
+fn http_source_refuses_playlists_and_non_video_names() {
+    let port = serve_slowly(b"#EXTM3U\n#EXTINF:2,\nhttp://127.0.0.1:1/a.ts\n".to_vec());
+    let dl = tempfile::tempdir().unwrap();
+    let st = tempfile::tempdir().unwrap();
+    let svc = FetchService::new(
+        FetchConfig {
+            download_dir: Some(dl.path().into()),
+            dht: false,
+            ..Default::default()
+        },
+        st.path().into(),
+    )
+    .unwrap();
+    let r = svc
+        .play_http(format!("http://127.0.0.1:{port}/list.mp4"))
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap();
+    assert!(r.is_err());
+    // Nothing was kept.
+    assert_eq!(std::fs::read_dir(dl.path()).unwrap().count(), 0);
+    let r = svc
+        .play_http(format!("http://127.0.0.1:{port}/archive.zip"))
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap();
+    assert!(r.is_err());
+}

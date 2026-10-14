@@ -2502,6 +2502,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "jizzcraft-core",
+ "jizzcraft-fetch",
  "jizzcraft-media",
  "jizzcraft-ui",
  "serde_json",
