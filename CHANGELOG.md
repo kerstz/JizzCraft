@@ -17,6 +17,21 @@ anything may change between minor versions.
   covered yet.
 
 ### Streaming
+- Separate audio and video tracks (issue #8). A DASH manifest with its own
+  audio adaptation set, or an HLS master whose variants use an
+  `#EXT-X-MEDIA` audio group, now plays instead of being refused. Both
+  tracks go through the same segmented reader (so the same address checks,
+  proxy kill switch, retries, limits and cancellation), the two init
+  segments are merged and the fragments interleaved by presentation time:
+  the player still receives a single byte stream through `open_timed` and
+  never a URL, and the guard still sees one `appsrc`. The audio language
+  follows `StreamOpts::audio_lang`, then the default rendition, then the
+  first. Quality choices and automatic quality only touch the video; seek
+  moves both tracks. Limits: both tracks must be fragmented MP4 (TS or WebM
+  audio, live HLS with an audio group and DRM are refused; the refusal
+  sentence "separate tracks" was reworded and re-translated). Tests: pure
+  fMP4 merge/retag unit tests, loopback DASH and HLS servers (order,
+  language, seek, cancellation, refusals) and e2e scenario `s10b`.
 - Live HLS streams (issue #7). A media playlist without `#EXT-X-ENDLIST` now
   plays instead of being refused: it starts three segments from the live
   edge, is reloaded every target duration, plays each segment once by media

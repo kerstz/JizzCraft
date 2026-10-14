@@ -53,6 +53,7 @@ about three minutes in a debug build; CI runs it in its own `e2e` job.
 | `s08_hls_aes_128` | AES-128 segments with the key fetched from the server and the media-sequence IV. |
 | `s09_abr_goes_down_when_throttled_and_up_when_released` | With a short `AbrConfig`, a throttled top variant makes the player go down then up (`current_variant()` is seen as 1, 0, 1). |
 | `s10_dash_segment_template_muxed` | DASH `SegmentTemplate` with a muxed representation. |
+| `s10b_dash_separate_audio_and_video_tracks` | DASH with a video set and a separate AAC audio set (fragmented MP4): both tracks are fetched, combined into one stream for `Player::open_timed`, a seek works and playback reaches the end. |
 | `s11_three_peer_swarm_plays_while_downloading` | Three loopback seeders: the first frame comes before the download is complete; player pause/resume, torrent pause/resume, and a seek into missing pieces. |
 | `s12_magnet_with_no_peers_gives_a_sentence_soon` | A magnet nobody has ends in the "no peers" or "details in time" sentence within the configured metadata timeout, without the info hash. |
 | `s13_restart_keeps_the_torrent_and_ask_does_not_resume_it` | After dropping and recreating the service, the torrent is back and paused; policy Ask does not wake it. |

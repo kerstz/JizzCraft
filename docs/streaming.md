@@ -45,6 +45,20 @@ it still refuses a manifest if one ever reaches it.
   prefetch (60 s, 64 MiB) are kept in memory; nothing is written to disk.
   Every reload and segment obeys the same address checks and the
   *Block the network without a proxy* switch as any other request.
+- **Separate audio and video** (most DASH, HLS `#EXT-X-MEDIA` audio groups).
+  The video and audio tracks are fetched by the same reader code (prefetch,
+  retries, address checks, proxy switch, cancellation), their init segments
+  are merged into one and their fragments are interleaved by time, so the
+  player still gets one plain stream and never a URL. If the stream offers
+  several audio languages, the one matching the preferred language
+  (`StreamOpts::audio_lang`, e.g. `fr` or `pt-BR`) plays, otherwise the one
+  marked default, otherwise the first. The quality chip and automatic
+  quality change only the video; seeking moves both tracks together.
+  Both tracks must be fragmented MP4 (CMAF, the usual DASH case); audio in
+  TS, WebM or another container, a live HLS stream with an audio group, and
+  DRM are refused with a sentence. Each track keeps its own prefetch
+  window, so memory is bounded by two windows (at most 60 s and 64 MiB
+  each; audio is a small fraction).
 - **Encryption.** Plain AES-128 HLS is supported when the key address is
   reachable like any other address. DRM (SAMPLE-AES, Widevine, PlayReady,
   FairPlay) is refused with a clear sentence, also on a live playlist, also
@@ -184,8 +198,8 @@ What is refused, and why:
   web pages the app does not do that: you get "cannot be streamed without
   saving it" and no file, not even a partial one, is left in the download
   folder.
-- **Separate video and audio tracks, live DASH and DRM-protected streams** are
-  refused with their own sentences (see above).
+- **Live DASH, DRM-protected streams and separate tracks that are not
+  fragmented MP4** are refused with their own sentences (see above).
 - **A rate limit** from the site ends the attempt with "limiting requests";
   wait before trying again. The app does not retry in a loop.
 
@@ -207,11 +221,12 @@ again; if that fails, you see "The link expired."
 
 ## Not done yet
 
-Separate audio and video tracks (most DASH), subtitles for streams, saving a
-stream while watching it, quality switching and seeking inside a live window,
-and a proxy-aware key fetch UI. Muxed on-demand
-streams are what plays today; anything else is refused with "This stream
-format is not supported."
+Choosing the audio track from the player (the preference is an option of the
+open call, not a control yet), separate audio that is not fragmented MP4,
+separate audio on a live stream, subtitles for streams, saving a stream while
+watching it, quality switching and seeking inside a live window, and a
+proxy-aware key fetch UI. Anything not listed above is refused with "This
+stream format is not supported."
 
 ## Will not be done
 

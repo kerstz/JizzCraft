@@ -88,7 +88,9 @@ Add behaviour as a command first, UI second.
 - **Manifests are parsed in `crates/fetch` only.** HLS and DASH playlists, keys
   and segments are fetched there (`segmented.rs`) and reach the player as bytes
   through `jizzcraft_core::timed::TimedSource` / `Player::open_timed`. The
-  player keeps refusing manifest bytes. Every segment, key and manifest URL
+  player keeps refusing manifest bytes. Separate audio tracks are combined
+  into one fMP4 byte stream in `fetch` (`fmp4.rs`, `segmented.rs`): the
+  player still has exactly one `appsrc` and never sees a second source. Every segment, key and manifest URL
   passes `inward_ok` and `proxy_blocked`. Recents and quality choices are never
   written to disk.
 - **No shell** built from filenames. Pass paths as argv or through the APIs.

@@ -12,6 +12,7 @@ pub mod detect;
 pub mod diskspace;
 pub mod errors;
 pub mod fetch_error;
+pub mod fmp4;
 pub mod hls;
 pub mod inbox;
 pub mod pick;

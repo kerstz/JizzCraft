@@ -28,7 +28,7 @@ pub const TIMEOUT: &str = "The server took too long to answer.";
 pub const SERVER_BUSY: &str = "The server is busy. Try again later.";
 pub const LIVE_UNSUPPORTED: &str = "Live DASH streams are not supported.";
 pub const SEPARATE_TRACKS: &str =
-    "This stream has separate video and audio tracks, which are not supported.";
+    "This stream keeps video and audio apart in a format that cannot be combined.";
 pub const CLOCK_SKEW: &str = "The secure connection failed. Check the computer's date and time.";
 pub const NO_PEERS: &str = "No peers found for this torrent.";
 pub const METADATA_TIMEOUT: &str = "Could not get the torrent details in time.";

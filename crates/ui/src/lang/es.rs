@@ -322,8 +322,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "Las emisiones DASH en directo no son compatibles.",
     ),
     (
-        "This stream has separate video and audio tracks, which are not supported.",
-        "Esta transmisión tiene pistas de vídeo y audio separadas, lo que no es compatible.",
+        "This stream keeps video and audio apart in a format that cannot be combined.",
+        "Esta transmisión separa el vídeo y el audio en un formato que no se puede combinar.",
     ),
     (
         "The secure connection failed. Check the computer's date and time.",

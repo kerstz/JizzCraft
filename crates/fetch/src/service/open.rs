@@ -161,14 +161,31 @@ async fn open_direct(
     };
     match sniff(&head) {
         Sniff::Hls => {
-            let r = crate::segmented::open_hls(handle, client, url, opts.quality, headers).await?;
+            let r = crate::segmented::open_hls_audio(
+                handle,
+                client,
+                url,
+                opts.quality,
+                headers,
+                crate::segmented::LiveTuning::default(),
+                opts.audio_lang.clone(),
+            )
+            .await?;
             Ok(Some(StreamTicket::Timed {
                 source: Box::new(r),
                 name,
             }))
         }
         Sniff::Dash => {
-            let r = crate::segmented::open_dash(handle, client, url, opts.quality, headers).await?;
+            let r = crate::segmented::open_dash_audio(
+                handle,
+                client,
+                url,
+                opts.quality,
+                headers,
+                opts.audio_lang.clone(),
+            )
+            .await?;
             Ok(Some(StreamTicket::Timed {
                 source: Box::new(r),
                 name,
