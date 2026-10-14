@@ -3,6 +3,7 @@
 //! The most explicit thing in the fixtures is a test pattern with ambitions.
 
 mod e2e;
+mod perf;
 
 use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
@@ -23,9 +24,10 @@ fn main() -> ExitCode {
         Some("dist") => dist(args.collect()),
         Some("check-packaging") => check_packaging(),
         Some("e2e") => e2e::run(args.collect()),
+        Some("perf") => perf::run(args.collect()),
         _ => Err(
             "usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots | dist [--edition offline|online] [--browser] \
-             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging | e2e [--allow-skips] [FILTER...]"
+             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging | e2e [--allow-skips] [FILTER...] | perf"
                 .into(),
         ),
     };

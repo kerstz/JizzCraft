@@ -7,6 +7,15 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Tooling
+- Performance budgets (issue #17, engine part). `cargo xtask perf` builds a
+  synthetic 10k-file library and times scan (cold and rescan), database open,
+  the v1 migration chain, grid pages under four sort keys, counts and
+  full-text search, then fails if a budget in `perf/budgets.json` is exceeded.
+  Budgets are loose (about 10x measured). A non-blocking `perf` CI job runs
+  it. See `docs/perf.md`; RSS, time to first frame and UI frame cost are not
+  covered yet.
+
 ### Player
 - Local subtitles (issue #9). A `.srt` or `.vtt` next to the video with the
   same base name is picked up, with an optional language tag (`clip.fr.srt`,

@@ -121,6 +121,21 @@ jobs:
           JIZZCRAFT_REQUIRE_PLUGINS: "1"
         run: cargo run -q -p xtask -- e2e
 
+  # Performance budgets (issue #17): synthetic 10k library, release build,
+  # budgets in perf/budgets.json. Not blocking yet: shared runners are noisy,
+  # so a red job here is a prompt to look, not to revert. Drop continue-on-error
+  # after a few weeks of green runs.
+  perf:
+    name: performance budgets
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Budgets
+        run: cargo xtask perf
+
   network:
     name: network build · clippy · test
     runs-on: ubuntu-24.04
