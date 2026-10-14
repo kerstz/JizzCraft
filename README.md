@@ -15,6 +15,9 @@ A fast native app for your own images and videos: browse, search, rate, tag and 
 
 > "100% Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
 
+> [!WARNING]
+> **18+ only.** JizzCraft is intended for adults managing media they own or are entitled to keep. It ships no media, downloads nothing and opens no network connections. All test data, fixtures and screenshots in this repository are synthetic and safe for work.
+
 ![JizzCraft library grid](docs/screenshots/library.png)
 
 The claims below are checked by tests: the default build links no network code, and your files are only ever read.
@@ -339,6 +342,12 @@ cargo build --release -p jizzcraft-cli --features network
 - **Safe defaults.** DHT on, incoming connections off, no seeding after completion, optional speed caps and SOCKS5 proxy. A proxy only carries peer connections, so while one is set DHT and trackers are switched off instead of leaking your address. Indexer keys are stored in `fetch.json` with mode 0600, never in the database, backups or logs. Forgetting a torrent never deletes files; a torrent never overwrites an existing file; unsafe file names are refused. Failures are shown as fixed plain sentences, never with names, URLs or paths.
 - **What it exposes.** Your IP is visible to the indexers you configure and to BitTorrent peers. What you search for and download is your responsibility.
 - **Verified by tests.** The default dependency tree is checked to contain no network crate. The network build is tested against a local mock indexer and a two-session swarm on 127.0.0.1, including reading the tail of a file before the download is complete. The stream player is tested with a throttled reader (buffering, seeks into missing regions, rapid seeks, junk bytes), and a playlist pushed through it is refused with zero connections.
+
+## Parody disclaimer
+
+The name "JizzCraft", the structure of this README and the look of the interface parody the "Craft" family of apps by Crafting Apps (ArtCraft and its siblings). JizzCraft is an independent project and is not affiliated with, endorsed by or connected to the ArtCraft team or Crafting Apps. It contains no code, assets, logos or wordmarks from those projects. Application ID: `org.jizzcraft.JizzCraft`.
+
+The resemblance is intentional; the endorsement is not. If the name made you wince, the disclaimer is working as designed.
 
 ## Independence
 
