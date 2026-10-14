@@ -5,6 +5,30 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/) once 1.0 is out. Before that,
 anything may change between minor versions.
 
+## [Unreleased]
+
+### Editions and packaging
+- Two named editions of one code base. Offline is `jizzcraft` (no network
+  code). Online is `jizzcraft-online` (cargo feature `online`, an alias of
+  `network`); it provides, conflicts with and replaces `jizzcraft`. Same app
+  ID, same binaries and data directories.
+- Online release tarballs are now `jizzcraft-online-<version>-<arch>-linux.tar.xz`
+  (was `jizzcraft-network-...`). The 0.1.0 `install.sh --with-network` looks
+  for the old name and cannot fetch 0.2 or later tarballs: use the current
+  `install.sh`. `--network` / `--with-network` stay accepted as deprecated
+  aliases of `--edition online`.
+- `install.sh`: `--edition offline|online`, `--with-browser` / `--no-browser`
+  (online only), `--purge-browser-data`. Re-running keeps the edition recorded
+  in the install manifest, so an online user is never downgraded; otherwise it
+  asks in a terminal and falls back to offline. Switching online to offline
+  removes the online-only files.
+- Optional built-in browser: separate `jizzcraft-browser-<version>-<arch>-linux.tar.xz`
+  (only when the binary is built), `jizzcraft-browser` deb, Arch optdepends and
+  a Fedora `-browser` subpackage placeholder. System packages come from
+  `assets/browser-packages.tsv` and are installed only after asking.
+- `cargo xtask dist --edition offline|online [--browser]` (`--network` kept as
+  an alias).
+
 ## [0.1.0]
 
 First public alpha.

@@ -458,8 +458,14 @@ fn every_network_entry_point_is_behind_the_kill_switch() {
             }
             if l.contains("TcpStream::connect") || l.contains("TcpListener::bind") {
                 // Only the explicit loopback probe of a local Jackett/Prowlarr.
-                if !(name == "detect.rs"
-                    && (whole.contains("127.0.0.1") || whole.contains("[127, 0, 0, 1]")))
+                // Or the user's click on "Test the proxy": a SOCKS5 greeting to
+                // the proxy itself, nothing relayed (`probe_proxy`).
+                let probe = name == "service/proxy.rs"
+                    && l.contains("connect_timeout")
+                    && whole.contains("pub fn probe_proxy");
+                if !probe
+                    && !(name == "detect.rs"
+                        && (whole.contains("127.0.0.1") || whole.contains("[127, 0, 0, 1]")))
                 {
                     problems.push(format!("{at}: raw TCP socket"));
                 }

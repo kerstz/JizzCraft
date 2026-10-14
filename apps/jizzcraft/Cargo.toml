@@ -32,10 +32,15 @@ windows-sys = { version = "0.60", features = ["Win32_System_Console", "Win32_UI_
 # Opt-in network build: Torznab indexers and a BitTorrent client.
 # Opt-in means opt-in: no default, no nudge, no "recommended" badge.
 network = ["jizzcraft-ui/network", "dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
+# The Online edition: same code, network features on. Alias of `network`.
+online = ["network"]
 
 # Build the staging tree first, then the package from it:
 #   cargo xtask dist --destdir target/stage --prefix /usr
-#   cargo deb -p jizzcraft --no-build
+#   cargo deb -p jizzcraft --no-build                      # Offline edition
+#   cargo xtask dist --edition online --browser --destdir target/stage --prefix /usr
+#   cargo deb -p jizzcraft --no-build --variant online     # jizzcraft-online
+#   cargo deb -p jizzcraft --no-build --variant browser    # jizzcraft-browser
 [package.metadata.deb]
 name = "jizzcraft"
 section = "video"
@@ -59,4 +64,27 @@ assets = [
   ["../../target/stage/usr/share/jizzcraft/*", "usr/share/jizzcraft/", "644"],
   ["../../target/stage/usr/share/licenses/jizzcraft/*", "usr/share/licenses/jizzcraft/", "644"],
   ["../../README.md", "usr/share/doc/jizzcraft/README.md", "644"],
+]
+
+# Online edition: same files, other package name. Replaces the Offline package.
+# The browser package is only ever suggested, never recommended.
+[package.metadata.deb.variants.online]
+name = "jizzcraft-online"
+features = ["online"]
+conflicts = "jizzcraft"
+provides = "jizzcraft"
+replaces = "jizzcraft"
+suggests = "jizzcraft-browser"
+extended-description = "Online edition of JizzCraft: the local library and player plus indexers, torrents and streaming from your own sources. Nothing connects before you act."
+
+# Built-in browser: its own process, system WebKitGTK, installed on request.
+[package.metadata.deb.variants.browser]
+name = "jizzcraft-browser"
+section = "web"
+depends = "jizzcraft-online (= ${binary:Version}), libwebkitgtk-6.0-4, bubblewrap"
+recommends = ""
+suggests = ""
+extended-description = "Optional built-in browser for the JizzCraft Online edition. Runs in its own sandboxed process using the system WebKitGTK."
+assets = [
+  ["../../target/stage/usr/libexec/jizzcraft/jizzcraft-browser", "usr/libexec/jizzcraft/jizzcraft-browser", "755"],
 ]

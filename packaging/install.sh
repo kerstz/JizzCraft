@@ -19,7 +19,10 @@ BASE="https://github.com/$REPO"
 
 PREFIX="${HOME}/.local"
 VERSION=""
-NETWORK=0
+EDITION=""
+BROWSER=""
+PURGE_BROWSER=0
+BROWSER_ROOT=""
 FROM_SOURCE=0
 ARCHIVE=""
 NO_DEPS=0
@@ -40,10 +43,16 @@ Usage: install.sh [options]
 
   --prefix DIR          install under DIR (default: ~/.local)
   --version X.Y.Z       install this release instead of the latest
-  --with-network        the network build (indexers, torrents, streaming)
+  --edition offline|online
+                        offline: your own files only, no network code (default)
+                        online: adds indexers, torrents and streaming
+  --with-browser        add the built-in browser (online edition only)
+  --no-browser          do not install the built-in browser (online only)
+  --purge-browser-data  delete the browser's own profile data
+  --with-network        deprecated alias of --edition online
   --from-source         build with cargo instead of downloading a binary
   --archive FILE        use a local release tarball (offline, no checksum)
-  --no-deps             do not install GStreamer packages
+  --no-deps             do not install system packages (GStreamer, WebKitGTK)
   --yes                 do not ask questions
   --disguise            install only the neutral "Viewer" launcher entry
   --set-magnet-default  make JizzCraft the handler for magnet: links
@@ -151,6 +160,43 @@ vulkan_package() {
     esac
 }
 
+pkg_install() {
+    # pkg_install LABEL FAMILY PACKAGES
+    label=$1
+    fam=$2
+    pkgs=$3
+    case "$fam" in
+        arch) cmd="pacman -S --needed $pkgs" ;;
+        debian) cmd="apt-get install -y --no-install-recommends $pkgs" ;;
+        fedora) cmd="dnf install -y $pkgs" ;;
+        suse) cmd="zypper --non-interactive install $pkgs" ;;
+    esac
+    if [ "$(id -u)" != 0 ]; then
+        if have sudo; then cmd="sudo $cmd"; else
+            warn "not root and no sudo: run this yourself as root:"
+            warn "  $cmd"
+            return 0
+        fi
+    fi
+    say "$label packages needed:"
+    say "  $cmd"
+    if [ "$DRY" = 1 ]; then return 0; fi
+    if [ "$YES" != 1 ]; then
+        if [ -r /dev/tty ]; then
+            printf 'Run it now? [y/N] ' >/dev/tty
+            read -r ans </dev/tty || ans=n
+        else
+            ans=n
+        fi
+        case "$ans" in
+            y|Y|yes) ;;
+            *) say "skipped; run it later or use --yes"; return 0 ;;
+        esac
+    fi
+    # shellcheck disable=SC2086
+    run $cmd
+}
+
 install_deps() {
     # install_deps FAMILY TSV
     fam=$1
@@ -166,38 +212,92 @@ install_deps() {
         return 0
     fi
     pkgs="$(gst_packages "$fam" "$tsv" | tr '\n' ' ')$(vulkan_package "$fam")"
-    case "$fam" in
-        arch) cmd="pacman -S --needed $pkgs" ;;
-        debian) cmd="apt-get install -y --no-install-recommends $pkgs" ;;
-        fedora) cmd="dnf install -y $pkgs" ;;
-        suse) cmd="zypper --non-interactive install $pkgs" ;;
-    esac
-    if [ "$(id -u)" != 0 ]; then
-        if have sudo; then cmd="sudo $cmd"; else
-            warn "not root and no sudo: run this yourself as root:"
-            warn "  $cmd"
-            return 0
-        fi
-    fi
-    say "GStreamer packages needed:"
-    say "  $cmd"
-    if [ "$YES" != 1 ] && [ "$DRY" != 1 ]; then
-        if [ -r /dev/tty ]; then
-            printf 'Run it now? [y/N] ' >/dev/tty
-            read -r ans </dev/tty || ans=n
-        else
-            ans=n
-        fi
-        case "$ans" in
-            y|Y|yes) ;;
-            *) say "skipped; run it later or use --yes"; return 0 ;;
-        esac
-    fi
-    # shellcheck disable=SC2086
-    run $cmd
+    pkg_install GStreamer "$fam" "$pkgs"
     if [ "$fam" = fedora ]; then
         say "note: H.264 and HEVC on Fedora need the RPM Fusion free repository."
     fi
+}
+
+browser_fallback() {
+    case "$1" in
+        arch) echo "webkitgtk-6.0 bubblewrap" ;;
+        debian) echo "libwebkitgtk-6.0-4 bubblewrap" ;;
+        fedora) echo "webkitgtk6.0 bubblewrap" ;;
+        suse) echo "libwebkitgtk-6_0-4 bubblewrap" ;;
+    esac
+}
+
+install_browser_deps() {
+    # install_browser_deps FAMILY TSV: system packages for the built-in browser
+    fam=$1
+    tsv=$2
+    if [ "$NO_DEPS" = 1 ] || [ "$fam" = unknown ] || [ -e /run/ostree-booted ]; then
+        return 0
+    fi
+    pkgs=$(gst_packages "$fam" "$tsv" | tr '\n' ' ')
+    [ -n "$pkgs" ] || pkgs=$(browser_fallback "$fam")
+    pkg_install "Browser (WebKitGTK)" "$fam" "$pkgs"
+}
+
+ask_tty() {
+    # ask_tty PROMPT: print PROMPT, read one line from the terminal (empty if none)
+    ANSWER=""
+    if [ "$YES" != 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf '%b' "$1" >/dev/tty
+        read -r ANSWER </dev/tty || ANSWER=""
+    fi
+}
+
+manifest_value() {
+    # manifest_value KEY: value from the existing install manifest, or empty
+    man=$(manifest_path)
+    [ -f "$man" ] || return 0
+    sed -n "s/^$1=//p" "$man" | head -n 1
+}
+
+resolve_choices() {
+    # Sets EDITION (offline|online) and BROWSER (0|1).
+    if [ -z "$EDITION" ]; then
+        EDITION=$(manifest_value edition)
+        case "$EDITION" in offline|online) ;; *) EDITION="" ;; esac
+    fi
+    if [ -z "$EDITION" ]; then
+        ask_tty "JizzCraft comes in two editions:\n  1) Offline  - your own files only. No network code at all. (default)\n  2) Online   - adds indexers, torrents and streaming from your own sources.\nEdition [1/2]: "
+        case "$ANSWER" in
+            2|online|Online) EDITION=online ;;
+            *) EDITION=offline ;;
+        esac
+    fi
+    if [ "$EDITION" = offline ]; then
+        [ -z "$BROWSER" ] || die "the built-in browser belongs to the online edition: use --edition online"
+        BROWSER=0
+        return 0
+    fi
+    if [ -z "$BROWSER" ]; then
+        b=$(manifest_value browser)
+        case "$b" in
+            1|yes) BROWSER=1 ;;
+            0|no) BROWSER=0 ;;
+        esac
+    fi
+    if [ -z "$BROWSER" ]; then
+        ask_tty "Add the built-in browser? It uses your system's WebKitGTK and runs in its own process. Nothing is preset; you can turn it off in Settings. [y/N]: "
+        case "$ANSWER" in
+            y|Y|yes|Yes) BROWSER=1 ;;
+            *) BROWSER=0 ;;
+        esac
+    fi
+}
+
+purge_browser_data() {
+    for d in "$(data_home)/jizzcraft/browser" \
+             "${XDG_CONFIG_HOME:-$HOME/.config}/jizzcraft/browser" \
+             "${XDG_CACHE_HOME:-$HOME/.cache}/jizzcraft/browser"; do
+        if [ -d "$d" ]; then
+            say "Removing browser data: $d"
+            run rm -rf "$d"
+        fi
+    done
 }
 
 install_tree() {
@@ -228,6 +328,8 @@ install_tree() {
     fi
     {
         say "version=$VERSION_INSTALLED"
+        say "edition=$EDITION"
+        say "browser=$BROWSER"
         say "prefix=$PREFIX"
         sed "s|^|$PREFIX/|" "$list"
     } >"$man"
@@ -291,7 +393,16 @@ main() {
         case "$1" in
             --prefix) [ $# -ge 2 ] || die "--prefix needs a value"; PREFIX=$2; shift ;;
             --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION=${2#v}; shift ;;
-            --with-network) NETWORK=1 ;;
+            --edition)
+                [ $# -ge 2 ] || die "--edition needs a value"
+                case "$2" in offline|online) EDITION=$2 ;; *) die "unknown edition: $2 (offline|online)" ;; esac
+                shift ;;
+            --with-network|--network)
+                warn "$1 is deprecated: use --edition online"
+                EDITION=online ;;
+            --with-browser) BROWSER=1 ;;
+            --no-browser) BROWSER=0 ;;
+            --purge-browser-data) PURGE_BROWSER=1 ;;
             --from-source) FROM_SOURCE=1 ;;
             --archive) [ $# -ge 2 ] || die "--archive needs a value"; ARCHIVE=$2; shift ;;
             --no-deps) NO_DEPS=1 ;;
@@ -307,14 +418,19 @@ main() {
     done
 
     [ "$(uname -s)" = Linux ] || die "this installer is for Linux"
-    if [ "$UNINSTALL" = 1 ]; then do_uninstall; exit 0; fi
+    if [ "$UNINSTALL" = 1 ]; then
+        do_uninstall
+        if [ "$PURGE_BROWSER" = 1 ]; then purge_browser_data; fi
+        exit 0
+    fi
 
     TMP=$(mktemp -d)
     trap cleanup EXIT INT TERM
     arch=$(detect_arch)
     fam=$(detect_family)
+    resolve_choices
     variant=jizzcraft
-    if [ "$NETWORK" = 1 ]; then variant=jizzcraft-network; fi
+    if [ "$EDITION" = online ]; then variant=jizzcraft-online; fi
 
     if [ "$FROM_SOURCE" = 1 ]; then
         have cargo || die "--from-source needs cargo (https://rustup.rs)"
@@ -324,9 +440,14 @@ main() {
             download "$BASE/archive/refs/tags/v$VERSION.tar.gz" "$TMP/src.tar.gz"
             mkdir -p "$TMP/src"
             tar -xzf "$TMP/src.tar.gz" -C "$TMP/src" --strip-components=1
-            if [ "$NETWORK" = 1 ]; then netflag=--network; else netflag=; fi
+            bflag=
+            if [ "$BROWSER" = 1 ]; then
+                bflag=--browser
+                (cd "$TMP/src" && cargo build -q --release -p jizzcraft-browser) \
+                    || warn "the browser binary could not be built; continuing without it"
+            fi
             # shellcheck disable=SC2086
-            (cd "$TMP/src" && cargo run -q -p xtask -- dist $netflag \
+            (cd "$TMP/src" && cargo run -q -p xtask -- dist --edition "$EDITION" $bflag \
                 --prefix / --destdir "$TMP/stage")
             ROOT="$TMP/stage"
         fi
@@ -351,28 +472,59 @@ main() {
                 say "minisign signature present; verify it with the key in the README:"
                 say "  minisign -Vm SHA256SUMS -P <public key>"
             fi
-            tar -xJf "$TMP/$name" -C "$TMP"
-            ROOT=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            mkdir -p "$TMP/main"
+            tar -xJf "$TMP/$name" -C "$TMP/main"
+            ROOT=$(find "$TMP/main" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            if [ "$BROWSER" = 1 ]; then
+                bname="jizzcraft-browser-$VERSION-$arch-linux.tar.xz"
+                if download "$BASE/releases/download/v$VERSION/$bname" "$TMP/$bname" 2>/dev/null \
+                    && sha256_check "$TMP" "$bname"; then
+                    mkdir -p "$TMP/browser"
+                    tar -xJf "$TMP/$bname" -C "$TMP/browser"
+                    BROWSER_ROOT=$(find "$TMP/browser" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+                else
+                    warn "no browser package in this release: installing without the browser"
+                    BROWSER=0
+                fi
+            fi
         fi
         VERSION_INSTALLED=$VERSION
     fi
 
     if [ "$DRY" = 1 ]; then
         say "+ would install version ${VERSION_INSTALLED:-?} to $PREFIX (family: $fam, arch: $arch)"
+        say "+ edition: $EDITION ($variant)"
+        if [ "$BROWSER" = 1 ]; then say "+ browser: yes"; else say "+ browser: no"; fi
         install_deps "$fam" /dev/null
+        if [ "$BROWSER" = 1 ]; then install_browser_deps "$fam" /dev/null; fi
         exit 0
     fi
 
     tsv="$ROOT/share/jizzcraft/gst-packages.tsv"
     [ -f "$tsv" ] || tsv=/dev/null
     install_deps "$fam" "$tsv"
+    if [ "$BROWSER" = 1 ]; then
+        btsv="$ROOT/share/jizzcraft/browser-packages.tsv"
+        [ -f "$btsv" ] || btsv=/dev/null
+        install_browser_deps "$fam" "$btsv"
+        if [ -n "$BROWSER_ROOT" ] && [ -d "$BROWSER_ROOT" ]; then
+            cp -a "$BROWSER_ROOT/." "$ROOT/"
+        fi
+        if [ ! -e "$ROOT/libexec/jizzcraft/jizzcraft-browser" ]; then
+            warn "this build has no browser binary: installing without it"
+            BROWSER=0
+        fi
+    fi
+    # Online -> offline (or browser off): the old manifest cleanup in
+    # install_tree removes what the new tree no longer ships.
+    if [ "$PURGE_BROWSER" = 1 ] && [ "$BROWSER" != 1 ]; then purge_browser_data; fi
     install_tree "$ROOT"
 
     if [ "$SET_MAGNET" = 1 ]; then
         if [ -f "$PREFIX/share/applications/io.github.kerstz.JizzCraft-magnet.desktop" ]; then
             run xdg-mime default io.github.kerstz.JizzCraft-magnet.desktop x-scheme-handler/magnet
         else
-            warn "this build has no magnet handler (use --with-network)"
+            warn "this build has no magnet handler (use --edition online)"
         fi
     fi
 

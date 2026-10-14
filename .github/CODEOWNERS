@@ -1,0 +1,7 @@
+# Review requests. Everything is owned by the maintainer for now.
+*                       @kerstz
+/crates/fetch/          @kerstz
+/crates/media/src/guard.rs @kerstz
+/AGENTS.md              @kerstz
+/SECURITY.md            @kerstz
+/LEGAL.md               @kerstz

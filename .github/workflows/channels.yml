@@ -1,0 +1,29 @@
+name: Edition channels
+
+# `edition/offline` and `edition/online` are release channels, not code lines:
+# after a release is published they are fast-forwarded to the released commit.
+# Both usually point at the same commit; that is intended (one code base, two
+# builds). A person never pushes to them.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  advance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Fast-forward both channel branches (never force)
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD)
+          for b in edition/offline edition/online; do
+            git push origin "$sha:refs/heads/$b"
+          done

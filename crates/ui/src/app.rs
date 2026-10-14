@@ -20,14 +20,24 @@ use jizzcraft_media::player::{PlayState, Player};
 use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
 #[cfg(feature = "network")]
+mod browser;
+#[cfg(feature = "network")]
 mod downloads;
+mod onboarding;
 mod organize;
 #[cfg(feature = "network")]
 mod play_flow;
+#[cfg(feature = "network")]
+mod send_card;
+mod settings;
 mod sidebar;
+#[cfg(feature = "network")]
+mod status_chip;
 #[cfg(feature = "network")]
 mod stream_open;
 mod tools;
+#[cfg(feature = "network")]
+mod web_pages;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -254,6 +264,16 @@ pub struct JizzApp {
     pending_minimize: bool,
     #[cfg(feature = "network")]
     downloads: downloads::Downloads,
+    /// Settings window (General page only in the offline edition).
+    settings: settings::Settings,
+    #[cfg(feature = "network")]
+    web_pages: web_pages::WebPages,
+    #[cfg(feature = "network")]
+    send_cards: send_card::SendCards,
+    #[cfg(feature = "network")]
+    browser: browser::Browser,
+    #[cfg(feature = "network")]
+    proxy_test: status_chip::ProxyTest,
     queue: Vec<(String, Value)>,
 
     thumbs: ThumbService,
@@ -368,8 +388,14 @@ impl JizzApp {
         register_core::<JizzApp>(&mut registry);
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
+        settings::register(&mut registry);
         #[cfg(feature = "network")]
-        downloads::register(&mut registry);
+        {
+            downloads::register(&mut registry);
+            web_pages::register(&mut registry);
+            browser::register(&mut registry);
+            status_chip::register(&mut registry);
+        }
 
         let mut app = JizzApp {
             ctx: cc.egui_ctx.clone(),
@@ -423,6 +449,15 @@ impl JizzApp {
             pending_minimize: false,
             #[cfg(feature = "network")]
             downloads: downloads::Downloads::new(opts.disguised),
+            settings: settings::Settings::default(),
+            #[cfg(feature = "network")]
+            web_pages: web_pages::WebPages::default(),
+            #[cfg(feature = "network")]
+            send_cards: send_card::SendCards::default(),
+            #[cfg(feature = "network")]
+            browser: browser::Browser::default(),
+            #[cfg(feature = "network")]
+            proxy_test: status_chip::ProxyTest::default(),
             queue: Vec::new(),
             thumbs: {
                 let ctx = cc.egui_ctx.clone();
@@ -448,6 +483,11 @@ impl JizzApp {
             .and_then(SortKey::parse)
             .unwrap_or_default();
         app.sort_desc = app.cfg.sort_desc;
+        if !app.persist_cfg {
+            // Scripted runs (bench, screenshot, supplied config) skip the
+            // first-run tour; nothing is saved either way.
+            app.cfg.onboarding_done = true;
+        }
         app.refresh();
         if let Some((file, secs)) = app.opts.bench.clone() {
             let name = file
@@ -463,6 +503,10 @@ impl JizzApp {
                 app.open_index(idx);
             }
             for (name, args) in std::mem::take(&mut app.opts.commands) {
+                // The browser starts from a click or its key, never at launch.
+                if name == "browser.open" {
+                    continue;
+                }
                 app.queue.push((name, args));
             }
         }
@@ -789,6 +833,8 @@ impl JizzApp {
         #[cfg(feature = "network")]
         {
             self.downloads.cancel_pending();
+            self.send_cards.cancel_pending();
+            self.browser.stop();
         }
     }
 
@@ -1295,6 +1341,40 @@ impl JizzApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if widgets::button_solid_bar(ui, crate::i18n::tr("Add folder")).clicked() {
                             self.push("library.import", json!({}));
+                        }
+                        ui.add_space(8.0);
+                        ui.menu_button(theme::hud(crate::i18n::tr("Menu"), MUTED), |ui| {
+                            if ui.button(crate::i18n::tr("Settings")).clicked() {
+                                self.push("app.settings", json!({}));
+                                ui.close();
+                            }
+                            #[cfg(feature = "network")]
+                            if ui.button(crate::i18n::tr("Downloads")).clicked() {
+                                self.push("view.downloads", json!({}));
+                                ui.close();
+                            }
+                            #[cfg(feature = "network")]
+                            if matches!(
+                                crate::edition::browser_status(),
+                                crate::edition::BrowserStatus::Installed(_)
+                            ) && ui.button(crate::i18n::tr("Open the browser")).clicked()
+                            {
+                                self.push("browser.open", json!({}));
+                                ui.close();
+                            }
+                            if ui.button(crate::i18n::tr("Welcome tour")).clicked() {
+                                onboarding::reopen(ui.ctx());
+                                ui.close();
+                            }
+                            if ui.button(crate::i18n::tr("Shortcuts")).clicked() {
+                                self.push("docs.toggle", json!({}));
+                                ui.close();
+                            }
+                        });
+                        #[cfg(feature = "network")]
+                        if !narrow {
+                            ui.add_space(8.0);
+                            status_chip::show(self, ui);
                         }
                         let x = ui.cursor().right();
                         ui.painter().vline(x, bar.y_range(), Stroke::new(1.0, LINE));
@@ -2295,6 +2375,13 @@ impl eframe::App for JizzApp {
             self.drive_screenshot(&ctx);
             return;
         }
+        // First-run tour (and "Welcome tour" from the menu): takes the window.
+        if onboarding::show(self, ui) {
+            self.toasts_ui(&ctx);
+            self.drain_queue();
+            self.drive_screenshot(&ctx);
+            return;
+        }
 
         let t0 = Instant::now();
         let due = match &mut self.view {
@@ -2347,7 +2434,12 @@ impl eframe::App for JizzApp {
         self.toasts_ui(&ctx);
         self.docs_window(&ctx);
         #[cfg(feature = "network")]
-        self.downloads_window(&ctx);
+        {
+            self.downloads_window(&ctx);
+            send_card::poll_and_show(self, &ctx);
+            self.browser_tick();
+        }
+        self.settings_window(&ctx);
 
         self.drain_queue();
         self.drive_bench(&ctx, t0);
@@ -3619,8 +3711,14 @@ mod keymap_tests {
         register_core::<JizzApp>(&mut reg);
         register_ui_commands(&mut reg);
         tools::register_tool_commands(&mut reg);
+        settings::register(&mut reg);
         #[cfg(feature = "network")]
-        downloads::register(&mut reg);
+        {
+            downloads::register(&mut reg);
+            web_pages::register(&mut reg);
+            browser::register(&mut reg);
+            status_chip::register(&mut reg);
+        }
         let missing: Vec<_> = crate::keys::KEYMAP
             .iter()
             .chain(crate::keys::TRIAGE_KEYMAP.iter())

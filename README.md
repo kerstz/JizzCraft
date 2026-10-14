@@ -397,6 +397,13 @@ cargo build --release -p jizzcraft-cli --features network
 
 The full list, including what is explicitly not planned, is in [`ROADMAP.md`](ROADMAP.md).
 
+## Request a feature
+
+Features are proposed, voted (👍) and tracked in the open on GitHub: see
+[docs/feature-process.md](docs/feature-process.md) and the
+[feature requests](https://github.com/kerstz/JizzCraft/issues?q=is%3Aissue+label%3A%22type%3A+feature%22).
+The app never contacts GitHub by itself.
+
 ## Contributing and security
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md) and the [code of conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md); legal and trademark requests are covered in [`LEGAL.md`](LEGAL.md).

@@ -9,6 +9,8 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Config {
     pub age_confirmed: bool,
+    /// The first-run wizard was finished or skipped.
+    pub onboarding_done: bool,
     pub discreet: bool,
     pub screen_share_safe: bool,
     pub inspector_open: bool,

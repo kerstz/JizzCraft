@@ -3,12 +3,16 @@
 # scratch prefix, make sure the program starts and `doctor` runs, then
 # uninstall and make sure nothing is left behind.
 #
-#   sh packaging/smoke-install.sh dist/jizzcraft-0.1.0-x86_64-linux.tar.xz
+#   sh packaging/smoke-install.sh dist/jizzcraft-0.2.0-x86_64-linux.tar.xz [ONLINE_TARBALL]
+#
+# Cases: offline -> online -> offline. Without ONLINE_TARBALL, an online tree
+# is synthesised from the offline one (adds the magnet handler and the
+# browser launcher file, the two things that must disappear again).
 set -eu
 
 die() { printf 'smoke-install: %s\n' "$*" >&2; exit 1; }
 
-[ $# -eq 1 ] || die "usage: smoke-install.sh TARBALL"
+[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: smoke-install.sh TARBALL [ONLINE_TARBALL]"
 tarball=$1
 [ -f "$tarball" ] || die "no such file: $tarball"
 here=$(cd "$(dirname "$0")" && pwd)
@@ -51,4 +55,49 @@ sh "$here/install.sh" --uninstall --prefix "$p" --yes >/dev/null
 [ ! -e "$p/bin/jizzcraft" ] || die "binary still there after uninstall"
 left=$(find "$p" -type f 2>/dev/null | wc -l)
 [ "$left" -eq 0 ] || die "$left file(s) left after uninstall"
+
+# ---- editions: offline (done above) -> online -> offline ------------------
+online=${2:-}
+if [ -z "$online" ]; then
+    syn="$d/syn"
+    mkdir -p "$syn"
+    tar -xJf "$tarball" -C "$syn"
+    top=$(find "$syn" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+    cp "$top/share/applications/io.github.kerstz.JizzCraft.desktop" \
+        "$top/share/applications/io.github.kerstz.JizzCraft-magnet.desktop"
+    online="$d/online.tar.xz"
+    tar -C "$syn" -cJf "$online" "$(basename "$top")"
+fi
+man="$d/data/jizzcraft/install-manifest"
+magnet="$p/share/applications/io.github.kerstz.JizzCraft-magnet.desktop"
+
+sh "$here/install.sh" --archive "$tarball" --edition offline --prefix "$p" --no-deps --yes >/dev/null
+grep -qx 'edition=offline' "$man" || die "manifest lacks edition=offline"
+grep -qx 'browser=0' "$man" || die "manifest lacks browser=0"
+if sh "$here/install.sh" --archive "$tarball" --edition offline --no-browser --prefix "$p" --no-deps --yes >/dev/null 2>&1; then
+    die "--no-browser was accepted with the offline edition"
+fi
+if sh "$here/install.sh" --archive "$tarball" --edition offline --with-browser --prefix "$p" --no-deps --yes >/dev/null 2>&1; then
+    die "--with-browser was accepted with the offline edition"
+fi
+
+sh "$here/install.sh" --archive "$online" --edition online --no-browser --prefix "$p" --no-deps --yes >/dev/null
+[ -e "$magnet" ] || die "online-only file missing after switching to online"
+grep -qx 'edition=online' "$man" || die "manifest lacks edition=online"
+
+# Re-running without flags must keep the online edition (no downgrade).
+sh "$here/install.sh" --archive "$online" --prefix "$p" --no-deps --yes >/dev/null
+grep -qx 'edition=online' "$man" || die "update downgraded the edition"
+[ -e "$magnet" ] || die "update dropped an online file"
+
+sh "$here/install.sh" --archive "$tarball" --edition offline --prefix "$p" --no-deps --yes >/dev/null
+[ ! -e "$magnet" ] || die "online-only file left after switching to offline"
+grep -qx 'edition=offline' "$man" || die "manifest lacks edition=offline after switch back"
+# A plain update keeps offline.
+sh "$here/install.sh" --archive "$tarball" --prefix "$p" --no-deps --yes >/dev/null
+grep -qx 'edition=offline' "$man" || die "update changed the edition"
+
+sh "$here/install.sh" --uninstall --prefix "$p" --yes >/dev/null
+left=$(find "$p" -type f 2>/dev/null | wc -l)
+[ "$left" -eq 0 ] || die "$left file(s) left after the edition round trip"
 printf 'smoke-install: ok\n'

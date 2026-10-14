@@ -417,6 +417,8 @@ fn installed_tools_are_found_with_version_age_and_a_vetted_argv() {
             "-J",
             "--no-playlist",
             "--ignore-config",
+            "--proxy",
+            "{proxy}",
             "--",
             "{url}"
         ]

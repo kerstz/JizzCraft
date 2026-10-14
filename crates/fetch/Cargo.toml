@@ -18,6 +18,7 @@ libc = "0.2"
 
 [dependencies]
 jizzcraft-core.workspace = true
+jizzcraft-bridge.workspace = true
 directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true

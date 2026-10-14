@@ -835,6 +835,16 @@ pub const KEYMAP: &[Binding] = &[
         "{}",
         "Restart",
     ),
+    ctrl(b(
+        Global,
+        Both,
+        Key::Comma,
+        false,
+        "Ctrl+,",
+        "app.settings",
+        "{}",
+        "Open Settings",
+    )),
     // ---- bindings added by phases 9-12 (kept together so a test can pin them) ----
     ctrl(b(
         Global,
@@ -1376,16 +1386,28 @@ use Ctx::Triage;
 /// Bindings that only exist in the network build; empty otherwise, so the
 /// default build never lists a command it does not have.
 #[cfg(feature = "network")]
-pub const NETWORK_KEYMAP: &[Binding] = &[ctrl(b(
-    Global,
-    Both,
-    Key::J,
-    false,
-    "Ctrl+J",
-    "view.downloads",
-    "{}",
-    "Downloads: indexers and torrents (network build)",
-))];
+pub const NETWORK_KEYMAP: &[Binding] = &[
+    ctrl(b(
+        Global,
+        Both,
+        Key::J,
+        false,
+        "Ctrl+J",
+        "view.downloads",
+        "{}",
+        "Downloads: indexers and torrents (network build)",
+    )),
+    shifted(ctrl(b(
+        Global,
+        Both,
+        Key::B,
+        false,
+        "Ctrl+Shift+B",
+        "browser.open",
+        "{}",
+        "Open the built-in browser (online edition)",
+    ))),
+];
 #[cfg(not(feature = "network"))]
 pub const NETWORK_KEYMAP: &[Binding] = &[];
 
@@ -1707,6 +1729,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn settings_and_browser_keys_do_not_clash() {
+        let sig = |b: &Binding| (b.key, b.ctrl, b.alt, b.shift);
+        let settings = KEYMAP.iter().find(|b| b.cmd == "app.settings").unwrap();
+        assert_eq!(settings.keys, "Ctrl+,");
+        assert!(settings.ctrl && !settings.alt && settings.shift == Shift::Off);
+        // Nothing else uses Ctrl+Comma, in any context.
+        let same: Vec<_> = KEYMAP
+            .iter()
+            .chain(TRIAGE_KEYMAP)
+            .chain(NETWORK_KEYMAP)
+            .filter(|b| b.ctrl && sig(b) == sig(settings))
+            .collect();
+        assert_eq!(same.len(), 1);
+        // The browser key lives in the network table only: the offline
+        // build lists no command it does not have.
+        assert!(KEYMAP.iter().all(|b| b.cmd != "browser.open"));
+        for b in NETWORK_KEYMAP.iter().filter(|b| b.cmd == "browser.open") {
+            assert_eq!(b.keys, "Ctrl+Shift+B");
+            assert!(b.ctrl && b.shift == Shift::On && b.preset == Preset::Both);
+            // Ctrl+B (sidebar) stays distinct: exact modifiers decide.
+            let sidebar = KEYMAP.iter().find(|x| x.cmd == "sidebar.toggle").unwrap();
+            assert_ne!(sig(b), sig(sidebar));
+        }
+        // The Welcome tour has no key.
+        assert!(
+            KEYMAP
+                .iter()
+                .chain(NETWORK_KEYMAP)
+                .all(|b| !b.cmd.contains("onboarding") && !b.cmd.contains("welcome"))
+        );
     }
 
     #[test]

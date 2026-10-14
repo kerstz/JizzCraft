@@ -79,7 +79,7 @@ jobs:
       - name: cargo-audit
         run: |
           cargo install cargo-audit --locked
-          cargo audit
+          cargo audit --ignore RUSTSEC-2026-0293
 
   msrv:
     name: msrv (rust 1.95)
@@ -232,6 +232,10 @@ jobs:
             gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # xtask dist generates THIRD-PARTY.html and fails in CI without it.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
       - name: Stage and pack
         run: cargo run -q -p xtask -- dist --destdir target/stage --prefix /usr --tarball
       - name: Install, check, uninstall

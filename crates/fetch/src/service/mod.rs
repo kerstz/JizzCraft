@@ -29,6 +29,7 @@ pub use torrent::{
     TorrentStatus, path_is_safe,
 };
 
+pub use proxy::{Connection, ProxyProbe, connection_state, probe_proxy};
 pub(crate) use proxy::{current_proxy, proxy_blocked, same_origin_policy};
 
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);

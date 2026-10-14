@@ -26,6 +26,12 @@ const BANNED: &[&str] = &[
     "tokio",
     "quinn",
     "axum",
+    // Browser engines live in the separate helper process only.
+    "webkit6",
+    "webkit2gtk",
+    "wry",
+    "gtk4",
+    "gtk",
 ];
 
 fn tree(args: &[&str]) -> Vec<String> {
@@ -86,4 +92,34 @@ fn default_apps_do_not_link_fetch() {
 fn network_build_links_librqbit() {
     let names = tree(&["-p", "jizzcraft", "--features", "network"]);
     assert!(names.iter().any(|n| n == "librqbit"));
+}
+
+/// The browser helper may use gtk4/webkit6 behind its `engine` feature, but no
+/// app or library crate may depend on it or on those crates, in any feature set.
+#[test]
+fn browser_engine_stays_in_the_helper() {
+    let banned = [
+        "jizzcraft-browser",
+        "gtk4",
+        "webkit6",
+        "webkit2gtk",
+        "wry",
+        "gtk",
+    ];
+    for (pkg, extra) in [
+        ("jizzcraft", vec![]),
+        ("jizzcraft", vec!["--features", "network"]),
+        ("jizzcraft-cli", vec![]),
+        ("jizzcraft-ui", vec![]),
+        ("jizzcraft-fetch", vec![]),
+        ("jizzcraft-media", vec![]),
+        ("jizzcraft-core", vec![]),
+    ] {
+        let mut args = vec!["-p", pkg];
+        args.extend(extra);
+        let names = tree(&args);
+        for b in banned {
+            assert!(!names.iter().any(|n| n == b), "{pkg} depends on {b}");
+        }
+    }
 }

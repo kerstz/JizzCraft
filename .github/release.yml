@@ -1,0 +1,15 @@
+changelog:
+  exclude:
+    labels: ["dependencies", "github_actions", "type: chore"]
+    authors: ["dependabot[bot]"]
+  categories:
+    - title: "New features"
+      labels: ["type: feature"]
+    - title: "Fixes"
+      labels: ["type: bug"]
+    - title: "Security and privacy"
+      labels: ["area: security", "area: privacy"]
+    - title: "Documentation"
+      labels: ["type: docs"]
+    - title: "Other changes"
+      labels: ["*"]
