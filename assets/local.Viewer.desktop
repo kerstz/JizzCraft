@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Viewer
+GenericName=Image Viewer
+Comment=View images and videos
+Exec=jizzcraft --disguise
+Icon=local.Viewer
+Terminal=false
+Categories=Graphics;Viewer;
+Keywords=viewer;images;video;
+StartupWMClass=local.Viewer
