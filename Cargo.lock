@@ -2570,6 +2570,7 @@ dependencies = [
  "egui-wgpu",
  "image",
  "jizzcraft-core",
+ "jizzcraft-fetch",
  "jizzcraft-media",
  "rfd",
  "serde",

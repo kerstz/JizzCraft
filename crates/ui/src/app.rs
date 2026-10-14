@@ -19,6 +19,8 @@ use jizzcraft_core::{
 use jizzcraft_media::player::{PlayState, Player};
 use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
+#[cfg(feature = "network")]
+mod downloads;
 mod sidebar;
 mod tools;
 
@@ -224,6 +226,8 @@ pub struct JizzApp {
     busy: u32,
     toasts: Vec<Toast>,
     show_docs: bool,
+    #[cfg(feature = "network")]
+    downloads: downloads::Downloads,
     queue: Vec<(String, Value)>,
 
     thumbs: ThumbService,
@@ -286,6 +290,8 @@ impl JizzApp {
         register_core::<JizzApp>(&mut registry);
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
+        #[cfg(feature = "network")]
+        downloads::register(&mut registry);
 
         let mut app = JizzApp {
             ctx: cc.egui_ctx.clone(),
@@ -334,6 +340,8 @@ impl JizzApp {
             busy: 0,
             toasts: Vec::new(),
             show_docs: false,
+            #[cfg(feature = "network")]
+            downloads: downloads::Downloads::new(),
             queue: Vec::new(),
             thumbs: {
                 let ctx = cc.egui_ctx.clone();
@@ -1925,9 +1933,12 @@ impl JizzApp {
                 }
                 ui.add_space(S);
                 ui.label(
-                    egui::RichText::new(
-                        "Everything stays on this machine. No account, no telemetry, no network.",
-                    )
+                    egui::RichText::new(if cfg!(feature = "network") {
+                        "Network build: it connects only to the indexers you add and to BitTorrent \
+                             peers. No account, no telemetry."
+                    } else {
+                        "Everything stays on this machine. No account, no telemetry, no network."
+                    })
                     .color(MUTED),
                 );
             });
@@ -1989,6 +2000,8 @@ impl eframe::App for JizzApp {
         self.triage_strip(&ctx);
         self.toasts_ui(&ctx);
         self.docs_window(&ctx);
+        #[cfg(feature = "network")]
+        self.downloads_window(&ctx);
 
         self.drain_queue();
         self.drive_bench(&ctx, t0);
@@ -3106,9 +3119,12 @@ mod keymap_tests {
         register_core::<JizzApp>(&mut reg);
         register_ui_commands(&mut reg);
         tools::register_tool_commands(&mut reg);
+        #[cfg(feature = "network")]
+        downloads::register(&mut reg);
         let missing: Vec<_> = crate::keys::KEYMAP
             .iter()
             .chain(crate::keys::TRIAGE_KEYMAP.iter())
+            .chain(crate::keys::NETWORK_KEYMAP.iter())
             .filter(|b| !reg.has(b.cmd))
             .map(|b| (b.keys, b.cmd))
             .collect();

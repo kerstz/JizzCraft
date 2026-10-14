@@ -29,7 +29,13 @@ pub struct FetchHost {
 impl FetchHost {
     pub fn new(cfg_path: PathBuf) -> Self {
         let cfg = FetchConfig::load(&cfg_path);
-        Self { cfg_path, cfg, svc: None, last: Vec::new(), cancel: Arc::default() }
+        Self {
+            cfg_path,
+            cfg,
+            svc: None,
+            last: Vec::new(),
+            cancel: Arc::default(),
+        }
     }
 
     pub fn config(&self) -> &FetchConfig {
@@ -38,9 +44,40 @@ impl FetchHost {
 
     fn save(&mut self) -> Result<()> {
         self.cfg.save(&self.cfg_path)?;
-        // Next use rebuilds the service with the new config.
-        self.svc = None;
+        // Keep the running service (and its torrents); hand it the new config.
+        if let Some(svc) = self.svc.as_mut() {
+            svc.set_config(self.cfg.clone());
+        }
         Ok(())
+    }
+
+    /// True once the service exists (a runtime, not yet necessarily a session).
+    pub fn host_started(&self) -> bool {
+        self.svc.is_some()
+    }
+
+    pub fn add_indexer(&mut self, name: String, url: String, api_key: String) -> Result<u32> {
+        let id = self.cfg.next_indexer_id();
+        self.cfg.indexers.push(Indexer {
+            id,
+            name,
+            url,
+            api_key: Secret::new(api_key),
+            enabled: true,
+        });
+        self.save()?;
+        Ok(id)
+    }
+
+    pub fn remove_indexer(&mut self, id: u32) -> Result<()> {
+        self.cfg.indexers.retain(|i| i.id != id);
+        self.save()
+    }
+
+    pub fn set_download_dir(&mut self, dir: PathBuf) -> Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        self.cfg.download_dir = Some(dir);
+        self.save()
     }
 
     pub fn service(&mut self) -> Result<&FetchService> {
@@ -80,7 +117,11 @@ fn do_search(h: &mut FetchHost, a: &Value) -> Result<Vec<SearchResult>> {
     let cats: Vec<u32> = a
         .get("cats")
         .and_then(Value::as_array)
-        .map(|v| v.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+        .map(|v| {
+            v.iter()
+                .filter_map(|x| x.as_u64().map(|n| n as u32))
+                .collect()
+        })
         .unwrap_or_default();
     let limit = u(a, "limit").unwrap_or(50).min(200) as u32;
     let ix = u(a, "indexer").map(|n| n as u32);
@@ -128,17 +169,23 @@ fn add_and_maybe_wait(h: &mut FetchHost, src: Source, a: &Value) -> Result<Value
 }
 
 pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
-    reg.register("fetch.indexers.list", "Configured indexers (keys are never shown)", |c, _| {
-        let v: Vec<Value> = c
-            .fetch()
-            .config()
-            .indexers
-            .iter()
-            .map(|i| json!({ "id": i.id, "name": i.name, "url": redact_url(&i.url),
-                             "has_key": !i.api_key.is_empty(), "enabled": i.enabled }))
-            .collect();
-        Ok(json!({ "indexers": v }))
-    });
+    reg.register(
+        "fetch.indexers.list",
+        "Configured indexers (keys are never shown)",
+        |c, _| {
+            let v: Vec<Value> = c
+                .fetch()
+                .config()
+                .indexers
+                .iter()
+                .map(|i| {
+                    json!({ "id": i.id, "name": i.name, "url": redact_url(&i.url),
+                             "has_key": !i.api_key.is_empty(), "enabled": i.enabled })
+                })
+                .collect();
+            Ok(json!({ "indexers": v }))
+        },
+    );
     reg.register(
         "fetch.indexers.add",
         "Add a Torznab indexer: {name, url, api_key}. Nothing is bundled.",
@@ -156,35 +203,43 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
             Ok(json!({ "id": id }))
         },
     );
-    reg.register("fetch.indexers.remove", "Remove an indexer: {id}", |c, a| {
-        let id = u(&a, "id").ok_or_else(|| Error::Invalid("missing `id`".into()))? as u32;
-        let h = c.fetch();
-        let n = h.cfg.indexers.len();
-        h.cfg.indexers.retain(|i| i.id != id);
-        if h.cfg.indexers.len() == n {
-            return Err(Error::NotFound(format!("indexer {id}")));
-        }
-        h.save()?;
-        Ok(json!({}))
-    });
-    reg.register("fetch.indexers.test", "Check endpoint and key: {id}", |c, a| {
-        let id = u(&a, "id").ok_or_else(|| Error::Invalid("missing `id`".into()))? as u32;
-        let h = c.fetch();
-        let ix = h
-            .cfg
-            .indexers
-            .iter()
-            .find(|i| i.id == id)
-            .cloned()
-            .ok_or_else(|| Error::NotFound(format!("indexer {id}")))?;
-        let r = h
-            .service()?
-            .test_indexer(&ix)
-            .recv_timeout(Duration::from_secs(30))
-            .map_err(|_| Error::Invalid("test timed out".into()))?;
-        r.map_err(Error::Invalid)?;
-        Ok(json!({ "ok": true }))
-    });
+    reg.register(
+        "fetch.indexers.remove",
+        "Remove an indexer: {id}",
+        |c, a| {
+            let id = u(&a, "id").ok_or_else(|| Error::Invalid("missing `id`".into()))? as u32;
+            let h = c.fetch();
+            let n = h.cfg.indexers.len();
+            h.cfg.indexers.retain(|i| i.id != id);
+            if h.cfg.indexers.len() == n {
+                return Err(Error::NotFound(format!("indexer {id}")));
+            }
+            h.save()?;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "fetch.indexers.test",
+        "Check endpoint and key: {id}",
+        |c, a| {
+            let id = u(&a, "id").ok_or_else(|| Error::Invalid("missing `id`".into()))? as u32;
+            let h = c.fetch();
+            let ix = h
+                .cfg
+                .indexers
+                .iter()
+                .find(|i| i.id == id)
+                .cloned()
+                .ok_or_else(|| Error::NotFound(format!("indexer {id}")))?;
+            let r = h
+                .service()?
+                .test_indexer(&ix)
+                .recv_timeout(Duration::from_secs(30))
+                .map_err(|_| Error::Invalid("test timed out".into()))?;
+            r.map_err(Error::Invalid)?;
+            Ok(json!({ "ok": true }))
+        },
+    );
     reg.register(
         "fetch.dir.set",
         "Set the download folder and import it as a library folder: {path}",
@@ -206,10 +261,16 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
             Ok(json!({ "count": items.len(), "items": items }))
         },
     );
-    reg.register("fetch.search.cancel", "Cancel the running search", |c, _| {
-        c.fetch().cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        Ok(json!({}))
-    });
+    reg.register(
+        "fetch.search.cancel",
+        "Cancel the running search",
+        |c, _| {
+            c.fetch()
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({}))
+        },
+    );
     reg.register(
         "fetch.add",
         "Add a torrent: {magnet | torrent_path | result: index of last search, wait_secs?}",
@@ -226,7 +287,9 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
                     .ok_or_else(|| Error::NotFound(format!("result {i}")))?;
                 source_of(r)?
             } else {
-                return Err(Error::Invalid("give `magnet`, `torrent_path` or `result`".into()));
+                return Err(Error::Invalid(
+                    "give `magnet`, `torrent_path` or `result`".into(),
+                ));
             };
             add_and_maybe_wait(h, src, &a)
         },
@@ -253,9 +316,11 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
         let v: Vec<Value> = svc
             .list()
             .iter()
-            .map(|t| json!({ "id": t.id, "progress": t.progress(), "state": format!("{:?}", t.state),
+            .map(|t| {
+                json!({ "id": t.id, "progress": t.progress(), "state": format!("{:?}", t.state),
                              "down_bps": t.down_bps, "up_bps": t.up_bps, "eta_secs": t.eta_secs,
-                             "total_bytes": t.total_bytes }))
+                             "total_bytes": t.total_bytes })
+            })
             .collect();
         Ok(json!({ "torrents": v }))
     });
