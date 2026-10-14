@@ -31,7 +31,17 @@ const BANNED: &[&str] = &[
 fn tree(args: &[&str]) -> Vec<String> {
     let out = Command::new(env!("CARGO"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["tree", "--locked", "--offline", "-e", "normal,build", "--prefix", "none", "--format", "{p}"])
+        .args([
+            "tree",
+            "--locked",
+            "--offline",
+            "-e",
+            "normal,build",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ])
         .args(args)
         .output()
         .expect("run cargo tree");
@@ -53,7 +63,10 @@ fn default_build_has_no_network_crates() {
         .iter()
         .filter(|b| names.iter().any(|n| n == **b))
         .collect();
-    assert!(found.is_empty(), "network crates in the default build: {found:?}");
+    assert!(
+        found.is_empty(),
+        "network crates in the default build: {found:?}"
+    );
 }
 
 #[test]
@@ -69,7 +82,6 @@ fn default_apps_do_not_link_fetch() {
 
 /// Positive control: proves the check above can actually see network crates.
 #[test]
-#[ignore = "enabled once the network feature exists (phase 4)"]
 fn network_build_links_librqbit() {
     let names = tree(&["-p", "jizzcraft", "--features", "network"]);
     assert!(names.iter().any(|n| n == "librqbit"));

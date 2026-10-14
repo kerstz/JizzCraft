@@ -95,6 +95,12 @@ impl FetchService {
         })
     }
 
+    /// Replace the configuration (indexers, download folder). A running
+    /// session keeps its network options until the next start.
+    pub fn set_config(&mut self, cfg: FetchConfig) {
+        self.cfg = Arc::new(cfg);
+    }
+
     fn rt(&self) -> &Runtime {
         self.rt.as_ref().expect("runtime alive until drop")
     }

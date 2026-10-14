@@ -1100,6 +1100,22 @@ use Ctx::Triage;
 
 /// Triage reuses the open viewer/player but takes over the decision keys.
 /// Left/right seeking in a video moves to Shift+arrow while triaging.
+/// Bindings that only exist in the network build; empty otherwise, so the
+/// default build never lists a command it does not have.
+#[cfg(feature = "network")]
+pub const NETWORK_KEYMAP: &[Binding] = &[ctrl(b(
+    Global,
+    Both,
+    Key::J,
+    false,
+    "Ctrl+J",
+    "view.downloads",
+    "{}",
+    "Downloads: indexers and torrents (network build)",
+))];
+#[cfg(not(feature = "network"))]
+pub const NETWORK_KEYMAP: &[Binding] = &[];
+
 pub const TRIAGE_KEYMAP: &[Binding] = &[
     b(
         Triage,
@@ -1334,6 +1350,7 @@ pub fn active(ctx: Ctx, left_hand: bool) -> impl Iterator<Item = &'static Bindin
     triage
         .iter()
         .chain(KEYMAP.iter())
+        .chain(NETWORK_KEYMAP.iter())
         .filter(move |x| (x.ctx == ctx || x.ctx == Ctx::Global) && x.preset.active(left_hand))
 }
 
@@ -1350,6 +1367,7 @@ pub fn docs(left_hand: bool) -> Vec<(Ctx, Vec<&'static Binding>)> {
     .map(|c| {
         let rows: Vec<_> = KEYMAP
             .iter()
+            .chain(NETWORK_KEYMAP.iter())
             .filter(|x| x.ctx == c && x.preset.active(left_hand))
             .collect();
         (c, rows)
