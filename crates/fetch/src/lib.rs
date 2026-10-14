@@ -6,6 +6,9 @@
 //! feature, which is off in the default build.
 
 pub mod config;
+pub mod detect;
+pub mod errors;
+pub mod pick;
 pub mod redact;
 pub mod secret;
 pub mod torznab;

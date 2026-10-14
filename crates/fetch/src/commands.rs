@@ -58,6 +58,18 @@ impl FetchHost {
 
     pub fn add_indexer(&mut self, name: String, url: String, api_key: String) -> Result<u32> {
         let id = self.cfg.next_indexer_id();
+        // One field is enough: the name defaults to the host of the URL.
+        let name = if name.trim().is_empty() {
+            url.split("://")
+                .nth(1)
+                .unwrap_or(&url)
+                .split(['/', ':'])
+                .next()
+                .unwrap_or("indexer")
+                .to_owned()
+        } else {
+            name
+        };
         self.cfg.indexers.push(Indexer {
             id,
             name,
@@ -71,6 +83,20 @@ impl FetchHost {
 
     pub fn remove_indexer(&mut self, id: u32) -> Result<()> {
         self.cfg.indexers.retain(|i| i.id != id);
+        self.save()
+    }
+
+    /// Neutral names (download folder `Viewer`) while the window is disguised.
+    pub fn set_disguised(&mut self, on: bool) {
+        self.cfg.disguised = on;
+        if let Some(svc) = self.svc.as_mut() {
+            svc.set_config(self.cfg.clone());
+        }
+    }
+
+    /// Edit the advanced settings in one go and save.
+    pub fn update_settings(&mut self, f: impl FnOnce(&mut FetchConfig)) -> Result<()> {
+        f(&mut self.cfg);
         self.save()
     }
 
@@ -238,6 +264,25 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
                 .map_err(|_| Error::Invalid("test timed out".into()))?;
             r.map_err(Error::Invalid)?;
             Ok(json!({ "ok": true }))
+        },
+    );
+    reg.register(
+        "fetch.indexers.detect",
+        "Find a local Jackett/Prowlarr on 127.0.0.1 and add it (explicit, loopback only)",
+        |c, _| {
+            let h = c.fetch();
+            let found = h
+                .service()?
+                .detect_local()
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|_| Error::Invalid("detection timed out".into()))?;
+            let n = found.len();
+            for d in found {
+                if !h.cfg.indexers.iter().any(|i| i.url == d.url) {
+                    h.add_indexer(d.name, d.url, d.api_key)?;
+                }
+            }
+            Ok(json!({ "found": n }))
         },
     );
     reg.register(

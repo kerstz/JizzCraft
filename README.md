@@ -275,19 +275,23 @@ The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://w
 
 ## Optional network build
 
-The default build never touches the network. If you want to search indexers and download torrents from inside the app, build the opt-in variant:
+The default build never touches the network. If you want to search and watch torrents from inside the app, build the opt-in variant:
 
 ```sh
 cargo build --release -p jizzcraft --features network
 cargo build --release -p jizzcraft-cli --features network
 ```
 
-- **Nothing is bundled.** You add your own [Torznab](https://torznab.github.io/spec-1.3-draft/) endpoint (a local Jackett or Prowlarr, for instance) with its API key. Torznab is how those tools expose their search. There is no built-in site, tracker or index.
-- **Downloads are a normal library folder.** Set a download folder, and it is imported like any other. Playback is still from disk (`file://`), never from a URL.
-- **In the app:** `Ctrl+J` opens Downloads (indexers, search, torrents). **From the CLI:** `jizzcraft-cli run fetch.search '{"query":"…"}'`, `fetch.add`, `fetch.grab` (search then add one result in a call, optional `wait_secs`), `fetch.list`, `fetch.pause`, `fetch.resume`, `fetch.remove`. A cron job or a script can drive all of it.
-- **Safe defaults.** DHT on, incoming connections off, no seeding after completion, SOCKS5 proxy supported. Indexer keys are stored in `fetch.json` with mode 0600, never in the database, backups or logs. Removing a torrent never deletes files; a torrent never overwrites an existing file.
+**How it works: one box, one click.** Press `Ctrl+J`, type a search or paste a magnet link (or a `.torrent` path), press **Play**. The torrent is added, the right video file is chosen (a picker appears only for packs), playback starts while it downloads, seeking works, and the file lands in your library folder when it is done. **Download** does the same without playing.
+
+- **Nothing to configure for downloads.** They go to `Downloads/JizzCraft` (`Downloads/Viewer` while disguised, `downloads/` inside a portable home). It is imported like any other library folder when a download completes.
+- **Search needs one indexer, and none is bundled.** Add your own [Torznab](https://torznab.github.io/spec-1.3-draft/) endpoint (a local Jackett or Prowlarr). *Find on this computer* looks on `127.0.0.1:9117` and `:9696` **only when you click it** and reads the key from their own config file. Magnet links and `.torrent` files work without any indexer.
+- **While it streams.** The player shows *buffering* when the pieces under the playhead have not arrived yet instead of failing. A seek moves the download priority to the new position. Files with their index at the end (some MP4, MKV without cues) wait for the tail first. There are no scrub previews, resume point or play count until the file is complete and imported.
+- **What plays.** Whatever your GStreamer plugins decode (install `gst-libav` for H.265 and friends). A missing codec is reported in plain words.
+- **From the CLI.** `jizzcraft-cli run fetch.grab '{"query":"…","wait_secs":600}'` (search then add one result), `fetch.search`, `fetch.add`, `fetch.list`, `fetch.pause`, `fetch.resume`, `fetch.remove`, `fetch.indexers.detect`. Streaming playback is desktop-app only.
+- **Safe defaults.** DHT on, incoming connections off, no seeding after completion, optional speed caps and SOCKS5 proxy. Indexer keys are stored in `fetch.json` with mode 0600, never in the database, backups or logs. Forgetting a torrent never deletes files; a torrent never overwrites an existing file; unsafe file names are refused. Failures are shown as fixed plain sentences, never with names, URLs or paths.
 - **What it exposes.** Your IP is visible to the indexers you configure and to BitTorrent peers. What you search for and download is your responsibility.
-- **Verified by tests.** The default dependency tree is checked to contain no network crate; the network build is tested against a local mock indexer and a two-session swarm on 127.0.0.1.
+- **Verified by tests.** The default dependency tree is checked to contain no network crate. The network build is tested against a local mock indexer and a two-session swarm on 127.0.0.1, including reading the tail of a file before the download is complete. The stream player is tested with a throttled reader (buffering, seeks into missing regions, rapid seeks, junk bytes), and a playlist pushed through it is refused with zero connections.
 
 ## Parody disclaimer
 

@@ -2536,6 +2536,7 @@ dependencies = [
 name = "jizzcraft-fetch"
 version = "0.1.0"
 dependencies = [
+ "directories",
  "jizzcraft-core",
  "librqbit",
  "quick-xml",

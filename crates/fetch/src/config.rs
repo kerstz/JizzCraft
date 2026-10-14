@@ -44,6 +44,15 @@ pub struct FetchConfig {
     /// through it when set.
     #[serde(default)]
     pub proxy: Option<Secret>,
+    /// Speed caps in MiB/s (0 or absent = unlimited).
+    #[serde(default)]
+    pub down_limit_mibps: Option<u32>,
+    #[serde(default)]
+    pub up_limit_mibps: Option<u32>,
+    /// Runtime only: neutral names (folder `Viewer`) while the window is
+    /// disguised. Set by the app, never saved.
+    #[serde(skip)]
+    pub disguised: bool,
 }
 
 impl Default for FetchConfig {
@@ -55,6 +64,9 @@ impl Default for FetchConfig {
             listen_incoming: false,
             seed_after_complete: false,
             proxy: None,
+            down_limit_mibps: None,
+            up_limit_mibps: None,
+            disguised: false,
         }
     }
 }
@@ -89,6 +101,26 @@ impl FetchConfig {
         f.write_all(&serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
+    }
+
+    /// Where downloads go. Nothing to configure: the chosen folder if there
+    /// is one, else `<Downloads>/JizzCraft` (`Viewer` while disguised), else
+    /// `downloads` inside the portable home. Never created here.
+    pub fn effective_download_dir(&self) -> PathBuf {
+        if let Some(d) = &self.download_dir {
+            return d.clone();
+        }
+        if let Some(h) = jizzcraft_core::paths::home() {
+            return h.join("downloads");
+        }
+        let leaf = if self.disguised {
+            "Viewer"
+        } else {
+            "JizzCraft"
+        };
+        directories::UserDirs::new()
+            .and_then(|u| u.download_dir().map(|p| p.join(leaf)))
+            .unwrap_or_else(|| jizzcraft_core::paths::state_dir().join("downloads"))
     }
 
     pub fn next_indexer_id(&self) -> u32 {

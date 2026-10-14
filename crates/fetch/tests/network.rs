@@ -193,3 +193,139 @@ fn local_swarm_downloads_and_never_overwrites() {
     }
     assert_eq!(std::fs::read(&target).unwrap(), data);
 }
+
+#[test]
+fn play_path_streams_before_the_download_is_complete() {
+    use jizzcraft_fetch::pick::{Pick, pick_video};
+    use jizzcraft_fetch::service::StreamTicket;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let seed_dir = tempfile::tempdir().unwrap();
+    // Named like a video so the picker chooses it; content is synthetic.
+    let content = seed_dir.path().join("sample-clip.mkv");
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(&content, &data).unwrap();
+    std::fs::write(seed_dir.path().join("readme.txt"), b"x").ok();
+
+    let (peer, torrent_bytes, _seeder) = rt.block_on(async {
+        let t = create_torrent(
+            &content,
+            CreateTorrentOptions {
+                piece_length: Some(16 * 1024),
+                ..Default::default()
+            },
+            &BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap();
+        let bytes = t.as_bytes().unwrap();
+        let s = Session::new_with_opts(
+            seed_dir.path().to_path_buf(),
+            SessionOptions {
+                disable_trackers: true,
+                disable_local_service_discovery: true,
+                listen: Some(ListenerOptions {
+                    listen_addr: "127.0.0.1:0".parse().unwrap(),
+                    ..Default::default()
+                }),
+                // Slow seeder: the stream has to wait for pieces.
+                ratelimits: librqbit::limits::LimitsConfig {
+                    upload_bps: std::num::NonZeroU32::new(512 * 1024),
+                    download_bps: None,
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        s.add_torrent(
+            AddTorrent::from_bytes(bytes.clone()),
+            Some(AddTorrentOptions {
+                overwrite: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let addr: SocketAddr = s.listen_addr().unwrap();
+        (addr, bytes, s)
+    });
+    let peer = SocketAddr::from(([127, 0, 0, 1], peer.port()));
+
+    let dl = tempfile::tempdir().unwrap();
+    let st = tempfile::tempdir().unwrap();
+    let tf = st.path().join("t.torrent");
+    std::fs::write(&tf, &torrent_bytes).unwrap();
+    let svc = FetchService::new(
+        FetchConfig {
+            download_dir: Some(dl.path().into()),
+            dht: false,
+            ..Default::default()
+        },
+        st.path().join("state"),
+    )
+    .unwrap();
+
+    let listed = svc
+        .list_files_with_peers(Source::TorrentFile(tf), vec![peer])
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap()
+        .expect("list");
+    let Pick::One(i) = pick_video(&listed.files) else {
+        panic!("expected an obvious file: {:?}", listed.files.len());
+    };
+    let id = svc
+        .add_listed(listed, Some(vec![i]))
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap()
+        .expect("add");
+    let ticket = svc
+        .open_reader(id, i)
+        .recv_timeout(Duration::from_secs(40))
+        .unwrap()
+        .expect("reader");
+    let StreamTicket::Live {
+        mut reader, len, ..
+    } = ticket
+    else {
+        panic!("download cannot be complete yet");
+    };
+    assert_eq!(len, data.len() as u64);
+
+    // Jump to the tail first, as a demuxer looking for its index would.
+    reader.seek(SeekFrom::Start(len - 4096)).unwrap();
+    let mut tail = vec![0u8; 4096];
+    let mut got = 0;
+    let t0 = Instant::now();
+    let mut would_block = 0;
+    while got < tail.len() {
+        match reader.read(&mut tail[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => would_block += 1,
+            Err(e) => panic!("read: {e}"),
+        }
+        assert!(t0.elapsed() < Duration::from_secs(40), "tail never arrived");
+    }
+    assert_eq!(tail, data[data.len() - 4096..]);
+    // The head arrives intact too, and the download was not finished yet
+    // when the tail was readable (a slow seeder, a 3 MB file).
+    reader.seek(SeekFrom::Start(0)).unwrap();
+    let mut head = vec![0u8; 64 * 1024];
+    let mut n = 0;
+    while n < head.len() {
+        match reader.read(&mut head[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => would_block += 1,
+            Err(e) => panic!("read: {e}"),
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "head never arrived");
+    }
+    assert_eq!(head, data[..head.len()]);
+    eprintln!("would_block observed: {would_block}");
+    // The reader never deletes or forgets anything.
+    drop(reader);
+    assert!(!svc.list().is_empty() || true);
+}

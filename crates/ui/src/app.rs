@@ -341,7 +341,7 @@ impl JizzApp {
             toasts: Vec::new(),
             show_docs: false,
             #[cfg(feature = "network")]
-            downloads: downloads::Downloads::new(),
+            downloads: downloads::Downloads::new(opts.disguised),
             queue: Vec::new(),
             thumbs: {
                 let ctx = cc.egui_ctx.clone();
