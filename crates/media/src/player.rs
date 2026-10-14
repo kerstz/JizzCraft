@@ -5,11 +5,12 @@
 //! and tears it down. The UI only reads atomics and takes the latest
 //! `gst::Sample` from a one-slot mailbox (ref-counted: no pixel copy).
 
-use crate::stream::{Feeder, ReadSeek};
+use crate::stream::{Feeder, ReadSeek, TimedStats};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
+use jizzcraft_core::timed::{Chunk, TimedSource, VariantInfo};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -21,7 +22,21 @@ const UNKNOWN: u64 = u64::MAX;
 /// What a player reads from.
 enum Input {
     File(PathBuf),
-    Stream { reader: Box<dyn ReadSeek>, len: u64 },
+    Stream {
+        reader: Box<dyn ReadSeek>,
+        len: u64,
+    },
+    /// Segmented media. `first` is the already sniffed first chunk.
+    Timed {
+        src: Box<dyn TimedSource>,
+        first: Option<Chunk>,
+    },
+}
+
+/// What feeds the `appsrc` of a stream pipeline.
+enum Feed {
+    Reader(Box<dyn ReadSeek>, u64),
+    Timed(Box<dyn TimedSource>, Option<Chunk>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,6 +87,11 @@ struct Shared {
     loop_a: AtomicU64,
     loop_b: AtomicU64,
     error: Mutex<Option<String>>,
+    /// Live timed source: no seek, rate, step or loop.
+    live: AtomicBool,
+    timed: Arc<TimedStats>,
+    variants: Mutex<Vec<VariantInfo>>,
+    notice: Mutex<Option<&'static str>>,
     mailbox: Mutex<Option<gst::Sample>>,
 }
 
@@ -96,6 +116,8 @@ enum Cmd {
     },
     /// Loop points live in `Shared`; this only wakes the control loop.
     Loop,
+    /// Rebuild at the current position with this variant (`None` = auto).
+    Variant(Option<usize>),
     Stop,
 }
 
@@ -177,12 +199,25 @@ impl Player {
         Self::spawn(Input::Stream { reader, len }, volume, wake)
     }
 
+    /// Plays a segmented stream (HLS/DASH, muxed) from an in-process source.
+    /// No URL, no socket: the source hands over chunks, the player pushes
+    /// them into an `appsrc`. A source without a duration is live.
+    pub fn open_timed(
+        src: Box<dyn TimedSource>,
+        volume: f64,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Player {
+        Self::spawn(Input::Timed { src, first: None }, volume, wake)
+    }
+
     fn spawn(input: Input, volume: f64, wake: Arc<dyn Fn() + Send + Sync>) -> Player {
         let shared = Arc::new(Shared::default());
         shared.duration_ns.store(UNKNOWN, Relaxed);
         shared.rate_bits.store(1.0f64.to_bits(), Relaxed);
         shared.loop_a.store(UNKNOWN, Relaxed);
         shared.loop_b.store(UNKNOWN, Relaxed);
+        shared.timed.buffered_ns.store(UNKNOWN, Relaxed);
+        shared.timed.variant.store(UNKNOWN, Relaxed);
         let (tx, rx) = channel();
         let sh = Arc::clone(&shared);
         std::thread::Builder::new()
@@ -216,6 +251,9 @@ impl Player {
     /// Absolute seek. While scrubbing pass `accurate = false` (key-unit, fast);
     /// on release pass `true`. Seeks are coalesced: one in flight, latest wins.
     pub fn seek(&self, pos: Duration, accurate: bool) {
+        if self.is_live() {
+            return;
+        }
         self.shared
             .position_ns
             .store(pos.as_nanos() as u64, Relaxed);
@@ -226,6 +264,9 @@ impl Player {
     }
 
     pub fn seek_relative(&self, delta_secs: i64) {
+        if self.is_live() {
+            return;
+        }
         self.send(Cmd::SeekRel {
             delta_ns: delta_secs * 1_000_000_000,
         });
@@ -238,6 +279,9 @@ impl Player {
     /// Playback speed, clamped to 0.25..=4.0. Audio keeps its pitch
     /// (`scaletempo`) when that element is installed.
     pub fn set_rate(&self, rate: f64) {
+        if self.is_live() {
+            return;
+        }
         let r = if rate.is_finite() {
             rate.clamp(0.25, 4.0)
         } else {
@@ -263,6 +307,9 @@ impl Player {
     /// A-B loop. `a` alone loops from `a` to the end; `b` alone loops from the
     /// start to `b`; `None, None` clears the loop.
     pub fn set_loop(&self, a: Option<Duration>, b: Option<Duration>) {
+        if self.is_live() {
+            return;
+        }
         let ns = |d: Option<Duration>| d.map_or(UNKNOWN, |d| d.as_nanos() as u64);
         let (a, b) = (ns(a), ns(b));
         self.shared.loop_a.store(a, Relaxed);
@@ -294,6 +341,45 @@ impl Player {
     pub fn set_muted(&mut self, m: bool) {
         self.muted = m;
         self.send(Cmd::Mute(m));
+    }
+
+    /// A live source has no end and cannot seek, change rate, step or loop.
+    pub fn is_live(&self) -> bool {
+        self.shared.live.load(Relaxed)
+    }
+
+    pub fn seekable(&self) -> bool {
+        !self.is_live()
+    }
+
+    /// End of the data the source already downloaded (timed sources only).
+    pub fn buffered_until(&self) -> Option<Duration> {
+        match self.shared.timed.buffered_ns.load(Relaxed) {
+            UNKNOWN => None,
+            n => Some(Duration::from_nanos(n)),
+        }
+    }
+
+    pub fn variants(&self) -> Vec<VariantInfo> {
+        self.shared.variants.lock().unwrap().clone()
+    }
+
+    pub fn current_variant(&self) -> Option<usize> {
+        match self.shared.timed.variant.load(Relaxed) {
+            UNKNOWN => None,
+            n => Some(n as usize),
+        }
+    }
+
+    /// Switch quality (`None` = automatic). The pipeline is rebuilt at the
+    /// current position on the control thread.
+    pub fn set_variant(&self, v: Option<usize>) {
+        self.send(Cmd::Variant(v));
+    }
+
+    /// One-shot message about something the player did by itself.
+    pub fn take_notice(&self) -> Option<&'static str> {
+        self.shared.notice.lock().unwrap().take()
     }
 
     pub fn state(&self) -> PlayState {
@@ -368,6 +454,13 @@ struct Ctl {
     is_live: bool,
     last_target_ns: u64,
     rate: f64,
+    bus: gst::Bus,
+    feeder: Option<Arc<Mutex<Option<Feeder>>>>,
+    timed: bool,
+    volume: f64,
+    muted: bool,
+    /// A seek already fell back to a rebuild; do not loop on failure.
+    seek_rebuilt: bool,
 }
 
 impl Ctl {
@@ -402,6 +495,7 @@ impl Ctl {
             )
             .is_ok()
         {
+            self.seek_rebuilt = false;
             self.seek_in_flight = true;
             self.last_target_ns = ns;
             self.shared.seeking.store(true, Relaxed);
@@ -415,6 +509,10 @@ impl Ctl {
                     PlayState::Paused
                 });
             }
+        } else if self.timed && !self.seek_rebuilt {
+            // The seek never reached the appsrc: rebuild at the target.
+            self.seek_rebuilt = true;
+            self.rebuild(None, Some(ns));
         }
     }
 
@@ -440,9 +538,93 @@ impl Ctl {
         }
     }
 
+    /// Rebuild the pipeline at the current position (quality change, or a
+    /// seek that never reached the `appsrc`). Control thread only.
+    fn rebuild(&mut self, variant: Option<Option<usize>>, at: Option<u64>) {
+        let pos = at.unwrap_or_else(|| self.current_ns());
+        let _ = self.pipeline.set_state(gst::State::Null);
+        let feeder = self.feeder.take().and_then(|s| s.lock().unwrap().take());
+        let Some(mut src) = feeder.and_then(Feeder::into_source) else {
+            self.fail("could not switch quality".into());
+            self.dead = true;
+            return;
+        };
+        if let Some(v) = variant {
+            src.select_variant(v);
+        }
+        src.seek(Duration::from_nanos(pos));
+        match build_pipeline(
+            Input::Timed { src, first: None },
+            self.volume,
+            &self.shared,
+            &self.wake,
+        ) {
+            Ok((pipeline, refused, feeder)) => {
+                self.bus = pipeline.bus().expect("playbin has a bus");
+                self.pipeline = pipeline;
+                self.refused = refused;
+                self.feeder = feeder;
+            }
+            Err(e) => {
+                self.fail(e);
+                self.dead = true;
+                return;
+            }
+        }
+        if self.muted {
+            self.pipeline.set_property("mute", true);
+        }
+        self.buffering_paused = false;
+        self.seek_in_flight = true;
+        self.pending_seek = Some((pos, true));
+        self.last_target_ns = pos;
+        self.shared.seeking.store(true, Relaxed);
+        self.shared.position_ns.store(pos, Relaxed);
+        *self.shared.mailbox.lock().unwrap() = None;
+        self.set_state(PlayState::Loading);
+        if self.pipeline.set_state(gst::State::Playing).is_err() {
+            self.fail("cannot start playback (missing decoder?)".into());
+        }
+    }
+
+    /// The source cannot keep up: step down to the next lower variant.
+    fn downgrade(&mut self) {
+        let vars = self.shared.variants.lock().unwrap().clone();
+        let cur = match self.shared.timed.variant.load(Relaxed) {
+            UNKNOWN => return,
+            n => n as usize,
+        };
+        let Some(cur_bw) = vars.get(cur).map(|v| v.bandwidth) else {
+            return;
+        };
+        let lower = vars
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.bandwidth < cur_bw)
+            .max_by_key(|(_, v)| v.bandwidth)
+            .map(|(i, _)| i);
+        if let Some(i) = lower {
+            *self.shared.notice.lock().unwrap() = Some("quality lowered");
+            self.rebuild(Some(Some(i)), None);
+        }
+    }
+
     fn apply(&mut self, cmd: Cmd) -> bool {
         if self.dead {
             return !matches!(cmd, Cmd::Stop);
+        }
+        if self.shared.live.load(Relaxed)
+            && matches!(
+                cmd,
+                Cmd::Seek { .. }
+                    | Cmd::SeekRel { .. }
+                    | Cmd::Replay
+                    | Cmd::Rate(_)
+                    | Cmd::Step { .. }
+                    | Cmd::Loop
+            )
+        {
+            return true;
         }
         match cmd {
             Cmd::Play => {
@@ -477,8 +659,19 @@ impl Ctl {
                 }
                 self.request_seek(target, true);
             }
-            Cmd::Volume(v) => self.pipeline.set_property("volume", v),
-            Cmd::Mute(m) => self.pipeline.set_property("mute", m),
+            Cmd::Volume(v) => {
+                self.volume = v;
+                self.pipeline.set_property("volume", v);
+            }
+            Cmd::Mute(m) => {
+                self.muted = m;
+                self.pipeline.set_property("mute", m);
+            }
+            Cmd::Variant(v) => {
+                if self.timed {
+                    self.rebuild(Some(v), None);
+                }
+            }
             Cmd::Replay => {
                 self.want_playing = true;
                 self.request_seek(0, true);
@@ -644,6 +837,9 @@ impl Ctl {
     }
 
     fn update_duration(&self) {
+        if self.timed {
+            return; // the source's duration is authoritative
+        }
         if let Some(d) = self.pipeline.query_duration::<gst::ClockTime>() {
             self.shared.duration_ns.store(d.nseconds(), Relaxed);
         }
@@ -666,7 +862,8 @@ fn build_pipeline(
     crate::init()?;
     let (uri, stream) = match input {
         Input::File(path) => (crate::file_uri(&path)?, None),
-        Input::Stream { reader, len } => ("appsrc://".to_owned(), Some((reader, len))),
+        Input::Stream { reader, len } => ("appsrc://".to_owned(), Some(Feed::Reader(reader, len))),
+        Input::Timed { src, first } => ("appsrc://".to_owned(), Some(Feed::Timed(src, first))),
     };
     let mk = |name: &str, hint: &str| {
         gst::ElementFactory::make(name)
@@ -685,14 +882,20 @@ fn build_pipeline(
         crate::guard::watch(bin_ref)
     };
     playbin.set_property("uri", &uri);
-    let feeder_slot = stream.map(|(reader, len)| {
+    let stats = Arc::clone(&shared.timed);
+    let feeder_slot = stream.map(|feed| {
         let slot: Arc<Mutex<Option<Feeder>>> = Arc::new(Mutex::new(None));
-        let (s, reader) = (Arc::clone(&slot), Mutex::new(Some(reader)));
+        let (s, feed) = (Arc::clone(&slot), Mutex::new(Some(feed)));
         playbin.connect("source-setup", false, move |args| {
             let el = args.get(1)?.get::<gst::Element>().ok()?;
             let src = el.downcast::<gst_app::AppSrc>().ok()?;
-            if let Some(r) = reader.lock().unwrap().take() {
-                *s.lock().unwrap() = Some(crate::stream::start(&src, r, len));
+            if let Some(f) = feed.lock().unwrap().take() {
+                *s.lock().unwrap() = Some(match f {
+                    Feed::Reader(r, len) => crate::stream::start(&src, r, len),
+                    Feed::Timed(t, first) => {
+                        crate::stream::start_timed(&src, t, first, Arc::clone(&stats))
+                    }
+                });
             }
             None
         });
@@ -812,6 +1015,38 @@ fn sniff_head(
     Some(Ok(head))
 }
 
+/// Pull the first chunk of a timed source, waiting on `WouldBlock` and
+/// honouring `Stop`. `None` = the player was dropped.
+fn sniff_timed(
+    src: &mut dyn TimedSource,
+    rx: &Receiver<Cmd>,
+    shared: &Shared,
+) -> Option<Result<Chunk, String>> {
+    use std::io::ErrorKind;
+    let start = Instant::now();
+    shared.buffering.store(0, Relaxed);
+    let verdict = loop {
+        match src.pull() {
+            Ok(Some(c)) => break Ok(c),
+            Ok(None) => break Err("could not start this video".to_owned()),
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
+                if start.elapsed() > SNIFF_LIMIT {
+                    break Err("could not start this video".to_owned());
+                }
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Cmd::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+            Err(_) => break Err("the stream stopped being readable".to_owned()),
+        }
+    };
+    shared.buffering.store(100, Relaxed);
+    Some(verdict)
+}
+
 fn control_thread(
     mut input: Input,
     volume: f64,
@@ -820,7 +1055,8 @@ fn control_thread(
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
     shared.buffering.store(100, Relaxed);
-    let is_stream = matches!(input, Input::Stream { .. });
+    let is_stream = matches!(input, Input::Stream { .. } | Input::Timed { .. });
+    let mut timed = false;
     if let Input::Stream { reader, .. } = &mut input {
         // Refuse a playlist before any pipeline exists.
         let verdict = match sniff_head(&mut **reader, &rx, &shared) {
@@ -829,6 +1065,36 @@ fn control_thread(
                 Some(crate::guard::REFUSED.to_owned())
             }
             Some(Ok(_)) => None,
+            Some(Err(e)) => Some(e),
+        };
+        if let Some(e) = verdict {
+            *shared.error.lock().unwrap() = Some(e);
+            shared.state.store(PlayState::Error as u8, Relaxed);
+            wake();
+            while rx.recv().is_ok_and(|c| !matches!(c, Cmd::Stop)) {}
+            return;
+        }
+    }
+    if let Input::Timed { src, first } = &mut input {
+        timed = true;
+        match src.duration() {
+            Some(d) => shared.duration_ns.store(d.as_nanos() as u64, Relaxed),
+            None => shared.live.store(true, Relaxed),
+        }
+        *shared.variants.lock().unwrap() = src.variants();
+        let cur = src.current_variant().map_or(UNKNOWN, |v| v as u64);
+        shared.timed.variant.store(cur, Relaxed);
+        let verdict = match sniff_timed(&mut **src, &rx, &shared) {
+            None => return,
+            Some(Ok(c))
+                if crate::guard::looks_like_manifest(&c.bytes[..c.bytes.len().min(4096)]) =>
+            {
+                Some(crate::guard::REFUSED.to_owned())
+            }
+            Some(Ok(c)) => {
+                *first = Some(c);
+                None
+            }
             Some(Err(e)) => Some(e),
         };
         if let Some(e) = verdict {
@@ -854,6 +1120,12 @@ fn control_thread(
     };
     let bus = pipeline.bus().expect("playbin has a bus");
     let mut ctl = Ctl {
+        bus,
+        feeder,
+        timed,
+        volume,
+        muted: false,
+        seek_rebuilt: false,
         pipeline: pipeline.clone(),
         shared: Arc::clone(&shared),
         wake,
@@ -892,10 +1164,13 @@ fn control_thread(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break 'main,
         }
         // Non-blocking bus read.
-        while let Some(msg) = bus.timed_pop(gst::ClockTime::ZERO) {
+        while let Some(msg) = ctl.bus.timed_pop(gst::ClockTime::ZERO) {
             ctl.on_message(&msg);
         }
         ctl.enforce_loop();
+        if ctl.timed && !ctl.dead && shared.timed.downgrade.swap(false, Relaxed) {
+            ctl.downgrade();
+        }
         // A stream that never starts must not sit on "Loading" forever.
         if is_stream
             && !ctl.dead
@@ -909,7 +1184,7 @@ fn control_thread(
             last_poll = Instant::now();
             let st = shared.state.load(Relaxed);
             if st == PlayState::Playing as u8 && !ctl.seek_in_flight {
-                if let Some(p) = pipeline.query_position::<gst::ClockTime>() {
+                if let Some(p) = ctl.pipeline.query_position::<gst::ClockTime>() {
                     shared.position_ns.store(p.nseconds(), Relaxed);
                 }
                 if shared.duration_ns.load(Relaxed) == UNKNOWN {
@@ -920,8 +1195,8 @@ fn control_thread(
     }
     // Teardown off the UI thread. The feeder is stopped and joined after the
     // pipeline is Null, so nothing pushes into a dead appsrc.
-    let _ = pipeline.set_state(gst::State::Null);
-    if let Some(slot) = feeder {
+    let _ = ctl.pipeline.set_state(gst::State::Null);
+    if let Some(slot) = ctl.feeder.take() {
         drop(slot.lock().unwrap().take());
     }
 }

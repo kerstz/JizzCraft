@@ -142,6 +142,60 @@ fn stream_player_never_connects() {
     assert_no_connections(&trap, "stream player");
 }
 
+/// A timed source whose only chunk is a playlist, as a hostile server could
+/// serve: refused before any pipeline exists, zero connections.
+struct OneChunk(Option<Vec<u8>>);
+
+impl jizzcraft_core::timed::TimedSource for OneChunk {
+    fn duration(&self) -> Option<Duration> {
+        Some(Duration::from_secs(4))
+    }
+    fn seek(&mut self, t: Duration) -> Duration {
+        t
+    }
+    fn pull(&mut self) -> std::io::Result<Option<jizzcraft_core::timed::Chunk>> {
+        Ok(self.0.take().map(|bytes| jizzcraft_core::timed::Chunk {
+            bytes,
+            pts: Some(Duration::ZERO),
+            discont: true,
+        }))
+    }
+    fn buffered_until(&self) -> Option<Duration> {
+        None
+    }
+    fn variants(&self) -> Vec<jizzcraft_core::timed::VariantInfo> {
+        Vec::new()
+    }
+    fn current_variant(&self) -> Option<usize> {
+        None
+    }
+    fn select_variant(&mut self, _: Option<usize>) {}
+    fn wants_downgrade(&mut self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn timed_player_never_connects() {
+    if !common::ready(common::PLAYBACK) || !common::ready(&["appsrc"]) {
+        return;
+    }
+    let trap = Trap::new();
+    let dir = tempfile::tempdir().unwrap();
+    for f in trap.files(dir.path()) {
+        let bytes = std::fs::read(&f).unwrap();
+        let p = Player::open_timed(Box::new(OneChunk(Some(bytes))), 0.0, Arc::new(|| {}));
+        let end = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < end && p.state() != PlayState::Error {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(p.state(), PlayState::Error, "{}", f.display());
+        assert_eq!(p.error().as_deref(), Some(guard::REFUSED));
+        drop(p);
+    }
+    assert_no_connections(&trap, "timed player");
+}
+
 #[test]
 fn thumbnails_and_probe_never_connect() {
     if !common::ready(common::PLAYBACK) {

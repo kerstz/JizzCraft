@@ -2144,8 +2144,29 @@ impl eframe::App for JizzApp {
                 && !self.cfg.screen_share_safe
                 && !self.opts.disguised,
         );
+        if let View::Player(pv) = &self.view
+            && let Some(n) = pv.player.take_notice()
+        {
+            self.toast(ToastKind::Info, n);
+        }
         if std::mem::take(&mut self.pending_minimize) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        // Files dropped on the window: a source definition or a torrent.
+        // (Windowing systems deliver files, not links.)
+        #[cfg(feature = "network")]
+        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+            let p = f.path().to_path_buf();
+            match p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("json") => self.push("sources.import", json!({ "path": p })),
+                Some("torrent") => self.push("fetch.play", json!({ "torrent_path": p })),
+                _ => {}
+            }
         }
         self.poll_jobs();
         self.poll_thumbs(&ctx);
@@ -2852,6 +2873,36 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 }
             } else {
                 app.close_view();
+            }
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "player.quality",
+        "Pick a stream quality: {index?: n}, omit for automatic",
+        |app, a| {
+            if let View::Player(pv) = &mut app.view {
+                let idx = a.get("index").and_then(Value::as_u64).map(|n| n as usize);
+                pv.manual_variant = idx;
+                pv.player.set_variant(idx);
+            }
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "player.quality.next",
+        "Cycle stream quality: automatic, then each variant",
+        |app, _| {
+            if let View::Player(pv) = &mut app.view {
+                let n = pv.player.variants().len();
+                if n > 1 {
+                    pv.manual_variant = match pv.manual_variant {
+                        None => Some(0),
+                        Some(i) if i + 1 < n => Some(i + 1),
+                        Some(_) => None,
+                    };
+                    pv.player.set_variant(pv.manual_variant);
+                }
             }
             Ok(json!({}))
         },

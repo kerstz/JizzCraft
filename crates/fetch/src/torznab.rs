@@ -16,6 +16,9 @@ pub struct SearchResult {
     pub link: Option<String>,
     pub pub_date: Option<String>,
     pub indexer_id: u32,
+    /// Headers (`User-Agent`, `Referer`) the source that produced this result
+    /// wants on the media fetch. Never the secret.
+    pub media_headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

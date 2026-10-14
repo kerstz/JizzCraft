@@ -81,6 +81,8 @@ impl Downloads {
     /// Drop every stream that is still opening. Magnets handed over by
     /// another launch wait for the user instead of opening by themselves.
     pub(super) fn cancel_pending(&mut self) {
+        // Requests still being made stop too, not only their result.
+        self.host.cancel_streams();
         self.flow = None;
         self.ready = None;
         self.external = false;
@@ -150,6 +152,8 @@ enum Typed {
     Magnet(String),
     Url(String),
     TorrentFile(String),
+    /// A local `.json` source definition.
+    Source(String),
     Search(String),
 }
 
@@ -163,6 +167,10 @@ fn parse_input(s: &str) -> Option<Typed> {
         Some(Typed::Url(t.to_owned()))
     } else if t.to_ascii_lowercase().ends_with(".torrent") {
         Some(Typed::TorrentFile(t.to_owned()))
+    } else if t.to_ascii_lowercase().ends_with(".json")
+        && (t.starts_with('/') || t.starts_with("~/") || t.starts_with("./"))
+    {
+        Some(Typed::Source(t.to_owned()))
     } else {
         Some(Typed::Search(t.to_owned()))
     }
@@ -257,7 +265,10 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
             if let Some(u) = a.get("url").and_then(Value::as_str)
                 && !is_torrent_url(u)
             {
-                let rx = app.downloads.host.service()?.play_http(u.to_owned());
+                let rx = app
+                    .downloads
+                    .host
+                    .open_any(u.to_owned(), jizzcraft_fetch::service::StreamOpts::default())?;
                 app.downloads.flow = Some(Flow::Opening(rx));
                 app.downloads.open = true;
                 return Ok(json!({}));
@@ -270,7 +281,11 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                     .link
                     .clone()
                     .ok_or_else(|| invalid("result has no address"))?;
-                let rx = app.downloads.host.service()?.stream_url(u);
+                let opts = jizzcraft_fetch::service::StreamOpts::for_result(
+                    r,
+                    jizzcraft_fetch::pick::Quality::default(),
+                );
+                let rx = app.downloads.host.open_any(u, opts)?;
                 app.downloads.flow = Some(Flow::Opening(rx));
                 app.downloads.open = true;
                 return Ok(json!({}));
@@ -417,7 +432,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "stream.open",
-        "Stream an http(s) video without saving it: {url}",
+        "Stream anything you point it at, without saving it: {url} (video file, .m3u8, .mpd, or a page one of your resolvers understands)",
         |app, a| {
             let u = a
                 .get("url")
@@ -426,7 +441,10 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
             if is_torrent_url(u) {
                 return Err(invalid("a torrent is not a direct video"));
             }
-            let rx = app.downloads.host.service()?.stream_url(u.to_owned());
+            let rx = app
+                .downloads
+                .host
+                .open_any(u.to_owned(), jizzcraft_fetch::service::StreamOpts::default())?;
             app.downloads.flow = Some(Flow::Opening(rx));
             app.downloads.open = true;
             Ok(json!({}))
@@ -639,6 +657,29 @@ impl JizzApp {
         self.autoplay_at = None;
     }
 
+    /// Open a segmented stream (HLS or DASH) in the player.
+    fn open_timed_player(
+        &mut self,
+        name: String,
+        source: Box<dyn jizzcraft_core::timed::TimedSource>,
+    ) {
+        let shown = if self.discreet() || self.opts.disguised {
+            "Video".to_owned()
+        } else {
+            name
+        };
+        self.close_view();
+        let ctx = self.ctx.clone();
+        let vol = f64::from(self.cfg.volume.unwrap_or(0.8));
+        let wake = std::sync::Arc::new(move || ctx.request_repaint_after(Duration::from_millis(1)));
+        let player = jizzcraft_media::player::Player::open_timed(source, vol, wake);
+        let mut pv = crate::player_view::PlayerView::new(None, shown, player);
+        pv.autoplay_on = false;
+        pv.previews_enabled = false;
+        self.view = super::View::Player(Box::new(pv));
+        self.autoplay_at = None;
+    }
+
     fn fail_toast(&mut self, raw: &str) {
         self.toast(ToastKind::Error, classify(raw));
     }
@@ -705,7 +746,7 @@ impl JizzApp {
                     Ok(()) => self.toast(ToastKind::Info, "Opened in an external player."),
                     Err(m) => self.toast(ToastKind::Error, m),
                 },
-                StreamTicket::Live { .. } if external => {
+                StreamTicket::Live { .. } | StreamTicket::Timed { .. } if external => {
                     self.toast(ToastKind::Error, "Wait until the download is complete.");
                 }
                 StreamTicket::Done(path) => {
@@ -718,6 +759,7 @@ impl JizzApp {
                 StreamTicket::Live { reader, len, name } => {
                     self.open_stream_player(name, reader, len)
                 }
+                StreamTicket::Timed { source, name } => self.open_timed_player(name, source),
             }
         }
     }
@@ -908,7 +950,12 @@ impl JizzApp {
                     let dl = ui.add_enabled(
                         matches!(
                             typed,
-                            Some(Typed::Magnet(_) | Typed::TorrentFile(_) | Typed::Url(_))
+                            Some(
+                                Typed::Magnet(_)
+                                    | Typed::TorrentFile(_)
+                                    | Typed::Url(_)
+                                    | Typed::Source(_),
+                            )
                         ),
                         egui::Button::new(crate::i18n::tr("Download")),
                     );
@@ -919,6 +966,9 @@ impl JizzApp {
                             }
                             Some(Typed::TorrentFile(p)) => {
                                 cmds.push(("fetch.play", json!({ "torrent_path": p })));
+                            }
+                            Some(Typed::Source(p)) => {
+                                cmds.push(("sources.import", json!({ "path": p })));
                             }
                             // A plain video address streams without saving; a
                             // .torrent link keeps the torrent flow.
@@ -939,6 +989,9 @@ impl JizzApp {
                             }
                             Some(Typed::TorrentFile(p)) => {
                                 cmds.push(("fetch.add", json!({ "torrent_path": p })));
+                            }
+                            Some(Typed::Source(p)) => {
+                                cmds.push(("sources.import", json!({ "path": p })));
                             }
                             Some(Typed::Url(u)) => cmds.push(("fetch.add", json!({ "url": u }))),
                             _ => {}

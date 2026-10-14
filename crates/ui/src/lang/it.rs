@@ -491,4 +491,9 @@ pub const TABLE: &[(&str, &str)] = &[
         "Some codecs are missing: run `jizzcraft --doctor` for the fix.",
         "Mancano dei codec: esegui `jizzcraft --doctor` per la soluzione.",
     ),
+    (
+        "Stream quality: click to cycle",
+        "Qualità dello stream: clic per cambiare",
+    ),
+    ("quality lowered", "qualità ridotta"),
 ];

@@ -46,7 +46,12 @@ fn yes() -> bool {
 pub struct Format {
     pub url: String,
     pub height: Option<u32>,
+    /// `http`, `https`, `hls` or `dash`.
     pub protocol: String,
+    /// Only `User-Agent`, `Referer` and `Origin` are kept.
+    pub headers: Vec<(String, String)>,
+    pub audio_only: bool,
+    pub video_only: bool,
 }
 
 pub fn validate(d: &ResolverDef) -> Result<(), &'static str> {
@@ -217,14 +222,43 @@ pub fn parse_formats(json: &[u8]) -> Result<Vec<Format>, String> {
             if !is_http(&url) {
                 return None;
             }
+            let codec = |k: &str| {
+                f.get(k)
+                    .and_then(Value::as_str)
+                    .map(|c| c.eq_ignore_ascii_case("none"))
+            };
+            let (v_none, a_none) = (codec("vcodec") == Some(true), codec("acodec") == Some(true));
+            // Neither picture nor sound: storyboards and the like.
+            if v_none && a_none {
+                return None;
+            }
+            let raw = f.get("protocol").and_then(Value::as_str).unwrap_or("http");
+            let protocol = if raw.starts_with("m3u8") {
+                "hls"
+            } else if raw == "http_dash_segments" || raw == "dash" {
+                "dash"
+            } else {
+                raw
+            }
+            .to_owned();
+            let headers = f
+                .get("http_headers")
+                .and_then(Value::as_object)
+                .map(|o| {
+                    crate::segmented::allowed_headers(
+                        o.iter()
+                            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default();
             Some(Format {
                 url,
                 height: f.get("height").and_then(Value::as_u64).map(|h| h as u32),
-                protocol: f
-                    .get("protocol")
-                    .and_then(Value::as_str)
-                    .unwrap_or("http")
-                    .to_owned(),
+                protocol,
+                headers,
+                audio_only: v_none,
+                video_only: a_none,
             })
         })
         .collect();
@@ -234,6 +268,19 @@ pub fn parse_formats(json: &[u8]) -> Result<Vec<Format>, String> {
     // Best first: highest picture within what the app can stream today.
     out.sort_by_key(|f| std::cmp::Reverse(f.height.unwrap_or(0)));
     Ok(out)
+}
+
+/// Muxed formats only, best first. Separate audio and video tracks are not
+/// joined here: with nothing muxed the answer is `unsupported stream`.
+pub fn muxed(formats: Vec<Format>) -> Result<Vec<Format>, String> {
+    let m: Vec<Format> = formats
+        .into_iter()
+        .filter(|f| !f.audio_only && !f.video_only)
+        .collect();
+    if m.is_empty() {
+        return Err("unsupported stream".into());
+    }
+    Ok(m)
 }
 
 #[cfg(test)]
@@ -271,5 +318,33 @@ mod tests {
         assert_eq!(f.len(), 2);
         assert_eq!(f[0].height, Some(1080));
         assert!(parse_formats(b"{}").is_err());
+    }
+
+    #[test]
+    fn protocols_headers_and_tracks() {
+        let f = parse_formats(
+            br#"{"formats":[
+            {"url":"https://a.invalid/m.m3u8","protocol":"m3u8_native","height":720,
+             "http_headers":{"User-Agent":"UA","Cookie":"x=1","Referer":"https://r.invalid/","X-Evil":"1"}},
+            {"url":"https://a.invalid/d.mpd","protocol":"http_dash_segments","height":480},
+            {"url":"https://a.invalid/v.mp4","vcodec":"avc1","acodec":"none","height":1080},
+            {"url":"https://a.invalid/a.m4a","vcodec":"none","acodec":"mp4a"},
+            {"url":"https://a.invalid/sb.mhtml","vcodec":"none","acodec":"none"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(f.len(), 4);
+        let hls = f.iter().find(|x| x.protocol == "hls").unwrap();
+        assert_eq!(hls.headers.len(), 2);
+        assert!(f.iter().any(|x| x.protocol == "dash"));
+        assert!(f.iter().any(|x| x.video_only && !x.audio_only));
+        assert!(f.iter().any(|x| x.audio_only));
+        let m = muxed(f).unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].protocol, "hls");
+        let only = parse_formats(
+            br#"{"formats":[{"url":"https://a.invalid/v.mp4","vcodec":"avc1","acodec":"none"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(muxed(only).unwrap_err(), "unsupported stream");
     }
 }

@@ -45,6 +45,8 @@ pub struct PlayerView {
     pub resumed: Option<(Duration, Instant)>,
     /// Marker positions (ms) drawn as ticks on the timeline.
     pub marker_ticks: Vec<u64>,
+    /// Stream quality picked by the user (None = automatic).
+    pub manual_variant: Option<usize>,
     /// `(path, size, mtime)` for the preview service.
     pub source: Option<(PathBuf, u64, i64)>,
     pub previews_enabled: bool,
@@ -81,6 +83,7 @@ impl PlayerView {
             last_write: Instant::now(),
             resumed: None,
             marker_ticks: Vec::new(),
+            manual_variant: None,
             source: None,
             previews_enabled: true,
             blur_previews: false,
@@ -380,8 +383,17 @@ impl PlayerView {
             }
         }
 
-        // Track, elapsed portion, playhead.
+        // Track, buffered-ahead band, elapsed portion, playhead.
         painter.rect_filled(track, CornerRadius::ZERO, theme::LINE);
+        if let (Some(d), Some(b)) = (dur.filter(|d| !d.is_zero()), self.player.buffered_until()) {
+            let bx =
+                track.left() + (b.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0) * track.width();
+            painter.rect_filled(
+                Rect::from_min_max(track.min, pos2(bx, track.max.y)),
+                CornerRadius::ZERO,
+                MUTED.gamma_multiply(0.35),
+            );
+        }
         let frac = match dur {
             Some(d) if !d.is_zero() => (pos.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0),
             _ => 0.0,
@@ -548,6 +560,33 @@ impl PlayerView {
             {
                 self.actions
                     .push(("player.autoplay.toggle".into(), serde_json::json!({})));
+            }
+            // Streams: quality and live state.
+            let variants = self.player.variants();
+            if variants.len() > 1 {
+                let label = match self.manual_variant.and_then(|i| variants.get(i)) {
+                    Some(v) => v.height.map_or_else(|| "?".to_owned(), |h| format!("{h}p")),
+                    None => match self.player.current_variant().and_then(|i| variants.get(i)) {
+                        Some(v) => v
+                            .height
+                            .map_or("AUTO".to_owned(), |h| format!("AUTO · {h}p")),
+                        None => "AUTO".to_owned(),
+                    },
+                };
+                if widgets::toggle_chip(&mut child, &label, self.manual_variant.is_some())
+                    .on_hover_text(crate::i18n::tr("Stream quality: click to cycle"))
+                    .clicked()
+                {
+                    self.actions
+                        .push(("player.quality.next".into(), serde_json::json!({})));
+                }
+            }
+            if self.player.is_live() {
+                child.label(
+                    egui::RichText::new("LIVE")
+                        .color(theme::ACCENT_INK)
+                        .background_color(ACCENT),
+                );
             }
             let looping = la.is_some() || lb.is_some();
             let label = match (la.is_some(), lb.is_some()) {
