@@ -27,10 +27,9 @@ pub fn bucket_len(dur: Duration) -> Duration {
 }
 
 pub fn preview_key(path: &Path, size: u64, mtime: i64) -> String {
-    use std::os::unix::ffi::OsStrExt;
     let mut h = blake3::Hasher::new();
     h.update(SCHEMA.as_bytes());
-    h.update(path.as_os_str().as_bytes());
+    h.update(&jizzcraft_core::pathbytes::path_to_bytes(path));
     h.update(&size.to_le_bytes());
     h.update(&mtime.to_le_bytes());
     h.finalize().to_hex().as_str()[..32].to_owned()

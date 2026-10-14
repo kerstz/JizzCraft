@@ -1,3 +1,4 @@
+#![cfg(unix)] // symlinks, raw byte file names and POSIX modes
 use jizzcraft_core::{Db, Filter, MediaKind, Registry, register_core, scan};
 use serde_json::json;
 use std::fs;

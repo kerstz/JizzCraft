@@ -9,6 +9,7 @@ pub mod integrity;
 pub mod manifest;
 pub mod markers;
 pub mod model;
+pub mod pathbytes;
 pub mod paths;
 pub mod portability;
 pub mod privacy;
