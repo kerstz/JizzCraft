@@ -173,6 +173,24 @@ impl FetchHost {
         self.save()
     }
 
+    /// Open any address (manifest, file or page) with the user's resolvers.
+    /// The receiver yields a `StreamTicket`; `Timed` carries HLS/DASH.
+    pub fn open_any(
+        &mut self,
+        url: String,
+        opts: crate::service::StreamOpts,
+    ) -> Result<std::sync::mpsc::Receiver<std::result::Result<crate::service::StreamTicket, String>>>
+    {
+        Ok(self.service()?.open_any(url, opts))
+    }
+
+    /// Cancel every stream that is still opening. No-op before first use.
+    pub fn cancel_streams(&self) {
+        if let Some(s) = &self.svc {
+            s.cancel_streams();
+        }
+    }
+
     pub fn service(&mut self) -> Result<&FetchService> {
         if self.svc.is_none() {
             let st = jizzcraft_core::paths::state_dir().join("fetch");

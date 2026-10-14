@@ -13,9 +13,23 @@ below is something you configure yourself, in the network build
 | a result of a source you defined | `fetch.play {result}` | same as `stream.open` on the result's media address |
 | a magnet or torrent | `fetch.play` | unchanged |
 
-Playlists and manifests (HLS, DASH) are refused for now: they would be
-network media handed to the player. The player still never receives a URL, only
-bytes read in process.
+HLS (`.m3u8`, TS and fMP4) and DASH (`.mpd`, on-demand) are read **inside the
+fetch crate**: it parses the manifest, downloads the segments and hands the
+player plain bytes with timestamps. The player still never receives a URL, and
+it still refuses a manifest if one ever reaches it.
+
+- **One box.** Paste anything into the Downloads box: a video link, a `.m3u8` or
+  `.mpd`, a page one of your resolvers understands, a magnet, a `.torrent`, a
+  path to a `.json` source, or search words. Drop a `.json` or `.torrent` file
+  on the window.
+- **Quality.** When a stream has several qualities the player shows a chip
+  (AUTO · 720p, then each height; click to cycle). Auto lowers the quality by
+  itself after repeated stalls and says so.
+- **Seeking** works on on-demand streams; the buffered-ahead part is drawn on
+  the timeline.
+- **Encryption.** Plain AES-128 HLS is supported when the key address is
+  reachable like any other address. DRM (SAMPLE-AES, Widevine, PlayReady,
+  FairPlay) is refused with a clear sentence.
 
 ## Declarative sources
 
@@ -67,7 +81,11 @@ print `{"formats":[{"url": "...", "height": 720}]}`.
 
 ## Not done yet
 
-(Listed so nobody has to file an issue titled "HLS when?".)
+Live streams, separate audio and video tracks (most DASH), subtitles, saving a
+stream while watching it, and a proxy-aware key fetch UI. Muxed on-demand
+streams are what plays today; anything else is refused with "This stream
+format is not supported."
 
-HLS/DASH (segmented reader), live streams, separate audio and video tracks,
-automatic quality switching. See the design notes in the project history.
+## Will not be done
+
+DRM, live DASH and low-latency HLS, and bundled sources of any kind.

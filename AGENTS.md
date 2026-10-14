@@ -85,6 +85,12 @@ Add behaviour as a command first, UI second.
   remote file goes through `fetch::stream` into `Player::open_stream`; the
   player still never takes a URL. `require_proxy` is the kill switch: every
   request path must honour it (see `service::proxy_blocked`).
+- **Manifests are parsed in `crates/fetch` only.** HLS and DASH playlists, keys
+  and segments are fetched there (`segmented.rs`) and reach the player as bytes
+  through `jizzcraft_core::timed::TimedSource` / `Player::open_timed`. The
+  player keeps refusing manifest bytes. Every segment, key and manifest URL
+  passes `inward_ok` and `proxy_blocked`. Recents and quality choices are never
+  written to disk.
 - **No shell** built from filenames. Pass paths as argv or through the APIs.
 - **No full paths or filenames in logs** unless `JIZZCRAFT_DEBUG=1`.
 - Tests, fixtures and screenshots are **100 % SFW and synthetic**. Never commit

@@ -14,7 +14,9 @@ pub mod hls;
 pub mod inbox;
 pub mod pick;
 pub mod redact;
+pub mod route;
 pub mod secret;
+pub mod sniff;
 pub mod sources;
 pub mod torznab;
 

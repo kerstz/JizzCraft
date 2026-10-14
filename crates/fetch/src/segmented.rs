@@ -154,7 +154,7 @@ pub struct SegmentedReader {
 
 // ---- requests ---------------------------------------------------------------
 
-fn allowed_headers(h: Vec<(String, String)>) -> Vec<(String, String)> {
+pub(crate) fn allowed_headers(h: Vec<(String, String)>) -> Vec<(String, String)> {
     h.into_iter()
         .filter(|(k, v)| {
             ["user-agent", "referer", "origin"].contains(&k.to_ascii_lowercase().as_str())
