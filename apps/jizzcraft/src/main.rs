@@ -1,5 +1,9 @@
 //! JizzCraft desktop app (eframe + wgpu).
 
+// No console window in a Windows release build. `--help`, `--doctor` and
+// `--bench` re-attach to the parent console in `attach_console`.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use jizzcraft_ui::{JizzApp, Options, config::Config};
 use std::path::PathBuf;
 
@@ -20,6 +24,7 @@ OPTIONS:
   --bench-gst-play          also measure gst-play-1.0 on the same file
   --assume-adult            (screenshots only) skip the age gate without saving
   magnet:…                  play a magnet link (network build)
+  --doctor                  check codecs and folders, print how to fix what is missing
   --lang <CODE>             interface language: en fr es de it pt (default: system)
   --disguise                launch as a neutral \"Viewer\" (window name, app ID, discreet mode)
   --portable                keep database, config and cache in ./jizzcraft-data next to the executable
@@ -45,6 +50,7 @@ struct Cli {
     portable: bool,
     home: Option<PathBuf>,
     help: bool,
+    doctor: bool,
 }
 
 /// `Err` carries the message for an option the parser refuses.
@@ -79,6 +85,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
             "--disguise" => cli.disguise = true,
             "--lang" => cli.opts.lang = args.next(),
             "--portable" => cli.portable = true,
+            "--doctor" => cli.doctor = true,
             "--home" => cli.home = args.next().map(PathBuf::from),
             "-h" | "--help" => {
                 cli.help = true;
@@ -90,7 +97,22 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
     Ok(cli)
 }
 
+/// A GUI-subsystem exe has no stdout. When started from a terminal, borrow its
+/// console so the text options still print.
+#[cfg(windows)]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: plain Win32 call; failure (no parent console) is harmless.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console() {}
+
 fn main() -> eframe::Result {
+    attach_console();
     let cli = match parse_args(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(e) => {
@@ -101,6 +123,12 @@ fn main() -> eframe::Result {
     if cli.help {
         print!("{HELP}");
         return Ok(());
+    }
+    if cli.doctor {
+        jizzcraft_media::prepare_bundled_env();
+        let r = jizzcraft_media::doctor::run();
+        print!("{}", r.render_text());
+        std::process::exit(i32::from(r.exit_code()));
     }
     let Cli {
         mut opts,
@@ -113,6 +141,7 @@ fn main() -> eframe::Result {
         portable,
         home,
         help: _,
+        doctor: _,
     } = cli;
     if portable && let Some(h) = jizzcraft_core::paths::portable_home() {
         jizzcraft_core::paths::set_home(h);
@@ -124,6 +153,8 @@ fn main() -> eframe::Result {
     if let Some(h) = jizzcraft_core::paths::home_from_env() {
         jizzcraft_core::paths::set_home(h);
     }
+    // Packaged builds use their own GStreamer only. Still single-threaded here.
+    jizzcraft_media::prepare_bundled_env();
     if let Some(file) = bench_file {
         if bench_gst {
             match jizzcraft_ui::bench::gst_play_baseline(&file, bench_secs) {
@@ -182,6 +213,7 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|| Config::load().disguise);
     let identity = jizzcraft_ui::identity::launch_identity(saved, disguise_flag);
     opts.disguised = identity.disguised;
+    set_taskbar_id(identity.app_id);
     let native = eframe::NativeOptions {
         viewport: egui_viewport(&identity),
         renderer: eframe::Renderer::Wgpu,
@@ -197,12 +229,37 @@ fn main() -> eframe::Result {
     )
 }
 
+/// The taskbar groups windows by this ID: give it the identity's, so a
+/// disguised launch does not share a button (or a name) with the brand.
+#[cfg(windows)]
+fn set_taskbar_id(app_id: &str) {
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    let wide: Vec<u16> = app_id.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
+    unsafe {
+        SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
+    }
+}
+
+#[cfg(not(windows))]
+fn set_taskbar_id(_: &str) {}
+
 fn egui_viewport(id: &jizzcraft_ui::identity::Identity) -> eframe::egui::ViewportBuilder {
-    eframe::egui::ViewportBuilder::default()
+    // Window and taskbar icon: the neutral one while disguised.
+    let png: &[u8] = if id.disguised {
+        include_bytes!("../../../assets/icons/viewer-256.png")
+    } else {
+        include_bytes!("../../../assets/icons/jizzcraft-512.png")
+    };
+    let mut vb = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([760.0, 480.0])
         .with_title(id.title)
-        .with_app_id(id.app_id)
+        .with_app_id(id.app_id);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(png) {
+        vb = vb.with_icon(icon);
+    }
+    vb
 }
 
 #[cfg(test)]

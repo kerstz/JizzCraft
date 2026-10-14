@@ -165,16 +165,48 @@ xtask          fixtures, icons, README screenshots
 
 ## Install
 
-| Platform | How | Status |
-| --- | --- | --- |
-| Arch / CachyOS / Manjaro | `cd packaging/arch && makepkg -si` | Built and packaged on CachyOS |
-| Debian / Ubuntu / Mint | `.deb` from the release page, or `cargo deb -p jizzcraft` | `.deb` built here; install not tested on Debian |
-| Fedora / openSUSE | `packaging/fedora/jizzcraft.spec` | Spec written, **not built** |
-| Any Linux | Flatpak manifest in `packaging/flatpak`, AppImage script in `packaging/appimage` | **Not built** (no `flatpak-builder` / `linuxdeploy` on the dev machine) |
-| Windows 10/11 | Portable zip built by `packaging/windows/build.ps1` (CI job *Release → windows*) | **Not built or run yet**: needs a Windows machine; the code no longer uses Unix-only APIs |
-| macOS 12+ | `.app` zip built by `packaging/macos/build-app.sh` (CI job *Release → macos*), uses the system GStreamer | **Not built or run yet** |
+**Linux, one command** (per-user, no root except for your distribution's GStreamer packages, which it asks before installing):
 
-The release workflow (`.github/workflows/release.yml`) builds all of the above on tags. Until the Windows and macOS jobs have run and been tried on real machines, treat those two platforms as experimental (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md) for what is and is not covered by tests.
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh
+```
+
+It checks the SHA-256 of what it downloads, installs under `~/.local`, runs `jizzcraft-cli doctor` at the end and tells you exactly what is missing and how to fix it. Re-run it to update; `install.sh --uninstall` removes what it installed and nothing else (your library, settings and thumbnails are never touched). Options: `--with-network`, `--prefix DIR`, `--version X.Y.Z`, `--from-source`, `--no-deps`, `--yes`, `--dry-run`, `--help`.
+
+| Platform | Install | Update | Uninstall |
+| --- | --- | --- | --- |
+| Any Linux | the one-liner above | run it again | `install.sh --uninstall` |
+| Arch / CachyOS / Manjaro | `paru -S jizzcraft` (or `jizzcraft-network`, `jizzcraft-git`) | `paru -Syu` | `sudo pacman -Rns jizzcraft` |
+| Debian / Ubuntu / Mint | `sudo apt install ./jizzcraft_*.deb` | install the new `.deb` | `sudo apt remove jizzcraft` |
+| Fedora / openSUSE | `sudo dnf install ./jizzcraft-*.rpm` | install the new `.rpm` | `sudo dnf remove jizzcraft` |
+| Flatpak | the `.flatpak` bundle from the release page | `flatpak update` | `flatpak uninstall --delete-data org.jizzcraft.JizzCraft` |
+| AppImage | download, `chmod +x`, run | AppImageUpdate | delete the file |
+| Windows 10/11 | portable zip (`packaging/windows`) | download the new zip | delete the folder |
+| macOS 12+ | `.app` zip (`packaging/macos`) | download the new zip | delete the app |
+
+Honest status: the `install.sh` flow, the `.deb` contents, the staging tree, the desktop and AppStream files and `doctor` are exercised here on Arch/CachyOS. The AUR, RPM, Flatpak and AppImage recipes are written against the same staging tree (`cargo xtask dist`) but only the CI release job builds them; Windows and macOS have never run on a real machine (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md).
+
+### Something does not play?
+
+```sh
+jizzcraft-cli doctor        # or: jizzcraft --doctor
+```
+
+It lists which GStreamer pieces are present (H.264, HEVC, AV1, VP9, AAC, Opus, hardware decoding), checks that the data, config and cache folders are writable, and prints the one command that fixes what is missing for your distribution. Exit status: 0 fine, 1 something required is missing, 2 only codecs are missing. The app never runs `sudo` itself.
+
+### Verify a download
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+gh attestation verify jizzcraft-*-linux.tar.xz --repo kerstz/JizzCraft   # build provenance
+```
+
+### Hide the launcher entry
+
+Copy `/usr/share/applications/org.jizzcraft.JizzCraft.desktop` to `~/.local/share/applications/` and add `Hidden=true`. The neutral "Viewer" entry (`local.Viewer.desktop`) starts the same program disguised.
+
+The release workflow (`.github/workflows/release.yml`) builds the Linux artifacts on tags, using the oldest supported runner so the binaries run on Debian 12 and newer.
 
 ## Languages and playful messages
 

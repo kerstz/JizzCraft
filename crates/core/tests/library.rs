@@ -1,4 +1,3 @@
-#![cfg(unix)] // symlinks, raw byte file names and POSIX modes
 use jizzcraft_core::{Db, Filter, MediaKind, Registry, register_core, scan};
 use serde_json::json;
 use std::fs;
@@ -19,6 +18,8 @@ fn fixture(root: &Path) {
     fs::write(root.join("notes.txt"), b"ignored").unwrap();
     fs::create_dir_all(root.join(".hidden")).unwrap();
     png(&root.join(".hidden/secret.png"), 8, 8);
+    // Creating symlinks on Windows needs a privilege: only Unix runs this part.
+    #[cfg(unix)]
     std::os::unix::fs::symlink(root.join("a.png"), root.join("link.png")).unwrap();
 }
 
@@ -30,7 +31,7 @@ fn scan_query_favorite_rescan() {
 
     let (_, rep) = scan::import_folder(&mut db, tmp.path()).unwrap();
     assert_eq!(rep.added, 3, "{rep:?}");
-    assert_eq!(rep.skipped_symlinks, 1);
+    assert_eq!(rep.skipped_symlinks, u64::from(cfg!(unix)));
     assert_eq!(rep.skipped_unsupported, 1);
 
     // Duplicate import is idempotent.
@@ -99,6 +100,8 @@ fn scan_query_favorite_rescan() {
     assert_eq!(db.stats().unwrap().missing, 0);
 }
 
+// POSIX modes: the only way to make a directory unreadable here.
+#[cfg(unix)]
 #[test]
 fn unreadable_dir_does_not_mark_missing() {
     use std::os::unix::fs::PermissionsExt;

@@ -87,7 +87,7 @@ fn is_http(u: &str) -> bool {
     u.starts_with("https://") || u.starts_with("http://")
 }
 
-fn host_of(url: &str) -> &str {
+pub(crate) fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
     let auth = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
@@ -98,7 +98,7 @@ fn host_of(url: &str) -> &str {
 }
 
 /// Loopback, private and link-local literals, and `localhost`.
-fn is_local_host(h: &str) -> bool {
+pub(crate) fn is_local_host(h: &str) -> bool {
     use std::net::IpAddr;
     let h = h.trim_end_matches('.').to_ascii_lowercase();
     if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".local") {
@@ -116,6 +116,13 @@ fn is_local_host(h: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// A manifest may only point inward (loopback, private) when it came from
+/// there itself: a public origin never gets to aim the app at the LAN.
+#[cfg_attr(not(feature = "network"), allow(dead_code))]
+pub(crate) fn inward_ok(origin: &str, target: &str) -> bool {
+    !is_local_host(host_of(target)) || is_local_host(host_of(origin))
 }
 
 fn is_header_name(s: &str) -> bool {
@@ -260,6 +267,18 @@ pub fn parse_items(d: &SourceDef, body: &[u8], max: usize) -> Result<Vec<Item>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inward_rule() {
+        let public = "https://cdn.example.invalid/a.m3u8";
+        let local = "http://127.0.0.1:8080/a.m3u8";
+        assert!(inward_ok(public, "https://other.example.invalid/x"));
+        assert!(!inward_ok(public, "http://127.0.0.1/x"));
+        assert!(!inward_ok(public, "http://192.168.1.5/x"));
+        assert!(!inward_ok(public, "http://localhost/x"));
+        assert!(inward_ok(local, "http://127.0.0.1:9/x"));
+        assert!(inward_ok(local, "https://cdn.example.invalid/x"));
+    }
 
     fn def() -> SourceDef {
         parse_import(

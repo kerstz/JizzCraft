@@ -7,8 +7,10 @@
 //! The crate that knows about the internet, kept on a short leash.
 
 pub mod config;
+pub mod dash;
 pub mod detect;
 pub mod errors;
+pub mod hls;
 pub mod inbox;
 pub mod pick;
 pub mod redact;
@@ -20,6 +22,8 @@ pub mod torznab;
 pub mod commands;
 #[cfg(feature = "network")]
 pub mod resolver;
+#[cfg(feature = "network")]
+pub mod segmented;
 #[cfg(feature = "network")]
 pub mod service;
 #[cfg(feature = "network")]

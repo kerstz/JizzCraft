@@ -496,4 +496,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "Resolvers are programs you installed: add them with resolvers.add.",
         "Les résolveurs sont des programmes que tu as installés : ajoute-les avec resolvers.add.",
     ),
+    (
+        "Some codecs are missing: run `jizzcraft --doctor` for the fix.",
+        "Des codecs manquent : lance `jizzcraft --doctor` pour la solution.",
+    ),
 ];

@@ -62,6 +62,35 @@ fn is_hidden(name: &std::ffi::OsStr) -> bool {
     name.to_str().is_some_and(|s| s.starts_with('.'))
 }
 
+// Windows file attributes (winnt.h). Kept as plain numbers so the decision is
+// testable on every platform.
+const ATTR_HIDDEN: u32 = 0x2;
+const ATTR_SYSTEM: u32 = 0x4;
+const ATTR_OFFLINE: u32 = 0x1000;
+const ATTR_RECALL_ON_OPEN: u32 = 0x4_0000;
+const ATTR_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+
+/// Hidden or system entries (`$RECYCLE.BIN`, `System Volume Information`).
+fn attrs_hidden(attrs: u32) -> bool {
+    attrs & (ATTR_HIDDEN | ATTR_SYSTEM) != 0
+}
+
+/// A cloud placeholder: reading its header would download the whole file.
+fn attrs_placeholder(attrs: u32) -> bool {
+    attrs & (ATTR_OFFLINE | ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS) != 0
+}
+
+#[cfg(windows)]
+fn win_attrs(md: &std::fs::Metadata) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    md.file_attributes()
+}
+
+#[cfg(not(windows))]
+fn win_attrs(_: &std::fs::Metadata) -> u32 {
+    0
+}
+
 pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanReport> {
     let mut rep = ScanReport::default();
     let tx = db.conn.transaction()?;
@@ -116,7 +145,11 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
             .follow_links(false)
             .sort_by_file_name()
             .into_iter()
-            .filter_entry(|e| e.depth() == 0 || !is_hidden(e.file_name()));
+            .filter_entry(|e| {
+                e.depth() == 0
+                    || (!is_hidden(e.file_name())
+                        && !e.metadata().is_ok_and(|m| attrs_hidden(win_attrs(&m))))
+            });
 
         for entry in walker {
             let entry = match entry {
@@ -167,7 +200,11 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                     rep.unchanged += 1;
                 }
                 Some(_) => {
-                    let (w, h) = probe_dims(entry.path(), kind);
+                    let (w, h) = if attrs_placeholder(win_attrs(&md)) {
+                        (None, None)
+                    } else {
+                        probe_dims(entry.path(), kind)
+                    };
                     update.execute(params![blob, size, mtime, w, h, gen_])?;
                     rep.updated += 1;
                 }
@@ -181,6 +218,7 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                         size,
                         mtime,
                         kind,
+                        placeholder: attrs_placeholder(win_attrs(&md)),
                     });
                 }
             }
@@ -193,6 +231,11 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
         for same_name_only in [true, false] {
             let mut rest = Vec::new();
             for f in todo {
+                if f.placeholder {
+                    // Matching would read the file's bytes.
+                    rest.push(f);
+                    continue;
+                }
                 let moved = find_moved(
                     &mut cands,
                     &f.path,
@@ -221,7 +264,11 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
             todo = rest;
         }
         for f in todo {
-            let (w, h) = probe_dims(&f.path, f.kind);
+            let (w, h) = if f.placeholder {
+                (None, None)
+            } else {
+                probe_dims(&f.path, f.kind)
+            };
             insert.execute(params![
                 folder_id,
                 f.blob,
@@ -265,6 +312,8 @@ struct NewFile {
     size: i64,
     mtime: i64,
     kind: MediaKind,
+    /// A cloud placeholder: never read, so it is never downloaded.
+    placeholder: bool,
 }
 
 /// Match a new file against fingerprinted rows whose files are gone.
@@ -302,4 +351,29 @@ fn probe_dims(path: &Path, kind: MediaKind) -> (Option<u32>, Option<u32>) {
         .ok()
         .and_then(|r| r.into_dimensions().ok())
         .map_or((None, None), |(w, h)| (Some(w), Some(h)))
+}
+
+#[cfg(test)]
+mod attr_tests {
+    use super::*;
+
+    #[test]
+    fn windows_attribute_decisions() {
+        assert!(attrs_hidden(0x2) && attrs_hidden(0x4 | 0x20) && !attrs_hidden(0x20));
+        assert!(attrs_placeholder(0x40_0000) && attrs_placeholder(0x1000));
+        assert!(attrs_placeholder(0x4_0000) && !attrs_placeholder(0x20));
+        assert_eq!(win_attrs_default(), 0);
+    }
+
+    fn win_attrs_default() -> u32 {
+        #[cfg(not(windows))]
+        {
+            let md = std::fs::metadata(".").unwrap();
+            win_attrs(&md)
+        }
+        #[cfg(windows)]
+        {
+            0
+        }
+    }
 }

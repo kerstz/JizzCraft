@@ -17,6 +17,8 @@ jizzcraft-core.workspace = true
 jizzcraft-media.workspace = true
 serde_json.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
 jizzcraft-fetch = { workspace = true, optional = true }
 
 [features]

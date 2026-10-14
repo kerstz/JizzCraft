@@ -23,11 +23,23 @@ $plugins = 'gstcoreelements','gsttypefindfunctions','gstplayback','gstvideoconve
   'gstautodetect','gstdirectsound','gstwasapi','gstvpx','gstlibav','gstisomp4',
   'gstmatroska','gstavi','gstmpegtsdemux','gstmpegpsdemux','gstcodecalpha','gstopus',
   'gstvorbis','gstogg','gstaudioparsers','gstapp','gstd3d11','gstd3d12','gstdeinterlace',
-  'gstvideorate'
+  'gstvideorate','gstwasapi2','gstmediafoundation','gstdav1d','gstpbtypes'
 foreach ($p in $plugins) {
   $f = "$gst\lib\gstreamer-1.0\$p.dll"
   if (Test-Path $f) { Copy-Item $f "$out\gstreamer\lib\gstreamer-1.0" }
 }
+# The neutral launcher icon, for the optional "Viewer" shortcut.
+Copy-Item assets\icons\viewer.ico $out
+# The scanner runs in its own process so a broken plugin cannot take the app
+# down; it must sit where media's prepare_bundled_env looks for it.
+$scanner = "$gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe"
+if (Test-Path $scanner) { Copy-Item $scanner $out }
+# Only the plugins the player needs: never gstsoup, gstgio or the adaptive demuxers.
 Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $out
 Compress-Archive -Path $out -DestinationPath dist\JizzCraft-windows-x86_64.zip -Force
 Write-Host 'dist\JizzCraft-windows-x86_64.zip'
+
+# Installer (Inno Setup), when ISCC is available.
+$iscc = Get-Command iscc -ErrorAction SilentlyContinue
+if (-not $iscc) { $c = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"; if (Test-Path $c) { $iscc = $c } }
+if ($iscc) { & $iscc packaging\windows\jizzcraft.iss; Write-Host 'installer built' }

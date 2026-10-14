@@ -1,0 +1,62 @@
+# Maintainer: JizzCraft contributors <noreply@example.invalid>
+#
+# Release build. `updpkgsums` fills the checksum after each tag.
+# jizzcraft-network is the opt-in build with indexers, torrents and streaming.
+
+pkgbase=jizzcraft
+pkgname=(jizzcraft jizzcraft-network)
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Private, offline media viewer and library (images and videos)'
+arch=(x86_64 aarch64)
+url='https://github.com/kerstz/JizzCraft'
+license=('MIT OR Apache-2.0')
+makedepends=(cargo pkgconf gstreamer gst-plugins-base-libs)
+source=("$pkgbase-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+options=(!lto)
+
+prepare() {
+  cd "JizzCraft-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "JizzCraft-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo xtask dist --destdir "$srcdir/stage" --prefix /usr
+  # The network variant: same tree, different binaries and magnet handler.
+  mv target/release target/release-offline
+  cargo xtask dist --network --destdir "$srcdir/stage-net" --prefix /usr
+}
+
+check() {
+  cd "JizzCraft-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen -p jizzcraft-core
+}
+
+_common_depends=(gcc-libs glibc gstreamer gst-plugins-base-libs gst-plugins-base
+  gst-plugins-good gst-libav vulkan-icd-loader libxkbcommon wayland libx11
+  libxcursor libxrandr libxi)
+_common_optdepends=('gst-plugins-bad: AV1 decoding'
+  'gst-plugin-va: hardware decoding'
+  'xdg-desktop-portal: file chooser'
+  'vulkan-driver: GPU rendering')
+
+package_jizzcraft() {
+  depends=("${_common_depends[@]}")
+  optdepends=("${_common_optdepends[@]}")
+  cp -a "$srcdir/stage/." "$pkgdir/"
+  install -Dm644 /dev/null "$pkgdir/usr/share/doc/$pkgname/.keep" && rm "$pkgdir/usr/share/doc/$pkgname/.keep"
+}
+
+package_jizzcraft-network() {
+  pkgdesc+=' (with indexers, torrents and streaming)'
+  depends=("${_common_depends[@]}")
+  optdepends=("${_common_optdepends[@]}" 'mpv: external playback')
+  provides=(jizzcraft)
+  conflicts=(jizzcraft)
+  cp -a "$srcdir/stage-net/." "$pkgdir/"
+}

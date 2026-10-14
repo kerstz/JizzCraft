@@ -1,0 +1,54 @@
+.TH JIZZCRAFT 1 "" "JizzCraft" "User Commands"
+.SH NAME
+jizzcraft \- private, offline media viewer and library
+.SH SYNOPSIS
+.B jizzcraft
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+JizzCraft indexes images and videos in place, never modifies them, and makes no
+network connection in the default build. See
+.BR jizzcraft-cli (1)
+for the scriptable interface to the same library.
+.SH OPTIONS
+.TP
+.B \-\-doctor
+Check codecs and folders and print how to fix what is missing.
+.TP
+.BI \-\-import " DIR"
+Import a folder at startup.
+.TP
+.BI \-\-db " FILE"
+Use this library database.
+.TP
+.BI \-\-tab " NAME"
+Start on library, images, videos or favorites.
+.TP
+.BI \-\-cmd " NAME[=JSON]"
+Run a registry command after startup (repeatable).
+.TP
+.BI \-\-lang " CODE"
+Interface language: en fr es de it pt.
+.TP
+.B \-\-disguise
+Launch as a neutral "Viewer" (window name, application ID, discreet mode).
+.TP
+.B \-\-portable
+Keep database, config and cache in ./jizzcraft-data next to the executable.
+.TP
+.BI \-\-home " DIR"
+Keep database, config and cache under DIR.
+.TP
+.B \-h, \-\-help
+Show the help.
+.SH FILES
+.TP
+.I $XDG_DATA_HOME/jizzcraft
+Library database.
+.TP
+.I $XDG_CONFIG_HOME/jizzcraft
+Settings.
+.TP
+.I $XDG_CACHE_HOME/jizzcraft
+Thumbnails (never written next to your media).
+.SH SEE ALSO
+.BR jizzcraft-cli (1)
