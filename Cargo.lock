@@ -3268,7 +3268,7 @@ dependencies = [
  "jizzcraft-core",
  "libc",
  "librqbit",
- "quick-xml",
+ "quick-xml 0.42.0",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3750,7 +3750,7 @@ dependencies = [
  "httparse",
  "librqbit-dualstack-sockets",
  "network-interface",
- "quick-xml",
+ "quick-xml 0.41.0",
  "reqwest 0.13.5",
  "serde",
  "serde_derive",
@@ -4859,6 +4859,15 @@ checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -6452,7 +6461,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6873,7 +6882,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "338e30461b3a2b67d70eb30a6d89f8e0c93a833e07d2ae89085cd070c4a00ac0"
 dependencies = [
  "proc-macro2",
- "quick-xml",
+ "quick-xml 0.41.0",
  "quote",
 ]
 

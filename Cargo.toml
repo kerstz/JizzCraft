@@ -18,7 +18,7 @@ jizzcraft-media = { path = "crates/media" }
 jizzcraft-ui = { path = "crates/ui" }
 jizzcraft-fetch = { path = "crates/fetch" }
 jizzcraft-bridge = { path = "crates/bridge" }
-quick-xml = "0.41"
+quick-xml = "0.42"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts", "accesskit"] }
 egui = "0.36"
 egui-wgpu = "0.36"
