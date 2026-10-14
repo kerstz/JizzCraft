@@ -81,11 +81,30 @@ pub enum StreamTicket {
     /// The file is complete on disk: play it with the normal file player.
     Done(PathBuf),
     Live {
-        reader: TorrentReader,
+        reader: StreamReader,
         len: u64,
         /// File name only, for a window title (hide it when discreet).
         name: String,
     },
+}
+
+pub trait ReadSeekSend: std::io::Read + std::io::Seek + Send {}
+impl<T: std::io::Read + std::io::Seek + Send> ReadSeekSend for T {}
+
+/// A readable, seekable view of a file that is still arriving, whatever the
+/// source (torrent or plain HTTP). `WouldBlock` = not here yet.
+pub struct StreamReader(Box<dyn ReadSeekSend>);
+
+impl std::io::Read for StreamReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for StreamReader {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
 }
 
 /// `Read + Seek` over a file that is still downloading. `WouldBlock` means
@@ -366,6 +385,18 @@ impl FetchService {
         rx
     }
 
+    /// Stream a plain `http(s)` video file while it is saved next to the
+    /// torrent downloads (`<name>.part`, renamed when complete, never
+    /// overwriting). Needs a `Content-Length`; refuses playlists.
+    pub fn play_http(&self, url: String) -> Receiver<Result<StreamTicket, String>> {
+        let (tx, rx) = channel();
+        let cfg = self.cfg.clone();
+        self.rt().spawn(async move {
+            let _ = tx.send(http_stream(&cfg, url).await);
+        });
+        rx
+    }
+
     /// File names and lengths of an already added torrent.
     pub fn torrent_files(&self, id: usize) -> Receiver<Result<Vec<(String, u64)>, String>> {
         let (tx, rx) = channel();
@@ -606,10 +637,10 @@ impl FetchService {
                     }
                 };
                 Ok(StreamTicket::Live {
-                    reader: TorrentReader {
+                    reader: StreamReader(Box::new(TorrentReader {
                         handle,
                         stream: Box::new(stream),
-                    },
+                    })),
                     len,
                     name: rel
                         .file_name()
@@ -728,4 +759,187 @@ async fn wait_cancel(flag: Arc<AtomicBool>) {
     while !flag.load(Ordering::Relaxed) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// First free `<stem> (n).<ext>` in `dir`; never an existing file or `.part`.
+fn unique_name(dir: &Path, name: &str) -> PathBuf {
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    for n in 0..1000 {
+        let cand = if n == 0 {
+            name.to_owned()
+        } else {
+            format!("{stem} ({n}).{ext}")
+        };
+        let p = dir.join(&cand);
+        if !p.exists() && !dir.join(format!("{cand}.part")).exists() {
+            return p;
+        }
+    }
+    dir.join(format!("{stem}-{}.{ext}", std::process::id()))
+}
+
+fn safe_file_name(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next()?;
+    let last = path.rsplit('/').next()?;
+    let clean: String = last
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " ._-()".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let clean = clean.trim_matches('.').trim().to_owned();
+    (!clean.is_empty() && crate::pick::is_video(&clean)).then_some(clean)
+}
+
+/// A `.part` file being written by a task; reads never pass what is written.
+struct PartReader {
+    file: std::fs::File,
+    pos: u64,
+    len: u64,
+    written: Arc<std::sync::atomic::AtomicU64>,
+    failed: Arc<AtomicBool>,
+}
+
+impl std::io::Read for PartReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{Seek, SeekFrom};
+        if self.pos >= self.len {
+            return Ok(0);
+        }
+        let avail = self.written.load(Ordering::SeqCst);
+        if self.pos >= avail {
+            return Err(if self.failed.load(Ordering::SeqCst) {
+                std::io::Error::other("download failed")
+            } else {
+                std::io::ErrorKind::WouldBlock.into()
+            });
+        }
+        let n = buf.len().min((avail - self.pos) as usize);
+        self.file.seek(SeekFrom::Start(self.pos))?;
+        let n = self.file.read(&mut buf[..n])?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for PartReader {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        let np = match from {
+            SeekFrom::Start(o) => o as i64,
+            SeekFrom::End(d) => self.len as i64 + d,
+            SeekFrom::Current(d) => self.pos as i64 + d,
+        };
+        if np < 0 {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        self.pos = (np as u64).min(self.len);
+        Ok(self.pos)
+    }
+}
+
+async fn http_stream(cfg: &FetchConfig, url: String) -> Result<StreamTicket, String> {
+    use std::io::Write;
+    use std::sync::atomic::AtomicU64;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("unsupported address".into());
+    }
+    let name = safe_file_name(&url).ok_or("no video file")?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(SEARCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|e| e.without_url().to_string())?;
+    let mut resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("error sending request: {}", e.without_url()))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+    let len = resp
+        .content_length()
+        .filter(|&l| l > 0)
+        .ok_or("size unknown")?;
+    let dir = cfg.effective_download_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let final_path = unique_name(&dir, &name);
+    let part = PathBuf::from(format!("{}.part", final_path.display()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part)
+        .map_err(|e| e.to_string())?;
+
+    // First bytes: a playlist or manifest is refused before anything is kept.
+    let mut head: Vec<u8> = Vec::new();
+    while head.len() < 4096 {
+        match resp
+            .chunk()
+            .await
+            .map_err(|e| e.without_url().to_string())?
+        {
+            Some(c) => head.extend_from_slice(&c),
+            None => break,
+        }
+    }
+    if jizzcraft_core::manifest::looks_like_manifest(&head) {
+        drop(file);
+        let _ = std::fs::remove_file(&part);
+        return Err("refused: this refers to network media".into());
+    }
+    file.write_all(&head).map_err(|e| e.to_string())?;
+    let written = Arc::new(AtomicU64::new(head.len() as u64));
+    let failed = Arc::new(AtomicBool::new(false));
+    let (w2, f2, part2, final2) = (
+        Arc::clone(&written),
+        Arc::clone(&failed),
+        part.clone(),
+        final_path.clone(),
+    );
+    tokio::spawn(async move {
+        let mut ok = true;
+        while ok {
+            match resp.chunk().await {
+                Ok(Some(c)) => {
+                    if file.write_all(&c).is_err() {
+                        ok = false;
+                    } else {
+                        w2.fetch_add(c.len() as u64, Ordering::SeqCst);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => ok = false,
+            }
+        }
+        let complete = ok && w2.load(Ordering::SeqCst) >= len && file.sync_all().is_ok();
+        drop(file);
+        if complete {
+            // Never replace a file that appeared meanwhile.
+            if final2.exists() {
+                f2.store(true, Ordering::SeqCst);
+            } else {
+                let _ = std::fs::rename(&part2, &final2);
+            }
+        } else {
+            f2.store(true, Ordering::SeqCst);
+        }
+    });
+    let reader = PartReader {
+        file: std::fs::File::open(&part).map_err(|e| e.to_string())?,
+        pos: 0,
+        len,
+        written,
+        failed,
+    };
+    Ok(StreamTicket::Live {
+        reader: StreamReader(Box::new(reader)),
+        len,
+        name,
+    })
 }

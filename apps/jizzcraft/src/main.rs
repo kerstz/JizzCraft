@@ -19,6 +19,7 @@ OPTIONS:
   --seconds <N>             bench duration (default 30)
   --bench-gst-play          also measure gst-play-1.0 on the same file
   --assume-adult            (screenshots only) skip the age gate without saving
+  magnet:…                  play a magnet link (network build)
   --disguise                launch as a neutral \"Viewer\" (window name, app ID, discreet mode)
   --portable                keep database, config and cache in ./jizzcraft-data next to the executable
   --home <DIR>              keep database, config and cache under DIR
@@ -47,8 +48,11 @@ fn main() -> eframe::Result {
     let mut bench_secs = 30u32;
     let mut bench_gst = false;
     let mut disguise_flag = false;
+    let mut magnets: Vec<String> = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
+            // The desktop's magnet handler passes the link as a plain argument.
+            s if s.starts_with("magnet:") => magnets.push(s.to_owned()),
             "--screenshot" => opts.screenshot = args.next().map(PathBuf::from),
             "--import" => opts.import = args.next().map(PathBuf::from),
             "--db" => opts.db_path = args.next().map(PathBuf::from),
@@ -119,6 +123,29 @@ fn main() -> eframe::Result {
             inspector_open: true,
             ..Config::default()
         });
+    }
+
+    // Magnet links: hand them to the running app, or play them from this one.
+    #[cfg(feature = "network")]
+    let _instance_lock = {
+        let lock = jizzcraft_fetch::inbox::try_primary_instance();
+        if lock.is_none() && !magnets.is_empty() {
+            for m in &magnets {
+                let _ = jizzcraft_fetch::inbox::push(m);
+            }
+            return Ok(());
+        }
+        lock
+    };
+    #[cfg(feature = "network")]
+    for m in &magnets {
+        opts.commands
+            .push(("fetch.play".to_owned(), serde_json::json!({ "magnet": m })));
+    }
+    #[cfg(not(feature = "network"))]
+    if !magnets.is_empty() {
+        eprintln!("magnet links need the network build: cargo build --features network");
+        std::process::exit(2);
     }
 
     // The identity is fixed for the whole run (the app ID cannot change later).

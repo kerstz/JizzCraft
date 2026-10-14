@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=JizzCraft (magnet links)
+GenericName=Media Viewer
+Comment=Play magnet links. Needs the network build.
+Exec=jizzcraft %u
+Icon=org.jizzcraft.JizzCraft
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/magnet;
+Categories=AudioVideo;Video;
+StartupWMClass=org.jizzcraft.JizzCraft

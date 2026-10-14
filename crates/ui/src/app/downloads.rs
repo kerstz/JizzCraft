@@ -58,6 +58,11 @@ pub(super) struct Downloads {
     /// Ready to open once the poll has the whole picture (set by the flow).
     ready: Option<StreamTicket>,
     detecting: Option<Receiver<Vec<jizzcraft_fetch::detect::Detected>>>,
+    /// Plain-HTTP downloads started with "Download" (errors only are shown).
+    http_adding: Vec<Receiver<Result<StreamTicket, String>>>,
+    /// The next ticket goes to an external player, not the built-in one.
+    external: bool,
+    inbox_checked: Option<Instant>,
     // setup form
     ix_url: String,
     ix_key: String,
@@ -66,6 +71,7 @@ pub(super) struct Downloads {
     dir: String,
     down_limit: String,
     up_limit: String,
+    proxy: String,
 }
 
 impl Downloads {
@@ -93,12 +99,16 @@ impl Downloads {
             last_poll: None,
             ready: None,
             detecting: None,
+            http_adding: Vec::new(),
+            external: false,
+            inbox_checked: None,
             ix_url: String::new(),
             ix_key: String::new(),
             tested: None,
             dir,
             down_limit,
             up_limit,
+            proxy: String::new(),
         }
     }
 
@@ -125,6 +135,7 @@ fn human(n: u64) -> String {
 /// What the single input box holds.
 enum Typed {
     Magnet(String),
+    Url(String),
     TorrentFile(String),
     Search(String),
 }
@@ -135,11 +146,19 @@ fn parse_input(s: &str) -> Option<Typed> {
         None
     } else if t.starts_with("magnet:") {
         Some(Typed::Magnet(t.to_owned()))
+    } else if t.starts_with("http://") || t.starts_with("https://") {
+        Some(Typed::Url(t.to_owned()))
     } else if t.to_ascii_lowercase().ends_with(".torrent") {
         Some(Typed::TorrentFile(t.to_owned()))
     } else {
         Some(Typed::Search(t.to_owned()))
     }
+}
+
+fn is_torrent_url(u: &str) -> bool {
+    u.split(['?', '#'])
+        .next()
+        .is_some_and(|p| p.to_ascii_lowercase().ends_with(".torrent"))
 }
 
 type Res = jizzcraft_core::Result<Value>;
@@ -215,15 +234,25 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "fetch.play",
-        "Play a torrent while it downloads: {magnet | torrent_path | result: index of the last search | id: an added torrent}",
+        "Play while it downloads: {magnet | url | torrent_path | result: index of the last search | id: an added torrent}",
         |app, a| {
             if let Some(id) = a.get("id").and_then(Value::as_u64) {
                 let rx = app.downloads.host.service()?.torrent_files(id as usize);
                 app.downloads.flow = Some(Flow::Files { id: id as usize, rx });
                 return Ok(json!({}));
             }
+            if let Some(u) = a.get("url").and_then(Value::as_str)
+                && !is_torrent_url(u)
+            {
+                let rx = app.downloads.host.service()?.play_http(u.to_owned());
+                app.downloads.flow = Some(Flow::Opening(rx));
+                app.downloads.open = true;
+                return Ok(json!({}));
+            }
             let src = if let Some(m) = a.get("magnet").and_then(Value::as_str) {
                 Source::Magnet(m.to_owned())
+            } else if let Some(u) = a.get("url").and_then(Value::as_str) {
+                Source::TorrentUrl(u.to_owned())
             } else if let Some(p) = a.get("torrent_path").and_then(Value::as_str) {
                 Source::TorrentFile(p.into())
             } else if let Some(i) = a.get("result").and_then(Value::as_u64) {
@@ -246,8 +275,17 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         "Download without playing: {magnet | torrent_path | result}",
         |app, a| {
             let d = &mut app.downloads;
+            if let Some(u) = a.get("url").and_then(Value::as_str)
+                && !is_torrent_url(u)
+            {
+                let rx = d.host.service()?.play_http(u.to_owned());
+                d.http_adding.push(rx);
+                return Ok(json!({}));
+            }
             let src = if let Some(m) = a.get("magnet").and_then(Value::as_str) {
                 Source::Magnet(m.to_owned())
+            } else if let Some(u) = a.get("url").and_then(Value::as_str) {
+                Source::TorrentUrl(u.to_owned())
             } else if let Some(p) = a.get("torrent_path").and_then(Value::as_str) {
                 Source::TorrentFile(p.into())
             } else if let Some(i) = a.get("result").and_then(Value::as_u64) {
@@ -311,6 +349,39 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         },
     );
     reg.register(
+        "fetch.external",
+        "Open a finished torrent in mpv or VLC: {id}. That program is not covered by the network guard.",
+        |app, a| {
+            let id = a
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("missing `id`"))? as usize;
+            let rx = app.downloads.host.service()?.torrent_files(id);
+            app.downloads.external = true;
+            app.downloads.flow = Some(Flow::Files { id, rx });
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "fetch.indexers.test",
+        "Check an indexer's address and key: {id}",
+        |app, a| {
+            let id = a.get("id").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let ix = app
+                .downloads
+                .host
+                .config()
+                .indexers
+                .iter()
+                .find(|i| i.id == id)
+                .cloned()
+                .ok_or_else(|| jizzcraft_core::Error::NotFound("indexer".into()))?;
+            let rx = app.downloads.host.service()?.test_indexer(&ix);
+            app.downloads.tested = Some(rx);
+            Ok(json!({}))
+        },
+    );
+    reg.register(
         "fetch.indexers.detect",
         "Look for a local Jackett or Prowlarr on 127.0.0.1 (only when asked)",
         |app, _| {
@@ -322,7 +393,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "fetch.settings",
-        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?}",
+        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…}",
         |app, a| {
             let d = &mut app.downloads;
             let num = |k: &str| a.get(k).and_then(Value::as_u64).map(|n| n as u32);
@@ -332,6 +403,13 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 a.get("dht").and_then(Value::as_bool),
             );
             let (down, up) = (num("down_mibps"), num("up_mibps"));
+            let proxy = a.get("proxy").and_then(Value::as_str).map(str::to_owned);
+            if let Some(p) = &proxy
+                && !p.is_empty()
+                && !p.starts_with("socks5://")
+            {
+                return Err(invalid("the proxy must start with socks5://"));
+            }
             d.host.update_settings(|c| {
                 if let Some(p) = &dir {
                     c.download_dir = (!p.is_empty()).then(|| p.into());
@@ -341,6 +419,9 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 }
                 if a.get("up_mibps").is_some() {
                     c.up_limit_mibps = up.filter(|n| *n > 0);
+                }
+                if let Some(p) = &proxy {
+                    c.proxy = (!p.is_empty()).then(|| jizzcraft_fetch::Secret::new(p.clone()));
                 }
                 if let Some(s) = seed {
                     c.seed_after_complete = s;
@@ -359,7 +440,7 @@ impl JizzApp {
     fn open_stream_player(
         &mut self,
         name: String,
-        reader: jizzcraft_fetch::service::TorrentReader,
+        reader: jizzcraft_fetch::service::StreamReader,
         len: u64,
     ) {
         let shown = if self.discreet() || self.opts.disguised {
@@ -440,7 +521,15 @@ impl JizzApp {
             c @ Flow::Choosing { .. } => self.downloads.flow = Some(c),
         }
         if let Some(t) = self.downloads.ready.take() {
+            let external = std::mem::take(&mut self.downloads.external);
             match t {
+                StreamTicket::Done(path) if external => match open_external(&path) {
+                    Ok(()) => self.toast(ToastKind::Info, "Opened in an external player."),
+                    Err(m) => self.toast(ToastKind::Error, m),
+                },
+                StreamTicket::Live { .. } if external => {
+                    self.toast(ToastKind::Error, "Wait until the download is complete.");
+                }
                 StreamTicket::Done(path) => {
                     let name = path
                         .file_name()
@@ -495,6 +584,18 @@ impl JizzApp {
                 d.searching = None;
             }
             d.adding.retain(|rx| match rx.try_recv() {
+                Ok(Ok(_)) => {
+                    toasts.push((ToastKind::Info, "Download started".into()));
+                    false
+                }
+                Ok(Err(e)) => {
+                    toasts.push((ToastKind::Error, classify(&e).to_owned()));
+                    false
+                }
+                Err(TryRecvError::Empty) => true,
+                Err(_) => false,
+            });
+            d.http_adding.retain(|rx| match rx.try_recv() {
                 Ok(Ok(_)) => {
                     toasts.push((ToastKind::Info, "Download started".into()));
                     false
@@ -577,6 +678,18 @@ impl JizzApp {
         for (k, t) in toasts {
             self.toast(k, t);
         }
+        // Magnet links handed over by another launch (desktop handler).
+        let due = self
+            .downloads
+            .inbox_checked
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
+        if due {
+            self.downloads.inbox_checked = Some(Instant::now());
+            for m in jizzcraft_fetch::inbox::take_all() {
+                self.downloads.open = true;
+                self.push("fetch.play", json!({ "magnet": m }));
+            }
+        }
         if let Some(p) = import {
             self.push("library.import", json!({ "path": p }));
         }
@@ -603,14 +716,17 @@ impl JizzApp {
                 ui.horizontal(|ui| {
                     let r = ui.add(
                         TextEdit::singleline(&mut d.input)
-                            .hint_text("search, or paste a magnet link / .torrent path")
+                            .hint_text("search, or paste a magnet link / .torrent / video address")
                             .desired_width(330.0),
                     );
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let typed = parse_input(&d.input);
                     let play = ui.add_enabled(typed.is_some() && !busy, egui::Button::new("Play"));
                     let dl = ui.add_enabled(
-                        matches!(typed, Some(Typed::Magnet(_) | Typed::TorrentFile(_))),
+                        matches!(
+                            typed,
+                            Some(Typed::Magnet(_) | Typed::TorrentFile(_) | Typed::Url(_))
+                        ),
                         egui::Button::new("Download"),
                     );
                     if play.clicked() || enter {
@@ -621,6 +737,7 @@ impl JizzApp {
                             Some(Typed::TorrentFile(p)) => {
                                 cmds.push(("fetch.play", json!({ "torrent_path": p })));
                             }
+                            Some(Typed::Url(u)) => cmds.push(("fetch.play", json!({ "url": u }))),
                             Some(Typed::Search(q)) => {
                                 cmds.push(("fetch.search", json!({ "query": q })))
                             }
@@ -635,6 +752,7 @@ impl JizzApp {
                             Some(Typed::TorrentFile(p)) => {
                                 cmds.push(("fetch.add", json!({ "torrent_path": p })));
                             }
+                            Some(Typed::Url(u)) => cmds.push(("fetch.add", json!({ "url": u }))),
                             _ => {}
                         }
                     }
@@ -767,6 +885,17 @@ impl JizzApp {
                         if ui.add_enabled(!busy, egui::Button::new("Play")).clicked() {
                             cmds.push(("fetch.play", json!({ "id": t.id })));
                         }
+                        if t.progress() >= 1.0
+                            && ui
+                                .small_button("External")
+                                .on_hover_text(
+                                    "Open in mpv or VLC. That program is not covered by \
+                                     JizzCraft's network protection.",
+                                )
+                                .clicked()
+                        {
+                            cmds.push(("fetch.external", json!({ "id": t.id })));
+                        }
                         let paused = t.state == TorrentState::Paused;
                         if ui
                             .small_button(if paused { "Resume" } else { "Pause" })
@@ -825,6 +954,18 @@ impl JizzApp {
                         ));
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Proxy");
+                        ui.add(
+                            TextEdit::singleline(&mut d.proxy)
+                                .hint_text("socks5://host:port")
+                                .password(true)
+                                .desired_width(220.0),
+                        );
+                        if ui.button("Set").clicked() {
+                            cmds.push(("fetch.settings", json!({ "proxy": d.proxy.trim() })));
+                        }
+                    });
                     let seed = d.host.config().seed_after_complete;
                     if widgets::toggle_chip(ui, "Keep seeding when done", seed).clicked() {
                         cmds.push(("fetch.settings", json!({ "seed": !seed })));
@@ -847,6 +988,9 @@ impl JizzApp {
                             } else {
                                 name
                             });
+                            if ui.small_button("Test").clicked() {
+                                cmds.push(("fetch.indexers.test", json!({ "id": id })));
+                            }
                             if ui.small_button("Remove").clicked() {
                                 cmds.push(("fetch.indexers.remove", json!({ "id": id })));
                             }
@@ -871,4 +1015,50 @@ impl JizzApp {
             self.push(n, a);
         }
     }
+}
+
+/// Find an executable on `PATH`.
+fn on_path(name: &str) -> Option<std::path::PathBuf> {
+    let exe = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(&exe))
+            .find(|c| c.is_file())
+    })
+}
+
+/// Launch mpv, else VLC, on a finished local file. Arguments only, no shell.
+/// The file is checked first: a playlist would make that program fetch URLs.
+fn open_external(path: &std::path::Path) -> Result<(), &'static str> {
+    use std::io::Read;
+    let abs = std::fs::canonicalize(path).map_err(|_| "The file is not available yet.")?;
+    let mut head = vec![0u8; 4096];
+    let n = std::fs::File::open(&abs)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|_| "The file is not available yet.")?;
+    if jizzcraft_core::manifest::looks_like_manifest(&head[..n]) {
+        return Err("Refused: this file refers to network media.");
+    }
+    let (bin, is_mpv) = if let Some(b) = on_path("mpv") {
+        (b, true)
+    } else if let Some(b) = on_path("vlc") {
+        (b, false)
+    } else {
+        return Err("Install mpv or VLC to use an external player.");
+    };
+    let mut c = std::process::Command::new(bin);
+    if is_mpv {
+        c.arg("--");
+    }
+    c.arg(&abs)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Could not start the external player.")
 }

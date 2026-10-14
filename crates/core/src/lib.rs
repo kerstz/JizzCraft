@@ -6,6 +6,7 @@ pub mod error;
 pub mod fingerprint;
 pub mod history;
 pub mod integrity;
+pub mod manifest;
 pub mod markers;
 pub mod model;
 pub mod paths;
