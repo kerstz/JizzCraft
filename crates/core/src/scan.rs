@@ -86,6 +86,7 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
     }
 
     let mut unreadable: Vec<PathBuf> = Vec::new();
+    let mut pending: Vec<NewFile> = Vec::new();
     {
         let mut find = tx.prepare("SELECT size, mtime FROM media WHERE path = ?1")?;
         let mut insert = tx.prepare(
@@ -109,8 +110,10 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
              WHERE id = ?1",
         )?;
 
+        // Sorted, so a scan behaves the same on every filesystem.
         let walker = WalkDir::new(root)
             .follow_links(false)
+            .sort_by_file_name()
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || !is_hidden(e.file_name()));
 
@@ -168,43 +171,71 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                     rep.updated += 1;
                 }
                 None => {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    // A new path whose size matches a fingerprinted item that has
-                    // vanished may simply be that item, moved or renamed.
-                    if let Some(old_id) =
-                        find_moved(&mut cands, entry.path(), &name, size, kind.as_i64())?
-                    {
+                    // Decided after the walk: pairing must not depend on the
+                    // order the filesystem lists files in.
+                    pending.push(NewFile {
+                        path: entry.path().to_path_buf(),
+                        blob,
+                        name: entry.file_name().to_string_lossy().into_owned(),
+                        size,
+                        mtime,
+                        kind,
+                    });
+                }
+            }
+        }
+
+        // A new path whose size matches a fingerprinted item that has vanished
+        // may simply be that item, moved or renamed. Same-name matches claim
+        // their row first; the rest pair by fingerprint (lowest id first).
+        let mut todo = pending;
+        for same_name_only in [true, false] {
+            let mut rest = Vec::new();
+            for f in todo {
+                let moved = find_moved(
+                    &mut cands,
+                    &f.path,
+                    &f.name,
+                    f.size,
+                    f.kind.as_i64(),
+                    same_name_only,
+                )?;
+                match moved {
+                    Some(old_id) => {
                         relink.execute(params![
                             old_id,
                             folder_id,
-                            blob,
-                            name,
-                            name.to_lowercase(),
-                            parent_blob(entry.path()),
-                            mtime,
+                            f.blob,
+                            f.name,
+                            f.name.to_lowercase(),
+                            parent_blob(&f.path),
+                            f.mtime,
                             gen_
                         ])?;
                         rep.relinked += 1;
-                        continue;
                     }
-                    let (w, h) = probe_dims(entry.path(), kind);
-                    insert.execute(params![
-                        folder_id,
-                        blob,
-                        name,
-                        name.to_lowercase(),
-                        kind.as_i64(),
-                        size,
-                        mtime,
-                        w,
-                        h,
-                        now_secs(),
-                        gen_,
-                        parent_blob(entry.path())
-                    ])?;
-                    rep.added += 1;
+                    None => rest.push(f),
                 }
             }
+            todo = rest;
+        }
+        for f in todo {
+            let (w, h) = probe_dims(&f.path, f.kind);
+            insert.execute(params![
+                folder_id,
+                f.blob,
+                f.name,
+                f.name.to_lowercase(),
+                f.kind.as_i64(),
+                f.size,
+                f.mtime,
+                w,
+                h,
+                now_secs(),
+                gen_,
+                parent_blob(&f.path)
+            ])?;
+            rep.added += 1;
         }
     }
 
@@ -225,6 +256,16 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
     Ok(rep)
 }
 
+/// A file seen for the first time during a scan.
+struct NewFile {
+    path: PathBuf,
+    blob: Vec<u8>,
+    name: String,
+    size: i64,
+    mtime: i64,
+    kind: MediaKind,
+}
+
 /// Match a new file against fingerprinted rows whose files are gone.
 fn find_moved(
     cands: &mut rusqlite::Statement<'_>,
@@ -232,6 +273,7 @@ fn find_moved(
     new_name: &str,
     size: i64,
     kind: i64,
+    same_name_only: bool,
 ) -> Result<Option<i64>> {
     let rows: Vec<_> = cands
         .query_map(params![size, kind], crate::fingerprint::candidate_row)?
@@ -245,6 +287,7 @@ fn find_moved(
         new_name,
         size as u64,
         None,
+        same_name_only,
     ))
 }
 
