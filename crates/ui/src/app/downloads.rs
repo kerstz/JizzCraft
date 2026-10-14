@@ -991,6 +991,12 @@ impl JizzApp {
                             cmds.push(("fetch.settings", json!({ "proxy": d.proxy.trim() })));
                         }
                     });
+                    ui.label(
+                        RichText::new(crate::i18n::tr(
+                            "With a proxy, DHT and trackers are off: they cannot be proxied.",
+                        ))
+                        .color(FAINT),
+                    );
                     let seed = d.host.config().seed_after_complete;
                     if widgets::toggle_chip(ui, crate::i18n::tr("Keep seeding when done"), seed)
                         .clicked()

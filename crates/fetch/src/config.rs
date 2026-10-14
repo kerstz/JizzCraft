@@ -71,6 +71,28 @@ impl Default for FetchConfig {
     }
 }
 
+/// What the torrent session may use. A SOCKS5 proxy only carries TCP peer
+/// connections: DHT and trackers cannot go through it, and an incoming
+/// listener would expose the real address. So with a proxy configured they
+/// are switched off rather than silently leaking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetPolicy {
+    pub dht: bool,
+    pub trackers: bool,
+    pub listen: bool,
+}
+
+impl FetchConfig {
+    pub fn net_policy(&self) -> NetPolicy {
+        let proxied = self.proxy.as_ref().is_some_and(|p| !p.is_empty());
+        NetPolicy {
+            dht: self.dht && !proxied,
+            trackers: !proxied,
+            listen: self.listen_incoming && !proxied,
+        }
+    }
+}
+
 impl FetchConfig {
     pub fn default_path() -> PathBuf {
         jizzcraft_core::paths::config_dir().join("fetch.json")

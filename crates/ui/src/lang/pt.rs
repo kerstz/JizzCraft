@@ -438,4 +438,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "Offline · No ads · Free and open source",
         "Offline · Sem anúncios · Livre e de código aberto",
     ),
+    (
+        "With a proxy, DHT and trackers are off: they cannot be proxied.",
+        "Com um proxy, DHT e trackers ficam desativados: não podem passar pelo proxy.",
+    ),
 ];

@@ -160,6 +160,20 @@ pub fn path_is_safe(p: &Path) -> bool {
     !p.as_os_str().is_empty() && p.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// The SOCKS5 proxy for HTTP requests (indexers, direct downloads), shared by
+/// the static request helpers. Set from the configuration.
+static HTTP_PROXY: Mutex<Option<String>> = Mutex::new(None);
+
+fn publish_proxy(cfg: &FetchConfig) {
+    if let Ok(mut g) = HTTP_PROXY.lock() {
+        *g = cfg
+            .proxy
+            .as_ref()
+            .filter(|p| !p.is_empty())
+            .map(|p| p.expose().to_owned());
+    }
+}
+
 pub struct FetchService {
     rt: Option<Runtime>,
     cfg: Arc<FetchConfig>,
@@ -175,6 +189,7 @@ impl FetchService {
             .thread_name("jizz-fetch")
             .enable_all()
             .build()?;
+        publish_proxy(&cfg);
         Ok(Self {
             rt: Some(rt),
             cfg: Arc::new(cfg),
@@ -187,6 +202,7 @@ impl FetchService {
     /// Replace the configuration (indexers, download folder). A running
     /// session keeps its network options until the next start.
     pub fn set_config(&mut self, cfg: FetchConfig) {
+        publish_proxy(&cfg);
         self.cfg = Arc::new(cfg);
     }
 
@@ -194,8 +210,18 @@ impl FetchService {
         self.rt.as_ref().expect("runtime alive until drop")
     }
 
+    fn builder() -> Result<reqwest::ClientBuilder, String> {
+        let mut b = reqwest::Client::builder();
+        if let Some(p) = HTTP_PROXY.lock().ok().and_then(|g| g.clone()) {
+            // socks5h: the proxy resolves names too.
+            let url = p.replacen("socks5://", "socks5h://", 1);
+            b = b.proxy(reqwest::Proxy::all(url).map_err(|e| e.without_url().to_string())?);
+        }
+        Ok(b)
+    }
+
     fn client() -> Result<reqwest::Client, String> {
-        reqwest::Client::builder()
+        Self::builder()?
             .timeout(SEARCH_TIMEOUT)
             .redirect(reqwest::redirect::Policy::limited(3))
             .build()
@@ -304,8 +330,10 @@ impl FetchService {
         let dir = cfg.effective_download_dir();
         cell.get_or_try_init(|| async {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let policy = cfg.net_policy();
             let opts = SessionOptions {
-                dht: cfg.dht.then(|| DhtSessionConfig {
+                disable_trackers: !policy.trackers,
+                dht: policy.dht.then(|| DhtSessionConfig {
                     persistence: None,
                     ..Default::default()
                 }),
@@ -313,7 +341,7 @@ impl FetchService {
                     folder: Some(state_dir.to_path_buf()),
                 }),
                 fastresume: true,
-                listen: cfg.listen_incoming.then(ListenerOptions::default),
+                listen: policy.listen.then(ListenerOptions::default),
                 connect: Some(ConnectionOptions {
                     proxy_url: cfg.proxy.as_ref().map(|p| p.expose().to_owned()),
                     ..Default::default()
@@ -849,7 +877,7 @@ async fn http_stream(cfg: &FetchConfig, url: String) -> Result<StreamTicket, Str
         return Err("unsupported address".into());
     }
     let name = safe_file_name(&url).ok_or("no video file")?;
-    let client = reqwest::Client::builder()
+    let client = FetchService::builder()?
         .connect_timeout(SEARCH_TIMEOUT)
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()
