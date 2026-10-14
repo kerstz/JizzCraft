@@ -27,9 +27,13 @@ jobs:
       - name: Install GStreamer headers
         run: |
           sudo apt-get update
+          # The 22.04 runner image holds some libunwind packages at a version
+          # that conflicts with the GStreamer headers; install it first.
+          sudo apt-get install -y --no-install-recommends libunwind-dev
           sudo apt-get install -y --no-install-recommends pkg-config dpkg-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-libav
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-deb --locked
