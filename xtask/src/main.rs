@@ -2,6 +2,8 @@
 //! Everything generated here is synthetic and SFW.
 //! The most explicit thing in the fixtures is a test pattern with ambitions.
 
+mod e2e;
+
 use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -20,9 +22,10 @@ fn main() -> ExitCode {
         Some("screenshots") => screenshots(),
         Some("dist") => dist(args.collect()),
         Some("check-packaging") => check_packaging(),
+        Some("e2e") => e2e::run(args.collect()),
         _ => Err(
             "usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots | dist [--edition offline|online] [--browser] \
-             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging"
+             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging | e2e [--allow-skips] [FILTER...]"
                 .into(),
         ),
     };

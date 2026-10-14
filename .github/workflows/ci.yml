@@ -2,8 +2,8 @@ name: CI
 
 # Required status checks (branch protection): check, network, packaging,
 # install-e2e, deny, msrv.
-# Not required: windows (experimental, continue-on-error), e2e (placeholder,
-# disabled until the WP7 harness exists).
+# Not required: windows (experimental, continue-on-error), e2e (new; make it
+# required once it has been green for a while).
 
 on:
   push:
@@ -97,16 +97,29 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets
 
-  # TODO(WP7): enable once `cargo xtask e2e` exists (harness lands in a later wave).
+  # Loopback servers and swarms driving the real player (docs/e2e.md).
+  # Serial and slow (minutes): kept apart from the unit test job.
   e2e:
-    name: e2e (placeholder)
-    if: false
+    name: e2e scenarios
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+      - name: Install GStreamer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-libav \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -q -p xtask -- e2e
+      - name: Scenarios
+        env:
+          JIZZCRAFT_REQUIRE_PLUGINS: "1"
+        run: cargo run -q -p xtask -- e2e
 
   network:
     name: network build · clippy · test

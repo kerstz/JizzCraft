@@ -943,4 +943,12 @@ pub const TABLE: &[(&str, &str)] = &[
         "Open the built-in browser (online edition)",
         "Integrierten Browser öffnen (Online-Edition)",
     ),
+    ("Appearance", "Darstellung"),
+    (
+        "Ctrl+= / Ctrl+- / Ctrl+0 also change the zoom.",
+        "Strg+= / Strg+- / Strg+0 ändern ebenfalls den Zoom.",
+    ),
+    ("Interface zoom", "Zoom der Oberfläche"),
+    ("Reduce motion", "Animationen reduzieren"),
+    ("Reset", "Zurücksetzen"),
 ];

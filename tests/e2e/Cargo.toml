@@ -1,0 +1,35 @@
+[package]
+name = "jizzcraft-e2e"
+description = "End-to-end scenarios: loopback servers and swarms driving the real player. Test crate, never published."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+# Off by default so that `cargo tree --workspace` keeps showing an offline
+# default build. `cargo xtask e2e` turns it on.
+default = []
+network = [
+    "dep:jizzcraft-fetch",
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:librqbit",
+    "dep:aes",
+    "dep:cbc",
+]
+
+[dependencies]
+jizzcraft-core.workspace = true
+jizzcraft-media.workspace = true
+jizzcraft-fetch = { workspace = true, features = ["network"], optional = true }
+gstreamer.workspace = true
+tempfile.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"], optional = true }
+librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
+aes = { version = "0.8", optional = true }
+cbc = { version = "0.1", features = ["alloc"], optional = true }

@@ -749,6 +749,25 @@ impl JizzApp {
         self.cfg.discreet
     }
 
+    /// Apply the saved zoom and motion preference; egui's Ctrl+= / Ctrl+- /
+    /// Ctrl+0 change the zoom factor, which is clamped and saved here.
+    fn sync_appearance(&mut self, ctx: &egui::Context) {
+        if self.frame_no == 1 {
+            ctx.set_zoom_factor(theme::clamp_zoom(self.cfg.ui_zoom.unwrap_or(1.0)));
+            theme::set_reduce_motion(ctx, self.cfg.reduce_motion);
+        }
+        let cur = ctx.zoom_factor();
+        let ok = theme::clamp_zoom(cur);
+        if (ok - cur).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(ok);
+        }
+        let saved = self.cfg.ui_zoom.unwrap_or(1.0);
+        if (ok - saved).abs() > 0.001 {
+            self.cfg.ui_zoom = Some(ok);
+            self.save_cfg();
+        }
+    }
+
     fn save_cfg(&self) {
         if self.persist_cfg {
             self.cfg.save();
@@ -2330,6 +2349,7 @@ impl eframe::App for JizzApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.frame_no += 1;
+        self.sync_appearance(&ctx);
         // Jokes never show on a shared screen, in discreet mode or disguised.
         // Comedy, like this app, is best enjoyed alone.
         crate::fun::set_enabled(
