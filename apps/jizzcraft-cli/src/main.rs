@@ -332,6 +332,19 @@ enum Cmd {
     Scan { dir: PathBuf },
     /// Rescan every imported folder.
     Rescan,
+    /// Full-text search over file names, tags, categories and marker notes
+    /// (accent and case insensitive, every word matches as a prefix).
+    Search {
+        /// Words to look for, all required.
+        #[arg(required = true)]
+        words: Vec<String>,
+        /// Most results to print.
+        #[arg(long, default_value_t = 100)]
+        limit: u64,
+        /// Results to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+    },
     /// List media.
     Query {
         /// Favorites only.
@@ -598,6 +611,14 @@ fn run(cli: &Cli) -> Result<(), String> {
         // Handled in `main` before the registry exists.
         Cmd::Doctor { .. } | Cmd::Gen { .. } => return Ok(()),
         Cmd::Rescan => ("library.rescan".to_owned(), json!({})),
+        Cmd::Search {
+            words,
+            limit,
+            offset,
+        } => (
+            "media.search".to_owned(),
+            json!({ "query": words.join(" "), "limit": limit, "offset": offset }),
+        ),
         Cmd::Query {
             fav,
             kind,
@@ -998,7 +1019,7 @@ fn print_human(cmd: &str, v: &Value) {
                 }
             }
         }
-        "media.query" => {
+        "media.query" | "media.search" => {
             for m in v["items"].as_array().into_iter().flatten() {
                 let flags = format!(
                     "{}{}",

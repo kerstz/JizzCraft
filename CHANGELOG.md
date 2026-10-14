@@ -8,6 +8,15 @@ anything may change between minor versions.
 ## [Unreleased]
 
 ### Library
+- Full-text search over names and labels (issue #10). The search box now
+  also matches tag names, category names and marker notes, ignoring case and
+  accents, with every word matched as a prefix (`cafe sunr` finds
+  `Café_Sunrise.png`); a plain substring of the file name still matches as
+  before. Backed by an SQLite FTS5 index (schema v4, backfilled at upgrade
+  after the usual pre-migration backup) that triggers keep current on scan,
+  tagging, renames, marker edits and folder removal. Private tags and
+  categories are never indexed. New command `media.search {query, limit?,
+  offset?}` (ranked, names first) and CLI `jizzcraft-cli search WORDS...`.
 - Remove a folder from the library in the UI (issue #12): right-click an
   imported root in the sidebar, then confirm. Only database rows go (the
   folder, its media and their ratings, tags, markers and playlist entries);

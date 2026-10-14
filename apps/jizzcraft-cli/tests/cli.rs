@@ -66,6 +66,10 @@ fn scan_query_favorite_and_stats() {
     assert_eq!(by_name["count"], 1);
 
     json(&cli(home.path(), &["--json", "fav", &id.to_string()]));
+    let hits = json(&cli(home.path(), &["--json", "search", "B", "PNG"]));
+    assert_eq!(hits["count"], 1, "{hits}");
+    let none = json(&cli(home.path(), &["--json", "search", "zzz"]));
+    assert_eq!(none["count"], 0);
     let favs = json(&cli(home.path(), &["--json", "query", "--fav"]));
     assert_eq!(favs["count"], 1);
 

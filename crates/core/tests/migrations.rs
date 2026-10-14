@@ -11,6 +11,7 @@ const FROZEN: &[&str] = &[
     "94c0b0d1094c84163b371a9bc0dbd3ad802ae38aabd6e725da1fa627c90b99bf",
     "0c7fa4a9c5906e36c96edda8d43feb22aa646243e9536e91f7e893f6c9e1bc03",
     "efd146227873706329ee239fdd6cd25d373df21e35956c35f3ba7a72ca33f2b9",
+    "b30677822357af450b9d88b6a0313d6f2282549cd9d057247b40ba1c7b9bd2ec",
 ];
 
 fn hash(s: &str) -> String {
@@ -134,6 +135,14 @@ fn check_survivors(db: &Db, version: usize) {
     for (t, n) in expect {
         assert_eq!(count(t), n, "{t} at v{version}");
     }
+    // v4 full-text index is backfilled from existing rows.
+    assert_eq!(count("media_fts"), 3, "index backfilled at v{version}");
+    let visible = if version >= 2 { 2 } else { 3 };
+    assert_eq!(
+        db.search("png", 10, 0).unwrap().len(),
+        visible,
+        "hidden rule"
+    );
     let fk: i64 = db
         .conn_for_tests()
         .pragma_query_value(None, "foreign_keys", |r| r.get(0))
