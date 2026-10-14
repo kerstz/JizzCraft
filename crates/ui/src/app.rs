@@ -531,7 +531,12 @@ impl JizzApp {
             let done = self.triage.as_ref().map_or(0, |t| t.done);
             self.triage = None;
             self.close_view();
-            self.toast(ToastKind::Info, format!("Inbox zero · {done} triaged"));
+            let base = crate::i18n::tr_dyn(&format!("Inbox zero · {done} triaged")).into_owned();
+            let text = match crate::fun::quip(crate::fun::Quip::InboxZero) {
+                Some(q) => format!("{base} · {q}"),
+                None => base,
+            };
+            self.toast(ToastKind::Info, text);
             return;
         }
         self.open_index(idx.min(self.total - 1));
@@ -885,6 +890,13 @@ impl JizzApp {
                             } else {
                                 ToastKind::Info
                             };
+                            let mut text = crate::i18n::tr_dyn(&text).into_owned();
+                            if r.added > 0
+                                && r.errors == 0
+                                && let Some(q) = crate::fun::quip(crate::fun::Quip::Scanned)
+                            {
+                                text = format!("{text} · {q}");
+                            }
                             self.toast(kind, text);
                             self.refresh();
                             if let Some(idx) = self.opts.open_index.take() {
@@ -1238,9 +1250,9 @@ impl JizzApp {
                     } else if self.extra.is_some() {
                         "VIEW".to_owned()
                     } else {
-                        self.tab.label().to_owned()
+                        crate::i18n::tr(self.tab.label()).to_owned()
                     };
-                    let mut crumb = format!("{brand} / {place}");
+                    let mut crumb = format!("{brand} / {}", place.to_uppercase());
                     if let View::Player(pv) = &self.view {
                         let name = if self.cfg.discreet {
                             "…"
@@ -1562,6 +1574,15 @@ impl JizzApp {
             FontId::new(11.0, FontFamily::Monospace),
             FAINT,
         );
+        if let Some(q) = crate::fun::steady(crate::fun::Quip::EmptyResults) {
+            ui.painter().text(
+                rect.center() + vec2(0.0, 24.0),
+                Align2::CENTER_CENTER,
+                q,
+                FontId::new(12.0, FontFamily::Proportional),
+                MUTED,
+            );
+        }
     }
 
     fn grid(&mut self, ui: &mut Ui) {
@@ -1848,6 +1869,9 @@ impl JizzApp {
                         egui::Label::new(egui::RichText::new(sub).size(16.0).color(MUTED)).wrap(),
                     );
                 });
+                if let Some(q) = crate::fun::steady(crate::fun::Quip::Welcome) {
+                    ui.label(egui::RichText::new(q).size(13.0).italics().color(FAINT));
+                }
                 ui.horizontal(|ui| {
                     let w = 220.0 + 150.0 + 12.0;
                     ui.add_space(((col_w - w) * 0.5).max(0.0));
@@ -1957,6 +1981,9 @@ impl JizzApp {
                         )
                         .wrap(),
                     );
+                    if let Some(q) = crate::fun::steady(crate::fun::Quip::AgeGate) {
+                        ui.label(egui::RichText::new(q).size(13.0).italics().color(FAINT));
+                    }
                     ui.add_space(S);
                     ui.horizontal(|ui| {
                         if widgets::button_solid(ui, crate::i18n::tr("I am 18 or older")).clicked() {
@@ -2044,6 +2071,13 @@ impl eframe::App for JizzApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.frame_no += 1;
+        // Jokes never show on a shared screen, in discreet mode or disguised.
+        crate::fun::set_enabled(
+            !self.cfg.no_jokes
+                && !self.cfg.discreet
+                && !self.cfg.screen_share_safe
+                && !self.opts.disguised,
+        );
         self.poll_jobs();
         self.poll_thumbs(&ctx);
         self.handle_shortcuts(&ctx);
@@ -2463,7 +2497,12 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         let f = Filter::from_json(args.get("spec").unwrap_or(&Value::Null))?;
         let id = app.db.save_view(name, &f)?;
         app.generation += 1;
-        app.toast(ToastKind::Info, crate::i18n::tr("View saved"));
+        let saved = crate::i18n::tr("View saved");
+        let text = match crate::fun::quip(crate::fun::Quip::ViewSaved) {
+            Some(q) => format!("{saved} · {q}"),
+            None => saved.to_owned(),
+        };
+        app.toast(ToastKind::Info, text);
         Ok(json!({ "id": id }))
     });
     reg.register(
@@ -2878,7 +2917,21 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         |app, _| {
             app.cfg.left_hand = !app.cfg.left_hand;
             app.save_cfg();
+            if app.cfg.left_hand
+                && let Some(q) = crate::fun::quip(crate::fun::Quip::OneHand)
+            {
+                app.toast(ToastKind::Info, q);
+            }
             Ok(json!({ "left_hand": app.cfg.left_hand }))
+        },
+    );
+    reg.register(
+        "app.jokes.toggle",
+        "Turn playful messages on or off",
+        |app, _| {
+            app.cfg.no_jokes = !app.cfg.no_jokes;
+            app.save_cfg();
+            Ok(json!({ "jokes": !app.cfg.no_jokes }))
         },
     );
     reg.register(

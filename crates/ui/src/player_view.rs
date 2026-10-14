@@ -279,6 +279,15 @@ impl PlayerView {
                         FontId::new(12.0, FontFamily::Monospace),
                         TEXT,
                     );
+                    if let Some(q) = crate::fun::steady(crate::fun::Quip::Buffering) {
+                        painter.text(
+                            video_area.center() + vec2(0.0, 24.0),
+                            Align2::CENTER_CENTER,
+                            q,
+                            FontId::new(12.0, FontFamily::Proportional),
+                            MUTED,
+                        );
+                    }
                 }
             }
             PlayState::Ended => {}
@@ -307,6 +316,15 @@ impl PlayerView {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
             if widgets::button_solid(&mut child, crate::i18n::tr("Replay")).clicked() {
                 self.player.replay();
+            }
+            if let Some(q) = crate::fun::steady(crate::fun::Quip::Ended) {
+                painter.text(
+                    video_area.center() + vec2(0.0, 72.0),
+                    Align2::CENTER_CENTER,
+                    q,
+                    FontId::new(12.0, FontFamily::Proportional),
+                    MUTED,
+                );
             }
             if let Some(n) = self.autoplay_in {
                 painter.text(

@@ -457,4 +457,7 @@ pub const TABLE: &[(&str, &str)] = &[
         "With a proxy, DHT and trackers are off: they cannot be proxied.",
         "Avec un proxy, DHT et trackers sont désactivés : ils ne peuvent pas passer par le proxy.",
     ),
+    ("Playful messages", "Messages coquins"),
+    ("on", "activés"),
+    ("off", "désactivés"),
 ];

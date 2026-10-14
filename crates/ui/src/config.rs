@@ -29,6 +29,8 @@ pub struct Config {
     pub no_previews: bool,
     /// Interface language code (`fr`, `es`, …). None: follow the system.
     pub language: Option<String>,
+    /// Playful one-liners are on unless this is set.
+    pub no_jokes: bool,
 }
 
 pub fn path() -> PathBuf {
