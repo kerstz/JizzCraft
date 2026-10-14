@@ -12,12 +12,17 @@ pub mod inbox;
 pub mod pick;
 pub mod redact;
 pub mod secret;
+pub mod sources;
 pub mod torznab;
 
 #[cfg(feature = "network")]
 pub mod commands;
 #[cfg(feature = "network")]
+pub mod resolver;
+#[cfg(feature = "network")]
 pub mod service;
+#[cfg(feature = "network")]
+pub mod stream;
 
 pub use config::{FetchConfig, Indexer};
 pub use secret::Secret;

@@ -39,7 +39,7 @@ impl ScanReport {
 
 /// Import a folder (idempotent) and scan it. Returns `(folder_id, report)`.
 pub fn import_folder(db: &mut Db, path: &Path) -> Result<(i64, ScanReport)> {
-    let root = std::fs::canonicalize(path)
+    let root = crate::pathbytes::canonical(path)
         .map_err(|e| Error::Invalid(format!("cannot open folder: {e}")))?;
     if !root.is_dir() {
         return Err(Error::Invalid("not a directory".into()));

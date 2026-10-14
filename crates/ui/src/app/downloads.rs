@@ -75,6 +75,15 @@ pub(super) struct Downloads {
 }
 
 impl Downloads {
+    /// Drop every stream that is still opening. Magnets handed over by
+    /// another launch wait for the user instead of opening by themselves.
+    pub(super) fn cancel_pending(&mut self) {
+        self.flow = None;
+        self.ready = None;
+        self.external = false;
+        self.inbox_checked = Some(Instant::now() + Duration::from_secs(3600));
+    }
+
     pub(super) fn new(disguised: bool) -> Self {
         let mut host = FetchHost::new(FetchConfig::default_path());
         host.set_disguised(disguised);
@@ -249,6 +258,19 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 app.downloads.open = true;
                 return Ok(json!({}));
             }
+            if let Some(i) = a.get("result").and_then(Value::as_u64)
+                && let Some(r) = app.downloads.results.get(i as usize)
+                && r.indexer_id >= jizzcraft_fetch::sources::ID_BASE
+            {
+                let u = r
+                    .link
+                    .clone()
+                    .ok_or_else(|| invalid("result has no address"))?;
+                let rx = app.downloads.host.service()?.stream_url(u);
+                app.downloads.flow = Some(Flow::Opening(rx));
+                app.downloads.open = true;
+                return Ok(json!({}));
+            }
             let src = if let Some(m) = a.get("magnet").and_then(Value::as_str) {
                 Source::Magnet(m.to_owned())
             } else if let Some(u) = a.get("url").and_then(Value::as_str) {
@@ -271,6 +293,136 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         },
     );
     reg.register(
+        "sources.list",
+        "List the streaming sources you configured (no secrets)",
+        |app, _| {
+            let v: Vec<Value> = app
+                .downloads
+                .host
+                .config()
+                .sources
+                .iter()
+                .map(|s| {
+                    json!({ "id": s.id, "name": s.name, "enabled": s.enabled,
+                                 "has_secret": !s.secret.is_empty() })
+                })
+                .collect();
+            Ok(json!({ "sources": v }))
+        },
+    );
+    reg.register(
+        "sources.import",
+        "Add a source from a JSON file you wrote: {path}",
+        |app, a| {
+            let p = a
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing `path`"))?;
+            let bytes = std::fs::read(p).map_err(|_| invalid("cannot read the file"))?;
+            if bytes.len() > 64 * 1024 {
+                return Err(invalid("definition too large"));
+            }
+            let id = app.downloads.host.import_source(&bytes)?;
+            Ok(json!({ "id": id }))
+        },
+    );
+    reg.register("sources.remove", "Remove a source: {id}", |app, a| {
+        let id = a
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid("missing `id`"))?;
+        app.downloads.host.remove_source(id as u32)?;
+        Ok(json!({}))
+    });
+    reg.register(
+        "sources.enable",
+        "Turn a source on or off: {id, on}",
+        |app, a| {
+            let id = a
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("missing `id`"))?;
+            let on = a.get("on").and_then(Value::as_bool).unwrap_or(true);
+            app.downloads.host.set_source_enabled(id as u32, on)?;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "sources.secret.set",
+        "Set a source's key or token (never echoed): {id, value}",
+        |app, a| {
+            let id = a
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("missing `id`"))?;
+            let v = a
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing `value`"))?;
+            app.downloads
+                .host
+                .set_source_secret(id as u32, v.to_owned())?;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "resolvers.add",
+        "Register a program you installed: {name, argv: [\"/abs/path\", ..., \"{url}\"], timeout_secs?}",
+        |app, a| {
+            let def: jizzcraft_fetch::resolver::ResolverDef =
+                serde_json::from_value(a).map_err(|_| invalid("not a resolver definition"))?;
+            let id = app.downloads.host.add_resolver(def)?;
+            Ok(json!({ "id": id }))
+        },
+    );
+    reg.register("resolvers.remove", "Forget a resolver: {id}", |app, a| {
+        let id = a
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid("missing `id`"))?;
+        app.downloads.host.remove_resolver(id as u32)?;
+        Ok(json!({}))
+    });
+    reg.register(
+        "stream.resolve",
+        "Stream a page address through one of your resolvers: {url, resolver}",
+        |app, a| {
+            let u = a
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing `url`"))?;
+            let id = a
+                .get("resolver")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("missing `resolver`"))?;
+            let rx = app
+                .downloads
+                .host
+                .service()?
+                .stream_via_resolver(id as u32, u.to_owned());
+            app.downloads.flow = Some(Flow::Opening(rx));
+            app.downloads.open = true;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "stream.open",
+        "Stream an http(s) video without saving it: {url}",
+        |app, a| {
+            let u = a
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing `url`"))?;
+            if is_torrent_url(u) {
+                return Err(invalid("a torrent is not a direct video"));
+            }
+            let rx = app.downloads.host.service()?.stream_url(u.to_owned());
+            app.downloads.flow = Some(Flow::Opening(rx));
+            app.downloads.open = true;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
         "fetch.add",
         "Download without playing: {magnet | torrent_path | result}",
         |app, a| {
@@ -279,6 +431,18 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 && !is_torrent_url(u)
             {
                 let rx = d.host.service()?.play_http(u.to_owned());
+                d.http_adding.push(rx);
+                return Ok(json!({}));
+            }
+            if let Some(i) = a.get("result").and_then(Value::as_u64)
+                && let Some(r) = d.results.get(i as usize)
+                && r.indexer_id >= jizzcraft_fetch::sources::ID_BASE
+            {
+                let u = r
+                    .link
+                    .clone()
+                    .ok_or_else(|| invalid("result has no address"))?;
+                let rx = d.host.service()?.play_http(u);
                 d.http_adding.push(rx);
                 return Ok(json!({}));
             }
@@ -393,7 +557,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "fetch.settings",
-        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…}",
+        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…, require_proxy?}",
         |app, a| {
             let d = &mut app.downloads;
             let num = |k: &str| a.get(k).and_then(Value::as_u64).map(|n| n as u32);
@@ -404,6 +568,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
             );
             let (down, up) = (num("down_mibps"), num("up_mibps"));
             let proxy = a.get("proxy").and_then(Value::as_str).map(str::to_owned);
+            let require_proxy = a.get("require_proxy").and_then(Value::as_bool);
             if let Some(p) = &proxy
                 && !p.is_empty()
                 && !p.starts_with("socks5://")
@@ -422,6 +587,9 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 }
                 if let Some(p) = &proxy {
                     c.proxy = (!p.is_empty()).then(|| jizzcraft_fetch::Secret::new(p.clone()));
+                }
+                if let Some(r) = require_proxy {
+                    c.require_proxy = r;
                 }
                 if let Some(s) = seed {
                     c.seed_after_complete = s;
@@ -997,6 +1165,16 @@ impl JizzApp {
                             cmds.push(("fetch.settings", json!({ "proxy": d.proxy.trim() })));
                         }
                     });
+                    let mut req = d.host.config().require_proxy;
+                    if ui
+                        .checkbox(
+                            &mut req,
+                            crate::i18n::tr("Block the network without a proxy"),
+                        )
+                        .clicked()
+                    {
+                        cmds.push(("fetch.settings", json!({ "require_proxy": req })));
+                    }
                     ui.label(
                         RichText::new(crate::i18n::tr(
                             "With a proxy, DHT and trackers are off: they cannot be proxied.",
@@ -1080,7 +1258,8 @@ fn on_path(name: &str) -> Option<std::path::PathBuf> {
 /// The file is checked first: a playlist would make that program fetch URLs.
 fn open_external(path: &std::path::Path) -> Result<(), &'static str> {
     use std::io::Read;
-    let abs = std::fs::canonicalize(path).map_err(|_| "The file is not available yet.")?;
+    let abs =
+        jizzcraft_core::pathbytes::canonical(path).map_err(|_| "The file is not available yet.")?;
     let mut head = vec![0u8; 4096];
     let n = std::fs::File::open(&abs)
         .and_then(|mut f| f.read(&mut head))

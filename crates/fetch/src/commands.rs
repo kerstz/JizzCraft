@@ -81,6 +81,66 @@ impl FetchHost {
         Ok(id)
     }
 
+    /// Add a source from a definition the user wrote. Secrets are never read
+    /// from the definition: set them with [`Self::set_source_secret`].
+    pub fn import_source(&mut self, json: &[u8]) -> Result<u32> {
+        let mut d = crate::sources::parse_import(json).map_err(|e| Error::Invalid(e.into()))?;
+        d.id = self
+            .cfg
+            .sources
+            .iter()
+            .map(|s| s.id)
+            .max()
+            .map_or(1, |m| m + 1);
+        let id = d.id;
+        self.cfg.sources.push(d);
+        self.save()?;
+        Ok(id)
+    }
+
+    pub fn add_resolver(&mut self, mut d: crate::resolver::ResolverDef) -> Result<u32> {
+        crate::resolver::validate(&d).map_err(|e| Error::Invalid(e.into()))?;
+        d.id = self
+            .cfg
+            .resolvers
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .map_or(1, |m| m + 1);
+        let id = d.id;
+        self.cfg.resolvers.push(d);
+        self.save()?;
+        Ok(id)
+    }
+
+    pub fn remove_resolver(&mut self, id: u32) -> Result<()> {
+        self.cfg.resolvers.retain(|r| r.id != id);
+        self.save()
+    }
+
+    pub fn remove_source(&mut self, id: u32) -> Result<()> {
+        self.cfg.sources.retain(|s| s.id != id);
+        self.save()
+    }
+
+    pub fn set_source_enabled(&mut self, id: u32, on: bool) -> Result<()> {
+        if let Some(s) = self.cfg.sources.iter_mut().find(|s| s.id == id) {
+            s.enabled = on;
+        }
+        self.save()
+    }
+
+    pub fn set_source_secret(&mut self, id: u32, value: String) -> Result<()> {
+        let s = self
+            .cfg
+            .sources
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| Error::Invalid("no such source".into()))?;
+        s.secret = Secret::new(value);
+        self.save()
+    }
+
     pub fn remove_indexer(&mut self, id: u32) -> Result<()> {
         self.cfg.indexers.retain(|i| i.id != id);
         self.save()
@@ -96,7 +156,13 @@ impl FetchHost {
 
     /// Edit the advanced settings in one go and save.
     pub fn update_settings(&mut self, f: impl FnOnce(&mut FetchConfig)) -> Result<()> {
+        let before = (self.cfg.require_proxy, self.cfg.proxy.clone());
         f(&mut self.cfg);
+        // A running session keeps its network options, so a change to the
+        // proxy or the kill switch ends it: nothing keeps a direct connection.
+        if before != (self.cfg.require_proxy, self.cfg.proxy.clone()) {
+            self.svc = None;
+        }
         self.save()
     }
 

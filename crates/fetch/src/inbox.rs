@@ -54,7 +54,7 @@ pub fn push(link: &str) -> std::io::Result<()> {
     let mut f = opts.open(&tmp)?;
     f.write_all(link.as_bytes())?;
     f.sync_all()?;
-    std::fs::rename(&tmp, d.join(format!("{nanos}.magnet")))
+    jizzcraft_core::fsutil::replace(&tmp, &d.join(format!("{nanos}.magnet")))
 }
 
 /// Read and remove every queued link (oldest first). Only `.magnet` files

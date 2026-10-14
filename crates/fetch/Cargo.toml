@@ -10,7 +10,10 @@ rust-version.workspace = true
 
 [features]
 default = []
-network = ["dep:librqbit", "dep:tokio", "dep:reqwest"]
+network = ["dep:librqbit", "dep:tokio", "dep:reqwest", "dep:tempfile"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dependencies]
 jizzcraft-core.workspace = true
@@ -21,6 +24,8 @@ quick-xml.workspace = true
 librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros", "io-util"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"], optional = true }
+
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

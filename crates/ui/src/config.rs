@@ -31,6 +31,10 @@ pub struct Config {
     pub language: Option<String>,
     /// Playful one-liners are on unless this is set.
     pub no_jokes: bool,
+    /// Local video the panic switch jumps to (`app.panic.maths`).
+    /// Never show the 18+ gate (the owner already attested; local app only).
+    pub skip_age_gate: bool,
+    pub panic_video: Option<PathBuf>,
 }
 
 pub fn path() -> PathBuf {
@@ -58,7 +62,9 @@ impl Config {
         // (including the age confirmation).
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
             let tmp = p.with_extension("json.tmp");
-            if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &p).is_err() {
+            if std::fs::write(&tmp, bytes).is_ok()
+                && jizzcraft_core::fsutil::replace(&tmp, &p).is_err()
+            {
                 let _ = std::fs::remove_file(&tmp);
             }
         }

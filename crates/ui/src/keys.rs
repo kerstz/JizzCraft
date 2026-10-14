@@ -129,6 +129,16 @@ pub const KEYMAP: &[Binding] = &[
         "{}",
         "Boss key: pause, mute, discreet, minimize",
     ))),
+    shifted(ctrl(b(
+        Global,
+        Both,
+        Key::M,
+        false,
+        "Ctrl+Shift+M",
+        "app.panic.maths",
+        "{}",
+        "Panic: jump to the chosen video, full screen",
+    ))),
     ctrl(b(
         Global,
         Both,

@@ -157,14 +157,78 @@ pub enum Source {
 
 /// Reject any path that could escape the download folder.
 pub fn path_is_safe(p: &Path) -> bool {
-    !p.as_os_str().is_empty() && p.components().all(|c| matches!(c, Component::Normal(_)))
+    !p.as_os_str().is_empty()
+        && p.components().all(|c| match c {
+            Component::Normal(n) => name_is_portable(&n.to_string_lossy()),
+            _ => false,
+        })
+}
+
+/// A file name that is harmless on every platform: no alternate data stream
+/// (`a:b`), no characters Windows forbids, no control characters, no trailing
+/// dot or space, no reserved device name. Checked on all platforms so a
+/// torrent behaves the same everywhere.
+fn name_is_portable(n: &str) -> bool {
+    if n.is_empty()
+        || n.chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\\'))
+        || n.ends_with('.')
+        || n.ends_with(' ')
+    {
+        return false;
+    }
+    // Windows trims trailing spaces of the stem before comparing.
+    let stem = n
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_uppercase();
+    let numbered = |p: &str| {
+        stem.strip_prefix(p).is_some_and(|d| {
+            let mut c = d.chars();
+            matches!(c.next(), Some('0'..='9' | '¹' | '²' | '³')) && c.next().is_none()
+        })
+    };
+    let reserved = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT");
+    !reserved
 }
 
 /// The SOCKS5 proxy for HTTP requests (indexers, direct downloads), shared by
 /// the static request helpers. Set from the configuration.
 static HTTP_PROXY: Mutex<Option<String>> = Mutex::new(None);
 
+/// Mirrors `FetchConfig::require_proxy` for the static request helpers.
+static REQUIRE_PROXY: AtomicBool = AtomicBool::new(false);
+
+/// True when the kill switch is on and no proxy is set.
+pub(crate) fn proxy_blocked() -> bool {
+    REQUIRE_PROXY.load(Ordering::SeqCst) && current_proxy().is_none()
+}
+
+/// Redirects stay on the same host and scheme. A key sent to a source must
+/// never follow a redirect to another site.
+pub(crate) fn same_origin_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let ok = attempt.previous().len() < 3
+            && attempt.previous().last().is_some_and(|p| {
+                p.host_str() == attempt.url().host_str() && p.scheme() == attempt.url().scheme()
+            });
+        if ok { attempt.follow() } else { attempt.stop() }
+    })
+}
+
+/// The SOCKS5 proxy currently in force, for helpers started by the user.
+pub(crate) fn current_proxy() -> Option<String> {
+    HTTP_PROXY.lock().ok().and_then(|g| g.clone())
+}
+
 fn publish_proxy(cfg: &FetchConfig) {
+    REQUIRE_PROXY.store(cfg.require_proxy, Ordering::SeqCst);
     if let Ok(mut g) = HTTP_PROXY.lock() {
         *g = cfg
             .proxy
@@ -210,12 +274,21 @@ impl FetchService {
         self.rt.as_ref().expect("runtime alive until drop")
     }
 
-    fn builder() -> Result<reqwest::ClientBuilder, String> {
+    pub(crate) fn builder() -> Result<reqwest::ClientBuilder, String> {
         let mut b = reqwest::Client::builder();
-        if let Some(p) = HTTP_PROXY.lock().ok().and_then(|g| g.clone()) {
+        let proxy = HTTP_PROXY.lock().ok().and_then(|g| g.clone());
+        if proxy.is_none() && REQUIRE_PROXY.load(Ordering::SeqCst) {
+            return Err("proxy required".into());
+        }
+        if let Some(p) = proxy {
             // socks5h: the proxy resolves names too.
             let url = p.replacen("socks5://", "socks5h://", 1);
-            b = b.proxy(reqwest::Proxy::all(url).map_err(|e| e.without_url().to_string())?);
+            // Loopback (a local Jackett, say) is not a leak and the proxy
+            // machine's own loopback is not what the user means.
+            let proxy = reqwest::Proxy::all(url)
+                .map_err(|e| e.without_url().to_string())?
+                .no_proxy(reqwest::NoProxy::from_string("127.0.0.1,::1,localhost"));
+            b = b.proxy(proxy);
         }
         Ok(b)
     }
@@ -289,12 +362,24 @@ impl FetchService {
             .filter(|i| i.enabled && indexer.is_none_or(|id| id == i.id))
             .cloned()
             .collect();
+        let defs: Vec<crate::sources::SourceDef> = if indexer.is_none() {
+            self.cfg
+                .sources
+                .iter()
+                .filter(|s| s.enabled)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let urls: Vec<(u32, String)> = targets
             .iter()
             .map(|i| (i.id, torznab::build_search_url(i, query, cats, limit)))
             .collect();
+        let query_owned = query.to_owned();
+        let cancel_src = cancel.clone();
         self.rt().spawn(async move {
-            let queried = urls.len();
+            let queried = urls.len() + defs.len();
             let mut out = SearchOutcome {
                 queried,
                 failed: 0,
@@ -309,7 +394,19 @@ impl FetchService {
                     torznab::parse_results(&xml, id).map_err(|e| e.to_string())
                 });
             }
+            let q = query_owned;
+            let mut src_set = tokio::task::JoinSet::new();
+            for d in defs {
+                let (q, cancel) = (q.clone(), cancel_src.clone());
+                src_set.spawn(async move { source_search(d, q, limit, cancel).await });
+            }
             while let Some(r) = set.join_next().await {
+                match r {
+                    Ok(Ok(mut v)) => out.results.append(&mut v),
+                    _ => out.failed += 1,
+                }
+            }
+            while let Some(r) = src_set.join_next().await {
                 match r {
                     Ok(Ok(mut v)) => out.results.append(&mut v),
                     _ => out.failed += 1,
@@ -329,6 +426,9 @@ impl FetchService {
     ) -> Result<Arc<Session>, String> {
         let dir = cfg.effective_download_dir();
         cell.get_or_try_init(|| async {
+            if cfg.require_proxy && cfg.proxy.as_ref().is_none_or(|p| p.is_empty()) {
+                return Err("proxy required".to_string());
+            }
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let policy = cfg.net_policy();
             let opts = SessionOptions {
@@ -416,6 +516,57 @@ impl FetchService {
     /// Stream a plain `http(s)` video file while it is saved next to the
     /// torrent downloads (`<name>.part`, renamed when complete, never
     /// overwriting). Needs a `Content-Length`; refuses playlists.
+    /// Play a plain `http(s)` video without writing it to disk: a seekable
+    /// reader over `Range` requests. A server that does not honour ranges
+    /// falls back to [`Self::play_http`] (saved next to the downloads).
+    pub fn stream_url(&self, url: String) -> Receiver<Result<StreamTicket, String>> {
+        let (tx, rx) = channel();
+        let cfg = self.cfg.clone();
+        let handle = self.rt().handle().clone();
+        self.rt().spawn(async move {
+            let _ = tx.send(open_stream_url(&cfg, handle, url).await);
+        });
+        rx
+    }
+
+    /// Resolve a page address with the user's resolver `id`, then stream the
+    /// best address it returns.
+    pub fn stream_via_resolver(
+        &self,
+        id: u32,
+        page_url: String,
+    ) -> Receiver<Result<StreamTicket, String>> {
+        let (tx, rx) = channel();
+        let cfg = self.cfg.clone();
+        let handle = self.rt().handle().clone();
+        self.rt().spawn(async move {
+            let r = async {
+                let def = cfg
+                    .resolvers
+                    .iter()
+                    .find(|r| r.id == id && r.enabled)
+                    .cloned()
+                    .ok_or("no such resolver")?;
+                if cfg.require_proxy && (current_proxy().is_none() || !def.honours_proxy) {
+                    return Err("proxy required".to_string());
+                }
+                let formats =
+                    tokio::task::spawn_blocking(move || crate::resolver::run(&def, &page_url))
+                        .await
+                        .map_err(|_| "resolver failed".to_string())??;
+                // Only plain files are streamed here; manifests come later.
+                let f = formats
+                    .into_iter()
+                    .find(|f| f.protocol == "http" || f.protocol == "https")
+                    .ok_or("resolver returned no direct file")?;
+                open_stream_url(&cfg, handle, f.url).await
+            }
+            .await;
+            let _ = tx.send(r);
+        });
+        rx
+    }
+
     pub fn play_http(&self, url: String) -> Receiver<Result<StreamTicket, String>> {
         let (tx, rx) = channel();
         let cfg = self.cfg.clone();
@@ -783,6 +934,131 @@ pub struct SearchOutcome {
     pub results: Vec<SearchResult>,
 }
 
+async fn open_stream_url(
+    cfg: &FetchConfig,
+    handle: tokio::runtime::Handle,
+    url: String,
+) -> Result<StreamTicket, String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("unsupported address".to_string());
+    }
+    let name = safe_file_name(&url).ok_or("no video file")?;
+    let client = FetchService::builder()?
+        .connect_timeout(SEARCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|e| e.without_url().to_string())?;
+    match crate::stream::open(handle, client, url.clone()).await {
+        Ok(o) => Ok(StreamTicket::Live {
+            reader: StreamReader(Box::new(o.reader)),
+            len: o.len,
+            name,
+        }),
+        Err(e) if e == crate::stream::NOT_SEEKABLE => http_stream(cfg, url).await,
+        Err(e) => Err(e),
+    }
+}
+
+/// Last request time per source id, for the per-minute rate limit.
+static SOURCE_LAST: Mutex<Vec<(u32, std::time::Instant)>> = Mutex::new(Vec::new());
+
+async fn source_rate_wait(id: u32, per_minute: u32, cancel: Arc<AtomicBool>) -> Result<(), String> {
+    if per_minute == 0 {
+        return Ok(());
+    }
+    let gap = Duration::from_millis(60_000 / u64::from(per_minute));
+    let wait = {
+        let mut g = SOURCE_LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let now = std::time::Instant::now();
+        let next = match g.iter().find(|(i, _)| *i == id) {
+            Some((_, t)) => (*t + gap).max(now),
+            None => now,
+        };
+        let wait = next.saturating_duration_since(now);
+        // Too long to be worth it: fail without taking a slot.
+        if wait > SEARCH_TIMEOUT {
+            return Err("rate limited".into());
+        }
+        match g.iter_mut().find(|(i, _)| *i == id) {
+            Some((_, t)) => *t = next,
+            None => g.push((id, next)),
+        }
+        wait
+    };
+    if !wait.is_zero() {
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = wait_cancel(cancel) => return Err("cancelled".into()),
+        }
+    }
+    Ok(())
+}
+
+/// One search on a user-defined source. Errors are fixed phrases.
+async fn source_search(
+    d: crate::sources::SourceDef,
+    query: String,
+    limit: u32,
+    cancel: Arc<AtomicBool>,
+) -> Result<Vec<SearchResult>, String> {
+    crate::sources::validate(&d).map_err(str::to_owned)?;
+    source_rate_wait(d.id, d.per_minute, cancel.clone()).await?;
+    let url = crate::sources::build_url(&d, &query, 1, limit);
+    let client = FetchService::builder()?
+        .timeout(SEARCH_TIMEOUT)
+        .redirect(same_origin_policy())
+        .build()
+        .map_err(|e| e.without_url().to_string())?;
+    let mut req = client.get(&url).header("Accept", "application/json");
+    if let Some(ua) = &d.user_agent {
+        req = req.header("User-Agent", ua);
+    }
+    if let Some(r) = &d.referer {
+        req = req.header("Referer", r);
+    }
+    if let Some(h) = &d.auth_header
+        && !d.secret.is_empty()
+    {
+        req = req.header(h, format!("{}{}", d.auth_prefix, d.secret.expose()));
+    }
+    let mut resp = tokio::select! {
+        r = req.send() => r.map_err(|e| format!("error sending request: {}", e.without_url()))?,
+        _ = wait_cancel(cancel.clone()) => return Err("cancelled".into()),
+    };
+    let code = resp.status().as_u16();
+    if code == 401 || code == 403 {
+        return Err("incorrect user credentials".into());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {code}"));
+    }
+    let mut body = Vec::new();
+    while let Some(c) = resp
+        .chunk()
+        .await
+        .map_err(|e| e.without_url().to_string())?
+    {
+        body.extend_from_slice(&c);
+        if body.len() > 4 << 20 {
+            return Err("answer too large".into());
+        }
+    }
+    let items = crate::sources::parse_items(&d, &body, limit as usize).map_err(str::to_owned)?;
+    Ok(items
+        .into_iter()
+        .map(|i| SearchResult {
+            title: i.title,
+            size: i.size,
+            seeders: None,
+            peers: None,
+            magnet: None,
+            link: i.media.or(i.page_url),
+            pub_date: None,
+            indexer_id: crate::sources::ID_BASE + d.id,
+        })
+        .collect())
+}
+
 async fn wait_cancel(flag: Arc<AtomicBool>) {
     while !flag.load(Ordering::Relaxed) {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -952,7 +1228,7 @@ async fn http_stream(cfg: &FetchConfig, url: String) -> Result<StreamTicket, Str
             if final2.exists() {
                 f2.store(true, Ordering::SeqCst);
             } else {
-                let _ = std::fs::rename(&part2, &final2);
+                let _ = jizzcraft_core::fsutil::replace(&part2, &final2);
             }
         } else {
             f2.store(true, Ordering::SeqCst);

@@ -102,6 +102,20 @@ fn unsafe_paths_are_rejected() {
     assert!(!path_is_safe(Path::new("../x")));
     assert!(!path_is_safe(Path::new("/etc/x")));
     assert!(!path_is_safe(Path::new("")));
+    for bad in [
+        "a/b:stream",
+        "con.mp4",
+        "a/NUL",
+        "x/COM1.txt",
+        "a/b.",
+        "a/b ",
+        "a/b?.mp4",
+        "a/b|c",
+    ] {
+        assert!(!path_is_safe(Path::new(bad)), "{bad}");
+    }
+    assert!(path_is_safe(Path::new("Show S01/Episode 1 - Name.mkv")));
+    assert!(path_is_safe(Path::new("comic.mp4")));
 }
 
 #[test]
