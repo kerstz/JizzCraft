@@ -102,8 +102,13 @@ fn registry_commands_are_listed_and_unknown_ones_fail_cleanly() {
         .collect();
     assert!(names.contains(&"library.import"));
     assert!(names.contains(&"media.query"));
-    // The default build has no network commands at all. Not hidden, absent.
-    assert!(!names.iter().any(|n| n.starts_with("fetch.")), "{names:?}");
+    if cfg!(feature = "network") {
+        // The network build pins the commands it adds.
+        assert!(names.contains(&"fetch.search"), "{names:?}");
+    } else {
+        // The default build has no network commands at all. Not hidden, absent.
+        assert!(!names.iter().any(|n| n.starts_with("fetch.")), "{names:?}");
+    }
 
     let bad = cli(home.path(), &["--json", "run", "no.such.command"]);
     assert!(!bad.status.success());

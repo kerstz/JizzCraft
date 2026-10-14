@@ -19,7 +19,8 @@ export GST_PLUGIN_SCANNER_1_0="$APPDIR/usr/lib/gstreamer1.0/gstreamer-1.0/gst-pl
 export GST_REGISTRY_1_0="${XDG_CACHE_HOME:-$HOME/.cache}/jizzcraft/gst-registry-appimage.bin"
 HOOK
 
-export DEPLOY_GSTREAMER_PLUGINS_DIR=$(pkg-config --variable=pluginsdir gstreamer-1.0)
+DEPLOY_GSTREAMER_PLUGINS_DIR=$(pkg-config --variable=pluginsdir gstreamer-1.0)
+export DEPLOY_GSTREAMER_PLUGINS_DIR
 export LDAI_UPDATE_INFORMATION="gh-releases-zsync|kerstz|JizzCraft|latest|jizzcraft-*-x86_64.AppImage.zsync"
 linuxdeploy --appdir "$APPDIR" --plugin gstreamer --output appimage \
   --exclude-library 'libvulkan*' --exclude-library 'libGL*' --exclude-library 'libdrm*' \

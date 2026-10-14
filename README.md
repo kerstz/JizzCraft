@@ -183,15 +183,14 @@ It checks the SHA-256 of what it downloads, installs under `~/.local`, runs `jiz
 | Platform | Install | Update | Uninstall |
 | --- | --- | --- | --- |
 | Any Linux | the one-liner above | run it again | `install.sh --uninstall` |
-| Arch / CachyOS / Manjaro | `paru -S jizzcraft` (or `jizzcraft-network`, `jizzcraft-git`) | `paru -Syu` | `sudo pacman -Rns jizzcraft` |
-| Debian / Ubuntu / Mint | `sudo apt install ./jizzcraft_*.deb` | install the new `.deb` | `sudo apt remove jizzcraft` |
-| Fedora / openSUSE | `sudo dnf install ./jizzcraft-*.rpm` | install the new `.rpm` | `sudo dnf remove jizzcraft` |
-| Flatpak | the `.flatpak` bundle from the release page | `flatpak update` | `flatpak uninstall --delete-data org.jizzcraft.JizzCraft` |
-| AppImage | download, `chmod +x`, run | AppImageUpdate | delete the file |
-| Windows 10/11 | portable zip (`packaging/windows`) | download the new zip | delete the folder |
-| macOS 12+ | `.app` zip (`packaging/macos`) | download the new zip | delete the app |
+| Debian / Ubuntu / Mint | `sudo apt install ./jizzcraft_*.deb` from the release page | install the new `.deb` | `sudo apt remove jizzcraft` |
+| Arch / CachyOS / Manjaro | `makepkg -si` in `packaging/arch/jizzcraft` (not on the AUR yet) | pull, run it again | `sudo pacman -Rns jizzcraft` |
+| Fedora / openSUSE | build with `packaging/fedora/jizzcraft.spec` (no prebuilt rpm yet) | rebuild | `sudo dnf remove jizzcraft` |
+| Flatpak, AppImage | recipes in `packaging/`, not built or published yet | n/a | n/a |
+| Windows 10/11 | portable zip and installer on the release page (**experimental**, never run on real hardware) | download the new one | uninstaller, or delete the folder |
+| macOS | build from source (no bundle is published) | n/a | n/a |
 
-Honest status: the `install.sh` flow, the `.deb` contents, the staging tree, the desktop and AppStream files and `doctor` are exercised here on Arch/CachyOS. The AUR, RPM, Flatpak and AppImage recipes are written against the same staging tree (`cargo xtask dist`) but only the CI release job builds them; Windows and macOS have never run on a real machine (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md).
+Honest status: the `install.sh` flow, the `.deb` contents, the staging tree, the desktop and AppStream files and `doctor` are exercised on Arch/CachyOS and by the CI job *install*. The Arch, RPM, Flatpak and AppImage recipes are written against the same staging tree (`cargo xtask dist`) but are not built by CI yet; Windows and macOS have never run on a real machine (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md).
 
 ### Something does not play?
 

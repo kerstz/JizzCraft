@@ -75,7 +75,9 @@ detect_family() {
     OSID=""
     OSLIKE=""
     if [ -r /etc/os-release ]; then
+        # shellcheck source=/dev/null
         OSID=$(. /etc/os-release && printf '%s' "${ID:-}")
+        # shellcheck source=/dev/null
         OSLIKE=$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")
     fi
     for w in $OSID $OSLIKE; do

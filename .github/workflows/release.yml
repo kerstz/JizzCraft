@@ -19,7 +19,7 @@ env:
 
 jobs:
   linux:
-    name: Linux (tar.xz, .deb, .rpm)
+    name: Linux (tar.xz, .deb)
     # Oldest supported host, so the binaries run on Debian 12 and newer.
     runs-on: ubuntu-22.04
     steps:
@@ -32,7 +32,7 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-deb cargo-generate-rpm --locked
+      - run: cargo install cargo-deb --locked
       - name: Tag matches the workspace version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -45,6 +45,9 @@ jobs:
       - name: Network build (opt-in variant)
         run: |
           cargo xtask dist --network --destdir target/stage-net --prefix /usr --tarball
+      - name: Install, run doctor, uninstall (both tarballs)
+        run: |
+          for t in dist/jizzcraft-*-linux.tar.xz; do sh packaging/smoke-install.sh "$t"; done
       - name: Installer and checksums
         run: |
           cp packaging/install.sh dist/install.sh
@@ -55,17 +58,23 @@ jobs:
           path: dist/*
 
   windows:
-    name: Windows (portable zip)
+    name: Windows (portable zip, installer; experimental)
     runs-on: windows-latest
+    # Never run on real hardware yet. A failure here must not block the Linux
+    # release; the Windows files are simply absent from it.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - name: GStreamer (MSVC runtime + devel)
         shell: pwsh
         run: |
-          $v = '1.26.6'
+          $v = '1.26.11'
           foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
             $u = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
             Invoke-WebRequest $u -OutFile "$k.msi"
+            Invoke-WebRequest "$u.sha256sum" -OutFile "$k.msi.sha256sum"
+            $want = ((Get-Content "$k.msi.sha256sum" -Raw).Trim() -split '\s+')[0].ToLower()
+            if ((Get-FileHash "$k.msi" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "checksum mismatch for $k" }
             Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
           }
           choco install pkgconfiglite -y
@@ -82,7 +91,10 @@ jobs:
             dist/*-setup.exe
 
   macos:
-    name: macOS (.app zip)
+    name: macOS (.app zip, manual runs only)
+    # The bundle uses Homebrew's GStreamer and does not embed it, so it would
+    # not run on another Mac: never published.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -94,15 +106,15 @@ jobs:
         with: { name: macos, path: "dist/*.zip" }
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos]
+    # Linux is the release. Windows files join it when that job succeeded.
+    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.linux.result == 'success'
+    needs: [linux, windows]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with: { path: artifacts }
       - name: Merge checksums
         run: |
-          find artifacts -name SHA256SUMS -prune -o -type f -print | sed 's|^|  |' >/dev/null
           (cd artifacts && find . -type f ! -name SHA256SUMS -exec sha256sum {} + | sed 's|\./[^/]*/||' | sort -k2 > ../SHA256SUMS.all)
           mkdir -p artifacts/checksums && mv SHA256SUMS.all artifacts/checksums/SHA256SUMS
           rm -f artifacts/linux/SHA256SUMS
@@ -113,3 +125,18 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          prerelease: false
+          make_latest: true
+          body: |
+            **Alpha release.** Linux is the tested platform. The Windows files are
+            experimental (never run on real hardware yet) and there is no macOS build.
+
+            Install on Linux in one command:
+
+            ```sh
+            curl --proto '=https' --tlsv1.2 -fsSL https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh
+            ```
+
+            Verify with `SHA256SUMS`, or `gh attestation verify <file> --repo kerstz/JizzCraft`.
+            The `-network` tarball adds indexers, torrents and streaming from your own
+            sources; the default build makes no network connection at all.
