@@ -3201,6 +3201,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sizes_durations_and_dates_are_formatted_for_humans() {
+        assert_eq!(fmt_size(0), "0 B");
+        assert_eq!(fmt_size(1023), "1023 B");
+        assert_eq!(fmt_size(1024), "1.0 KB");
+        assert_eq!(fmt_size(1536), "1.5 KB");
+        assert_eq!(fmt_size(5 * 1024 * 1024 * 1024), "5.0 GB");
+        assert!(fmt_size(u64::MAX).ends_with("TB"));
+        assert_eq!(fmt_duration(0), "00:00:00");
+        assert_eq!(fmt_duration(61_000), "00:01:01");
+        assert_eq!(fmt_duration(3_725_000), "01:02:05");
+        assert_eq!(fmt_date(0), "1970-01-01");
+        assert_eq!(fmt_date(951_782_400), "2000-02-29"); // leap day
+        assert_eq!(fmt_date(1_700_000_000), "2023-11-14");
+        assert_eq!(fmt_date(-86_400), "1969-12-31");
+    }
+
+    #[test]
+    fn tabs_parse_case_insensitively_and_unknown_is_none() {
+        assert_eq!(Tab::parse("Videos"), Some(Tab::Videos));
+        assert_eq!(Tab::parse("FAVORITES"), Some(Tab::Favorites));
+        assert_eq!(Tab::parse("nope"), None);
+    }
+
+    #[test]
     fn grid_moves_clamp_at_edges() {
         assert_eq!(move_index(None, 1, 0, 4, 10), Some(0));
         assert_eq!(move_index(Some(0), -1, 0, 4, 10), Some(0));
