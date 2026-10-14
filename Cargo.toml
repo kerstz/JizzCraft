@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["xtask", "crates/core", "crates/media", "crates/ui", "apps/jizzcraft", "apps/jizzcraft-cli"]
+members = ["xtask", "crates/core", "crates/media", "crates/fetch", "crates/ui", "apps/jizzcraft", "apps/jizzcraft-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,8 @@ rust-version = "1.95"
 jizzcraft-core = { path = "crates/core" }
 jizzcraft-media = { path = "crates/media" }
 jizzcraft-ui = { path = "crates/ui" }
+jizzcraft-fetch = { path = "crates/fetch" }
+quick-xml = "0.41"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts"] }
 egui = "0.36"
 egui-wgpu = "0.36"
