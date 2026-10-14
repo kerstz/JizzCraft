@@ -312,6 +312,10 @@ Contributions are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and 
 
 Please report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md), not in public issues.
 
+## Inspiration
+
+The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
+
 ## Parody disclaimer
 
 The name "JizzCraft", the structure of this README and the look of the interface parody the "Craft" family of apps by Crafting Apps (ArtCraft and its siblings). JizzCraft is an independent project and is not affiliated with, endorsed by or connected to the ArtCraft team or Crafting Apps. It contains no code, assets, logos or wordmarks from those projects. Application ID: `org.jizzcraft.JizzCraft`.
