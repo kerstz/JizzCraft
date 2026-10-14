@@ -22,9 +22,9 @@ export XDG_DATA_HOME="$d/data"
 sh "$here/install.sh" --archive "$tarball" --prefix "$p" --no-deps --yes >/dev/null
 
 for f in bin/jizzcraft bin/jizzcraft-cli \
-         share/applications/org.jizzcraft.JizzCraft.desktop \
+         share/applications/io.github.kerstz.JizzCraft.desktop \
          share/applications/local.Viewer.desktop \
-         share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml \
+         share/metainfo/io.github.kerstz.JizzCraft.metainfo.xml \
          share/jizzcraft/gst-packages.tsv; do
     [ -e "$p/$f" ] || die "missing after install: $f"
 done
@@ -37,6 +37,15 @@ set +e
 rc=$?
 set -e
 [ "$rc" = 0 ] || [ "$rc" = 2 ] || die "doctor reported a required problem (exit $rc)"
+
+# Update over an old manifest: a stale file it lists must disappear.
+mkdir -p "$p/share/applications"
+: >"$p/share/applications/legacy-old-id.desktop"
+man="$d/data/jizzcraft/install-manifest"
+printf '%s\n' "$p/share/applications/legacy-old-id.desktop" >>"$man"
+sh "$here/install.sh" --archive "$tarball" --prefix "$p" --no-deps --yes >/dev/null
+[ ! -e "$p/share/applications/legacy-old-id.desktop" ] || die "stale file from old manifest survived the update"
+[ -e "$p/bin/jizzcraft" ] || die "binary missing after update"
 
 sh "$here/install.sh" --uninstall --prefix "$p" --yes >/dev/null
 [ ! -e "$p/bin/jizzcraft" ] || die "binary still there after uninstall"

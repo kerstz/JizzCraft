@@ -28,11 +28,11 @@ mkdir -p %{buildroot}
 cp -a %{_builddir}/stage/. %{buildroot}/
 
 %check
-desktop-file-validate %{buildroot}%{_datadir}/applications/org.jizzcraft.JizzCraft.desktop
-appstream-util validate-relax --nonet %{buildroot}%{_datadir}/metainfo/org.jizzcraft.JizzCraft.metainfo.xml || :
+desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.kerstz.JizzCraft.desktop
+appstream-util validate-relax --nonet %{buildroot}%{_datadir}/metainfo/io.github.kerstz.JizzCraft.metainfo.xml || :
 
 %files
-%license LICENSE-MIT LICENSE-APACHE
+%license %{_datadir}/licenses/jizzcraft
 %doc README.md
 %{_bindir}/jizzcraft
 %{_bindir}/jizzcraft-cli

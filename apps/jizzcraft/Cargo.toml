@@ -53,5 +53,6 @@ assets = [
   ["../../target/stage/usr/share/zsh/site-functions/*", "usr/share/zsh/site-functions/", "644"],
   ["../../target/stage/usr/share/fish/vendor_completions.d/*", "usr/share/fish/vendor_completions.d/", "644"],
   ["../../target/stage/usr/share/jizzcraft/*", "usr/share/jizzcraft/", "644"],
+  ["../../target/stage/usr/share/licenses/jizzcraft/*", "usr/share/licenses/jizzcraft/", "644"],
   ["../../README.md", "usr/share/doc/jizzcraft/README.md", "644"],
 ]

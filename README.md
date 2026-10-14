@@ -1,10 +1,16 @@
+<p align="center"><img src="assets/icons/hicolor/128x128/apps/io.github.kerstz.JizzCraft.png" width="96" alt="JizzCraft peach icon"></p>
+<h1 align="center">JizzCraft</h1>
+<p align="center"><b>A private, offline media library and player for your own adult collection.</b></p>
+<p align="center">Native Rust app for Linux (Windows and macOS experimental). No account, no telemetry, no network in the default build. 18+ only.</p>
 <p align="center">
-  <img src="assets/icons/hicolor/128x128/apps/org.jizzcraft.JizzCraft.png" width="96" alt="JizzCraft peach icon">
+  <img alt="Rust" src="https://img.shields.io/badge/written%20in-Rust-b7410e?style=flat-square">
+  <img alt="Linux" src="https://img.shields.io/badge/tested%20on-Linux-2f7bf5?style=flat-square">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
+  <img alt="Alpha" src="https://img.shields.io/badge/status-alpha-d69e2e?style=flat-square">
 </p>
-
-# JizzCraft
-
-**A private, local-first media library and player for adult content.**
+<p align="center">
+  <a href="#a-look-around">A look around</a> · <a href="#why-jizzcraft">Why JizzCraft</a> · <a href="#downloads">Downloads</a> · <a href="#built-for-agents">For agents</a> · <a href="#privacy-guarantees">Privacy</a> · <a href="#status">Status</a> · <a href="#license-and-credits">License</a>
+</p>
 
 > [!IMPORTANT]
 > **Alpha software (v0.1).** It works and it is tested, but expect rough edges and changes between versions. Linux is the tested platform; Windows and macOS compile but have not been run on real machines yet. Streaming from your own sources (HLS/DASH, resolvers) is new and experimental. Your media is never modified, and the library schema only ever grows through migrations, but keep a backup of anything you cannot replace (`jizzcraft-cli` has a backup command).
@@ -19,11 +25,26 @@ A fast native app for your own images and videos: browse, search, rate, tag and 
 > "100% Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
 
 > [!WARNING]
-> **18+ only.** JizzCraft is intended for adults managing media they own or are entitled to keep. It ships no media, downloads nothing and opens no network connections. All test data, fixtures and screenshots in this repository are synthetic and safe for work.
-
-![JizzCraft library grid](docs/screenshots/library.png)
+> **18+ only.** JizzCraft is intended for adults managing media they own or are entitled to keep. It ships no media. The default build downloads nothing and opens no network connections. All test data, fixtures and screenshots in this repository are synthetic and safe for work.
 
 The claims below are checked by tests: the default build links no network code, and your files are only ever read.
+
+> "Written in Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
+
+## A look around
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/library.png" alt="Library grid with the sidebar and inspector, showing synthetic test media" width="100%"></td>
+    <td width="50%"><img src="docs/screenshots/player.png" alt="Video player with timeline, markers and player bar" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/discreet.png" alt="Discreet mode: neutral window title, blurred thumbnails, hidden file names" width="100%"></td>
+    <td width="50%"><img src="docs/screenshots/triage.png" alt="Inbox triage: reviewing a new import with keep, hide, favorite and undo" width="100%"></td>
+  </tr>
+</table>
+
+Screenshots are rendered by the app itself (`cargo xtask screenshots`) from synthetic media.
 
 ## Why JizzCraft
 
@@ -33,6 +54,105 @@ The claims below are checked by tests: the default build links no network code, 
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
 - 🔒 **Private by default.** No account, no telemetry, and the default build makes no network connections: GStreamer's network-capable elements are switched off inside the app, so even a streaming playlist renamed to `.mp4` is refused, not fetched. A boss key, a discreet mode and a screen-share-safe mode are built in.
 - 🤖 **Agent-ready.** One registry of named commands drives the menus, the shortcuts and a JSON CLI.
+
+## Downloads
+
+**Linux, one command** (per-user, no root except for your distribution's GStreamer packages, which it asks before installing):
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh
+```
+
+It checks the SHA-256 of what it downloads, installs under `~/.local`, runs `jizzcraft-cli doctor` at the end and tells you exactly what is missing and how to fix it. Re-run it to update; `install.sh --uninstall` removes what it installed and nothing else (your library, settings and thumbnails are never touched). Options: `--with-network`, `--prefix DIR`, `--version X.Y.Z`, `--from-source`, `--no-deps`, `--yes`, `--dry-run`, `--help`.
+
+| Platform | Install | Update | Uninstall |
+| --- | --- | --- | --- |
+| Any Linux | the one-liner above | run it again | `install.sh --uninstall` |
+| Debian / Ubuntu / Mint | `sudo apt install ./jizzcraft_*.deb` from the release page | install the new `.deb` | `sudo apt remove jizzcraft` |
+| Arch / CachyOS / Manjaro | `makepkg -si` in `packaging/arch/jizzcraft` (not on the AUR yet) | pull, run it again | `sudo pacman -Rns jizzcraft` |
+| Fedora / openSUSE | build with `packaging/fedora/jizzcraft.spec` (no prebuilt rpm yet) | rebuild | `sudo dnf remove jizzcraft` |
+| Flatpak, AppImage | recipes in `packaging/`, not built or published yet | n/a | n/a |
+| Windows 10/11 | portable zip and installer on the release page (**experimental**, never run on real hardware) | download the new one | uninstaller, or delete the folder |
+| macOS | build from source (no bundle is published) | n/a | n/a |
+
+Honest status: the `install.sh` flow, the `.deb` contents, the staging tree, the desktop and AppStream files and `doctor` are exercised on Arch/CachyOS and by the CI job *install*. The Arch, RPM, Flatpak and AppImage recipes are written against the same staging tree (`cargo xtask dist`) but are not built by CI yet; Windows and macOS have never run on a real machine (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md).
+
+### Something does not play?
+
+```sh
+jizzcraft-cli doctor        # or: jizzcraft --doctor
+```
+
+It lists which GStreamer pieces are present (H.264, HEVC, AV1, VP9, AAC, Opus, hardware decoding), checks that the data, config and cache folders are writable, and prints the one command that fixes what is missing for your distribution. Exit status: 0 fine, 1 something required is missing, 2 only codecs are missing. The app never runs `sudo` itself.
+
+### Verify a download
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+gh attestation verify jizzcraft-*-linux.tar.xz --repo kerstz/JizzCraft   # build provenance
+```
+
+### Hide the launcher entry
+
+Copy `/usr/share/applications/io.github.kerstz.JizzCraft.desktop` to `~/.local/share/applications/` and add `Hidden=true`. The neutral "Viewer" entry (`local.Viewer.desktop`) starts the same program disguised.
+
+The release workflow (`.github/workflows/release.yml`) builds the Linux artifacts on tags, using the oldest supported runner so the binaries run on Debian 12 and newer.
+
+## Quick start
+
+Building from source.
+
+Rust 1.95 or newer (the minimum of egui 0.36; developed with 1.98), GStreamer with development headers, and a GPU driver: Vulkan is the tested backend (wgpu's OpenGL ES fallback is compiled in but untested).
+
+### Dependencies (Arch / CachyOS)
+
+```sh
+sudo pacman -S --needed rust gstreamer gst-plugins-base gst-plugins-good \
+  gst-plugins-bad gst-plugins-ugly gst-libav vulkan-icd-loader \
+  xdg-desktop-portal xdg-desktop-portal-gtk
+# plus a Vulkan driver for your GPU, e.g. vulkan-radeon, vulkan-intel or nvidia-utils
+```
+
+### Dependencies (Debian / Ubuntu, Fedora)
+
+```sh
+# Debian / Ubuntu (the CI job uses this list)
+sudo apt install build-essential pkg-config libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav libvulkan1 mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk
+
+# Fedora (untested; H.264 needs RPM Fusion's gstreamer1-libav)
+sudo dnf install gcc pkgconf-pkg-config gstreamer1-devel gstreamer1-plugins-base-devel \
+  gstreamer1-plugins-base-tools gstreamer1-plugins-good gstreamer1-plugins-bad-free \
+  gstreamer1-plugins-ugly-free vulkan-loader mesa-vulkan-drivers \
+  xdg-desktop-portal xdg-desktop-portal-gtk
+```
+
+### Build and run
+
+```sh
+git clone <this repository> && cd JizzCraft
+cargo run --release -p jizzcraft
+```
+
+### Try it on safe, synthetic media
+
+```sh
+cargo xtask fixtures          # gradients, patterns and short test videos in ./fixtures
+cargo run --release -p jizzcraft -- --import fixtures
+```
+
+### Development
+
+```sh
+cargo fmt
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo xtask icons             # rasterize the SVG icons with resvg
+cargo xtask screenshots       # render README images through the app itself
+```
 
 ## One hand is enough
 
@@ -156,7 +276,7 @@ See [`AGENTS.md`](AGENTS.md) for the conventions agents (and humans) should foll
 ```
 crates/core    model, SQLite (versioned schema + migrations), scan, command registry
 crates/media   thumbnails, codec probing, GStreamer player
-crates/ui      egui app: Craft theme, grid, viewer, player, inspector
+crates/ui      egui app: theme, grid, viewer, player, inspector
 apps/jizzcraft       desktop app (eframe + wgpu)
 apps/jizzcraft-cli   CLI on the same registry (`run <command>` reaches all of it)
 xtask          fixtures, icons, README screenshots
@@ -169,108 +289,11 @@ xtask          fixtures, icons, README screenshots
 - **No async runtime.** `std::thread` and channels. Plumbing, not wizardry.
 - **Performance, measured.** `jizzcraft --bench <file> --seconds 30 --bench-gst-play`. Results in [`docs/bench.md`](docs/bench.md): no dropped frames on 1080p30, 1080p60 and 4K30 H.264, **but 3 to 6 times the CPU of `gst-play-1.0`** because the MVP does RGBA conversion on the CPU. A YUV→RGB shader is on the [roadmap](ROADMAP.md).
 
-## Install
-
-**Linux, one command** (per-user, no root except for your distribution's GStreamer packages, which it asks before installing):
-
-```sh
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh
-```
-
-It checks the SHA-256 of what it downloads, installs under `~/.local`, runs `jizzcraft-cli doctor` at the end and tells you exactly what is missing and how to fix it. Re-run it to update; `install.sh --uninstall` removes what it installed and nothing else (your library, settings and thumbnails are never touched). Options: `--with-network`, `--prefix DIR`, `--version X.Y.Z`, `--from-source`, `--no-deps`, `--yes`, `--dry-run`, `--help`.
-
-| Platform | Install | Update | Uninstall |
-| --- | --- | --- | --- |
-| Any Linux | the one-liner above | run it again | `install.sh --uninstall` |
-| Debian / Ubuntu / Mint | `sudo apt install ./jizzcraft_*.deb` from the release page | install the new `.deb` | `sudo apt remove jizzcraft` |
-| Arch / CachyOS / Manjaro | `makepkg -si` in `packaging/arch/jizzcraft` (not on the AUR yet) | pull, run it again | `sudo pacman -Rns jizzcraft` |
-| Fedora / openSUSE | build with `packaging/fedora/jizzcraft.spec` (no prebuilt rpm yet) | rebuild | `sudo dnf remove jizzcraft` |
-| Flatpak, AppImage | recipes in `packaging/`, not built or published yet | n/a | n/a |
-| Windows 10/11 | portable zip and installer on the release page (**experimental**, never run on real hardware) | download the new one | uninstaller, or delete the folder |
-| macOS | build from source (no bundle is published) | n/a | n/a |
-
-Honest status: the `install.sh` flow, the `.deb` contents, the staging tree, the desktop and AppStream files and `doctor` are exercised on Arch/CachyOS and by the CI job *install*. The Arch, RPM, Flatpak and AppImage recipes are written against the same staging tree (`cargo xtask dist`) but are not built by CI yet; Windows and macOS have never run on a real machine (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md).
-
-### Something does not play?
-
-```sh
-jizzcraft-cli doctor        # or: jizzcraft --doctor
-```
-
-It lists which GStreamer pieces are present (H.264, HEVC, AV1, VP9, AAC, Opus, hardware decoding), checks that the data, config and cache folders are writable, and prints the one command that fixes what is missing for your distribution. Exit status: 0 fine, 1 something required is missing, 2 only codecs are missing. The app never runs `sudo` itself.
-
-### Verify a download
-
-```sh
-sha256sum -c --ignore-missing SHA256SUMS
-gh attestation verify jizzcraft-*-linux.tar.xz --repo kerstz/JizzCraft   # build provenance
-```
-
-### Hide the launcher entry
-
-Copy `/usr/share/applications/org.jizzcraft.JizzCraft.desktop` to `~/.local/share/applications/` and add `Hidden=true`. The neutral "Viewer" entry (`local.Viewer.desktop`) starts the same program disguised.
-
-The release workflow (`.github/workflows/release.yml`) builds the Linux artifacts on tags, using the oldest supported runner so the binaries run on Debian 12 and newer.
-
 ## Languages and playful messages
 
 The interface is available in English, French, Spanish, German, Italian and Portuguese. It follows your system locale; change it any time from the *Library* menu, or start with `--lang fr`. Only the interface is translated: file names, your data and the CLI's JSON are left alone.
 
 A few playful one-liners show up in empty states, toasts and the player. They are on by default, can be switched off from the *Library* menu (*Playful messages*), and are **always off** in discreet mode, share-safe mode and the disguised launch, so nothing cheeky appears on a shared screen.
-
-## Get started
-
-Rust 1.95 or newer (the minimum of egui 0.36; developed with 1.98), GStreamer with development headers, and a GPU driver: Vulkan is the tested backend (wgpu's OpenGL ES fallback is compiled in but untested).
-
-### Dependencies (Arch / CachyOS)
-
-```sh
-sudo pacman -S --needed rust gstreamer gst-plugins-base gst-plugins-good \
-  gst-plugins-bad gst-plugins-ugly gst-libav vulkan-icd-loader \
-  xdg-desktop-portal xdg-desktop-portal-gtk
-# plus a Vulkan driver for your GPU, e.g. vulkan-radeon, vulkan-intel or nvidia-utils
-```
-
-### Dependencies (Debian / Ubuntu, Fedora)
-
-```sh
-# Debian / Ubuntu (the CI job uses this list)
-sudo apt install build-essential pkg-config libgstreamer1.0-dev \
-  libgstreamer-plugins-base1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-  gstreamer1.0-libav libvulkan1 mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk
-
-# Fedora (untested; H.264 needs RPM Fusion's gstreamer1-libav)
-sudo dnf install gcc pkgconf-pkg-config gstreamer1-devel gstreamer1-plugins-base-devel \
-  gstreamer1-plugins-base-tools gstreamer1-plugins-good gstreamer1-plugins-bad-free \
-  gstreamer1-plugins-ugly-free vulkan-loader mesa-vulkan-drivers \
-  xdg-desktop-portal xdg-desktop-portal-gtk
-```
-
-### Build and run
-
-```sh
-git clone <this repository> && cd JizzCraft
-cargo run --release -p jizzcraft
-```
-
-### Try it on safe, synthetic media
-
-```sh
-cargo xtask fixtures          # gradients, patterns and short test videos in ./fixtures
-cargo run --release -p jizzcraft -- --import fixtures
-```
-
-### Development
-
-```sh
-cargo fmt
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo xtask icons             # rasterize the SVG icons with resvg
-cargo xtask screenshots       # render README images through the app itself
-```
 
 ## Supported formats
 
@@ -303,11 +326,12 @@ cargo xtask screenshots       # render README images through the app itself
 > **Only checked through commands and screenshots, not by hand**: mouse wheel zoom, drag-panning, timeline dragging, keyboard shortcuts, fullscreen, boss-key minimize behaviour under different compositors, the native folder dialog, the sidebar, triage, the player bar chips, autoplay-next, slideshow.
 >
 > **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only (Windows and macOS builds exist but have not been run).
+>
+> **Streaming scope (network build only, experimental)**: direct video addresses, HLS and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Not supported: live streams, separate audio and video tracks, DRM, subtitles, saving a stream to disk as a feature.
 
 ## Privacy guarantees
 
-
-- No accounts, telemetry, analytics, cloud sync or ads. The default build makes no network connections (the optional `network` build is described above). The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
+- No accounts, telemetry, analytics, cloud sync or ads. The default build makes no network connections (the optional `network` build is described below). The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
 - No scraping and no external feeds. The optional network build has a BitTorrent client and user-configured Torznab indexers; the default build contains no network code at all.
 - Your media is never modified, moved or deleted. Thumbnails and previews are written to the XDG cache directory (or the portable home) only.
 - No shell commands are ever built from file names. Paths are passed as arguments to APIs.
@@ -316,14 +340,6 @@ cargo xtask screenshots       # render README images through the app itself
 - Watch history can be paused, cleared (and truncated out of the WAL file) or hidden in the UI; the boss key hides it too.
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
 - The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are not encrypted (an encrypted vault is on the roadmap).
-
-## Contributing and security
-
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). Report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
-
-## Inspiration
-
-The idea started in a discussion thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/). Its remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. No content from the thread is reproduced here.
 
 ## Optional network build
 
@@ -345,12 +361,22 @@ cargo build --release -p jizzcraft-cli --features network
 - **What it exposes.** Your IP is visible to the indexers you configure and to BitTorrent peers. What you search for and download is your responsibility.
 - **Verified by tests.** The default dependency tree is checked to contain no network crate. The network build is tested against a local mock indexer and a two-session swarm on 127.0.0.1, including reading the tail of a file before the download is complete. The stream player is tested with a throttled reader (buffering, seeks into missing regions, rapid seeks, junk bytes), and a playlist pushed through it is refused with zero connections.
 
-## Parody disclaimer
+## Roadmap
 
-The name "JizzCraft", the structure of this README and the look of the interface parody the "Craft" family of apps by Crafting Apps (ArtCraft and its siblings). JizzCraft is an independent project and is not affiliated with, endorsed by or connected to the ArtCraft team or Crafting Apps. It contains no code, assets, logos or wordmarks from those projects. Application ID: `org.jizzcraft.JizzCraft`.
+- Reachability: buttons and shortcuts for what is only a command today (triage, random pick, slideshow, frame step, markers).
+- Player and library: YUV to RGB in a shader, subtitles and audio tracks, tags and full-text search, multi-select, encrypted vault, sandboxed decoding.
+- Distribution and validation: Flatpak, AppImage, and real-hardware runs on Windows and macOS.
 
-The resemblance is intentional; the endorsement is not. If the name made you wince, the disclaimer is working as designed.
+The full list, including what is explicitly not planned, is in [`ROADMAP.md`](ROADMAP.md).
 
-## Independence
+## Contributing and security
 
-JizzCraft is an independent project. It is not affiliated with, endorsed by or connected to any other software product or company. The code, assets, icons, logos and wordmark are this project's own. App ID: `org.jizzcraft.JizzCraft`.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md) and the [code of conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md); legal and trademark requests are covered in [`LEGAL.md`](LEGAL.md).
+
+## License and credits
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Third-party notices: [`NOTICE`](NOTICE) and [`ATTRIBUTION.md`](ATTRIBUTION.md); release archives also carry a `THIRD-PARTY.html`.
+
+**Inspiration.** The idea started in a discussion thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/). Its remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. No content from the thread is reproduced here.
+
+<sub>JizzCraft is an independent project, not affiliated with, sponsored or endorsed by ArtCraft, Crafting Apps or any other product or company. All code, icons and screenshots are its own; screenshots are synthetic.</sub>

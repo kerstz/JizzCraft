@@ -5,7 +5,7 @@
 #   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
 # Codecs: H.264/HEVC come from the Freedesktop codecs extension, which the
 # runtime offers; `jizzcraft --doctor` tells the user when it is missing.
-app-id: org.jizzcraft.JizzCraft
+app-id: io.github.kerstz.JizzCraft
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk

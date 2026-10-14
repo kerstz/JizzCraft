@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 #[cfg(feature = "network")]
 mod downloads;
 mod sidebar;
+#[cfg(feature = "network")]
+mod stream_open;
 mod tools;
 
 use std::collections::{HashMap, HashSet};

@@ -2,8 +2,8 @@
 
 ## Reporting a vulnerability
 
-Please **do not open a public issue**. Use GitHub's private vulnerability
-reporting instead:
+Please **do not open a public issue**. Open a private security advisory on
+GitHub instead (this is the only private channel for now):
 [Report a vulnerability](https://github.com/kerstz/JizzCraft/security/advisories/new).
 
 Include what you found, how to reproduce it (with synthetic media only), and
@@ -12,8 +12,10 @@ a small volunteer project, so there is no guaranteed response time.
 
 ## Supported versions
 
-JizzCraft is early alpha. Only the latest commit on `main` receives fixes.
-Older commits receive our thoughts.
+JizzCraft is early alpha. Only the latest release and `main` receive fixes.
+Older versions receive our thoughts.
+
+For legal, trademark or content requests, see [`LEGAL.md`](LEGAL.md).
 
 ## Scope
 

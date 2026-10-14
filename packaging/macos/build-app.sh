@@ -15,8 +15,8 @@ cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
 # One more icon format; the collection is nearly complete.
 if command -v iconutil >/dev/null 2>&1; then
   I=$(mktemp -d)/JizzCraft.iconset; mkdir -p "$I"
-  sips -z 256 256 assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png --out "$I/icon_256x256.png" >/dev/null
-  sips -z 128 128 assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png --out "$I/icon_128x128.png" >/dev/null
+  sips -z 256 256 assets/icons/hicolor/256x256/apps/io.github.kerstz.JizzCraft.png --out "$I/icon_256x256.png" >/dev/null
+  sips -z 128 128 assets/icons/hicolor/256x256/apps/io.github.kerstz.JizzCraft.png --out "$I/icon_128x128.png" >/dev/null
   iconutil -c icns "$I" -o "$APP/Contents/Resources/JizzCraft.icns"
 fi
 codesign --force --deep --sign "${MACOS_SIGN_IDENTITY:--}" "$APP"

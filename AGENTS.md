@@ -101,9 +101,9 @@ Add behaviour as a command first, UI second.
   non-zero delay (see `open_player`).
 - Do not reuse code, assets, logos or wordmarks from ArtCraft / PhotoCraft.
 
-## Visual language
+## House look
 
-Craft look (tokens in `crates/ui/src/theme.rs`, widgets in `widgets.rs`): flat
+House look (tokens in `crates/ui/src/theme.rs`, widgets in `widgets.rs`): flat
 surfaces, 0 px radius, hairlines in translucent warm white, Archivo for display,
 Inter for body, JetBrains Mono for tracked uppercase labels and numbers, inverted
 white primary button, own app colour `APP` (peach). Tiles and cells share 1 px

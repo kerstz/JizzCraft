@@ -4,7 +4,7 @@
 <dict>
   <key>CFBundleName</key><string>JizzCraft</string>
   <key>CFBundleDisplayName</key><string>JizzCraft</string>
-  <key>CFBundleIdentifier</key><string>org.jizzcraft.JizzCraft</string>
+  <key>CFBundleIdentifier</key><string>io.github.kerstz.JizzCraft</string>
   <key>CFBundleVersion</key><string>0.1.0</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleExecutable</key><string>jizzcraft</string>

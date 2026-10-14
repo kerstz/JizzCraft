@@ -215,6 +215,17 @@ install_tree() {
         grep -E '^(bin/|share/(applications/local\.Viewer|icons/.*/local\.Viewer|man/|bash-completion/|zsh/|fish/))' "$list" >"$list.d" || true
         mv "$list.d" "$list"
     fi
+    # Update over an older install: drop files the old manifest listed that
+    # this version no longer ships (renamed desktop entries, icons...).
+    if [ -f "$man" ]; then
+        sed "s|^|$PREFIX/|" "$list" | sort >"$list.new"
+        grep -v '^[a-z]*=' "$man" | sort >"$list.old" || true
+        comm -23 "$list.old" "$list.new" | while IFS= read -r f; do
+            case "$f" in
+                /*) rm -f "$f" ;;
+            esac
+        done
+    fi
     {
         say "version=$VERSION_INSTALLED"
         say "prefix=$PREFIX"
@@ -358,8 +369,8 @@ main() {
     install_tree "$ROOT"
 
     if [ "$SET_MAGNET" = 1 ]; then
-        if [ -f "$PREFIX/share/applications/org.jizzcraft.JizzCraft-magnet.desktop" ]; then
-            run xdg-mime default org.jizzcraft.JizzCraft-magnet.desktop x-scheme-handler/magnet
+        if [ -f "$PREFIX/share/applications/io.github.kerstz.JizzCraft-magnet.desktop" ]; then
+            run xdg-mime default io.github.kerstz.JizzCraft-magnet.desktop x-scheme-handler/magnet
         else
             warn "this build has no magnet handler (use --with-network)"
         fi

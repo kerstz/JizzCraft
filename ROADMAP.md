@@ -5,7 +5,13 @@ ratings, hide, resume and history, markers, A-B loop, speed and frame step,
 scrub previews, views and folder tree, triage, fingerprint relink, integrity
 check, backup and metadata export, portable mode, age gate, boss key, discreet
 mode, CLI, network guard for GStreamer. Opt-in `network` build: BitTorrent
-client (librqbit) and user-configured Torznab indexers (Jackett, Prowlarr).
+client (librqbit), user-configured Torznab indexers (Jackett, Prowlarr), and
+streaming from sources you configure: direct video addresses, HLS and DASH on
+demand, resolvers, a quality chip and a buffered-ahead band on the timeline.
+
+Not done yet: live streams, separate audio and video tracks, subtitles,
+saving a stream as a feature, tags and full-text search, multi-select, the
+encrypted vault, and validation on real Windows and macOS machines.
 
 ## Next milestones (explicitly out of scope until the MVP is solid)
 
