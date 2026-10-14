@@ -4,7 +4,7 @@
 //! closed (a trap listener sees nothing), and that `require_proxy` without a
 //! proxy connects to nothing. Loopback only, synthetic data only.
 #![cfg(feature = "network")]
-
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_fetch::config::{FetchConfig, Indexer};
 use jizzcraft_fetch::resolver::ResolverDef;
 use jizzcraft_fetch::secret::Secret;
@@ -465,6 +465,7 @@ fn a_dead_proxy_fails_closed() {
     fail_closed(Mode::Serve, true);
 }
 
+#[cfg(unix)]
 #[test]
 fn require_proxy_without_proxy_connects_to_nothing() {
     let _g = serial();

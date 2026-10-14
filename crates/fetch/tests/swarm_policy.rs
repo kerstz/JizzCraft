@@ -1,6 +1,7 @@
 //! Policy that needs no socket: the network truth table and the config file
 //! rules (corrupt file set aside, mode 0600, resume default).
 
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_fetch::config::{FetchConfig, ResumeOnStart};
 use jizzcraft_fetch::secret::Secret;
 

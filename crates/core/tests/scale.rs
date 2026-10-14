@@ -1,4 +1,5 @@
 //! Scan as a job at scale: batching, progress, cancellation, hostile trees.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 use jizzcraft_core::scan::{ScanControl, scan_folder, scan_folder_with};
 use jizzcraft_core::{Db, Filter};
 use std::path::Path;
