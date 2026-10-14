@@ -3073,3 +3073,27 @@ mod tests {
         assert_eq!(fmt_date(1_760_000_000), "2025-10-09");
     }
 }
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::*;
+
+    /// Every command a key is bound to must exist in the registry the app uses.
+    #[test]
+    fn every_bound_command_is_registered() {
+        let mut reg: Registry<JizzApp> = Registry::new();
+        register_core::<JizzApp>(&mut reg);
+        register_ui_commands(&mut reg);
+        tools::register_tool_commands(&mut reg);
+        let missing: Vec<_> = crate::keys::KEYMAP
+            .iter()
+            .chain(crate::keys::TRIAGE_KEYMAP.iter())
+            .filter(|b| !reg.has(b.cmd))
+            .map(|b| (b.keys, b.cmd))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "keys bound to unknown commands: {missing:?}"
+        );
+    }
+}
