@@ -18,7 +18,13 @@ fn main() -> ExitCode {
         }
         Some("icons") => icons(),
         Some("screenshots") => screenshots(),
-        _ => Err("usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots".into()),
+        Some("dist") => dist(args.collect()),
+        Some("check-packaging") => check_packaging(),
+        _ => Err(
+            "usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots | dist [--network] \
+             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging"
+                .into(),
+        ),
     };
     match res {
         Ok(()) => ExitCode::SUCCESS,
@@ -333,7 +339,7 @@ fn icons() -> Result<(), String> {
     const SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
     let jobs = [
         ("assets/icons/jizzcraft.svg", "org.jizzcraft.JizzCraft"),
-        ("assets/icons/viewer.svg", "org.jizzcraft.JizzCraft.viewer"),
+        ("assets/icons/viewer.svg", "local.Viewer"),
     ];
     for (svg, name) in jobs {
         let data = std::fs::read(svg).map_err(|e| format!("{svg}: {e}"))?;
@@ -353,15 +359,47 @@ fn icons() -> Result<(), String> {
                 .save_png(dir.join(format!("{name}.png")))
                 .map_err(|e| e.to_string())?;
         }
-        println!("icons: {name} ({} sizes)", SIZES.len());
+        // Scalable copy for desktops that prefer it.
+        let sc = PathBuf::from("assets/icons/hicolor/scalable/apps");
+        std::fs::create_dir_all(&sc).map_err(|e| e.to_string())?;
+        std::fs::write(sc.join(format!("{name}.svg")), &data).map_err(|e| e.to_string())?;
+        println!("icons: {name} ({} sizes + scalable)", SIZES.len());
+    }
+    // Windows .ico files: PNG-compressed entries, 16 to 256 px.
+    for (name, out) in [
+        ("org.jizzcraft.JizzCraft", "assets/icons/jizzcraft.ico"),
+        ("local.Viewer", "assets/icons/viewer.ico"),
+    ] {
+        let sizes = [16u32, 32, 48, 64, 128, 256];
+        let mut pngs = Vec::new();
+        for s in sizes {
+            pngs.push(
+                std::fs::read(format!("assets/icons/hicolor/{s}x{s}/apps/{name}.png"))
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        let mut ico = Vec::new();
+        ico.extend_from_slice(&[0, 0, 1, 0]);
+        ico.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * sizes.len() as u32;
+        for (s, png) in sizes.iter().zip(&pngs) {
+            let dim = if *s >= 256 { 0u8 } else { *s as u8 };
+            ico.extend_from_slice(&[dim, dim, 0, 0, 1, 0, 32, 0]);
+            ico.extend_from_slice(&(png.len() as u32).to_le_bytes());
+            ico.extend_from_slice(&offset.to_le_bytes());
+            offset += png.len() as u32;
+        }
+        for png in &pngs {
+            ico.extend_from_slice(png);
+        }
+        std::fs::write(out, ico).map_err(|e| e.to_string())?;
     }
     // Embedded in the binary (window + empty state).
     let peach = std::fs::read("assets/icons/hicolor/512x512/apps/org.jizzcraft.JizzCraft.png")
         .map_err(|e| e.to_string())?;
     std::fs::write("assets/icons/jizzcraft-512.png", peach).map_err(|e| e.to_string())?;
-    let viewer =
-        std::fs::read("assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.viewer.png")
-            .map_err(|e| e.to_string())?;
+    let viewer = std::fs::read("assets/icons/hicolor/256x256/apps/local.Viewer.png")
+        .map_err(|e| e.to_string())?;
     std::fs::write("assets/icons/viewer-256.png", viewer).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -499,4 +537,214 @@ fn screenshots() -> Result<(), String> {
         println!("screenshot: {}", s.file);
     }
     Ok(())
+}
+
+/// The one staging tree every package is made from. Layout follows the FHS:
+/// `DESTDIR/PREFIX/{bin,share/...}`.
+fn dist(args: Vec<String>) -> Result<(), String> {
+    let (mut network, mut no_build, mut tarball) = (false, false, false);
+    let (mut prefix, mut destdir) = ("/usr".to_owned(), PathBuf::from("target/stage"));
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--network" => network = true,
+            "--no-build" => no_build = true,
+            "--tarball" => tarball = true,
+            "--prefix" => prefix = it.next().ok_or("--prefix needs a value")?,
+            "--destdir" => {
+                destdir = it
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or("--destdir needs a value")?
+            }
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    if !no_build {
+        let mut c = Command::new("cargo");
+        c.args([
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "jizzcraft",
+            "-p",
+            "jizzcraft-cli",
+        ]);
+        if network {
+            c.args(["--features", "jizzcraft/network,jizzcraft-cli/network"]);
+        }
+        if !c.status().map_err(|e| e.to_string())?.success() {
+            return Err("build failed".into());
+        }
+    }
+    let root = destdir.join(prefix.trim_start_matches('/'));
+    let put = |from: &str, to: &str, mode: u32| -> Result<(), String> {
+        let dst = root.join(to);
+        std::fs::create_dir_all(dst.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
+        std::fs::copy(from, &dst).map_err(|e| format!("{from}: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = mode;
+        Ok(())
+    };
+    put("target/release/jizzcraft", "bin/jizzcraft", 0o755)?;
+    put("target/release/jizzcraft-cli", "bin/jizzcraft-cli", 0o755)?;
+    for d in ["org.jizzcraft.JizzCraft.desktop", "local.Viewer.desktop"] {
+        put(
+            &format!("assets/{d}"),
+            &format!("share/applications/{d}"),
+            0o644,
+        )?;
+    }
+    if network {
+        put(
+            "assets/org.jizzcraft.JizzCraft-magnet.desktop",
+            "share/applications/org.jizzcraft.JizzCraft-magnet.desktop",
+            0o644,
+        )?;
+    }
+    put(
+        "assets/org.jizzcraft.JizzCraft.metainfo.xml",
+        "share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml",
+        0o644,
+    )?;
+    for size in [
+        "16x16", "24x24", "32x32", "48x48", "64x64", "128x128", "256x256", "512x512",
+    ] {
+        for n in ["org.jizzcraft.JizzCraft", "local.Viewer"] {
+            put(
+                &format!("assets/icons/hicolor/{size}/apps/{n}.png"),
+                &format!("share/icons/hicolor/{size}/apps/{n}.png"),
+                0o644,
+            )?;
+        }
+    }
+    for n in ["org.jizzcraft.JizzCraft", "local.Viewer"] {
+        put(
+            &format!("assets/icons/hicolor/scalable/apps/{n}.svg"),
+            &format!("share/icons/hicolor/scalable/apps/{n}.svg"),
+            0o644,
+        )?;
+    }
+    put(
+        "assets/gst-packages.tsv",
+        "share/jizzcraft/gst-packages.tsv",
+        0o644,
+    )?;
+    put("README.md", "share/doc/jizzcraft/README.md", 0o644)?;
+    for l in ["LICENSE-MIT", "LICENSE-APACHE"] {
+        if Path::new(l).exists() {
+            put(l, &format!("share/licenses/jizzcraft/{l}"), 0o644)?;
+        }
+    }
+    // Man page and completions come from the CLI itself.
+    let cli = "target/release/jizzcraft-cli";
+    let gen_out = |args: &[&str]| -> Result<Vec<u8>, String> {
+        let o = Command::new(cli)
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !o.status.success() {
+            return Err(format!("{cli} {args:?} failed"));
+        }
+        Ok(o.stdout)
+    };
+    let write = |rel: &str, bytes: &[u8]| -> Result<(), String> {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
+        std::fs::write(p, bytes).map_err(|e| e.to_string())
+    };
+    write("share/man/man1/jizzcraft-cli.1", &gen_out(&["gen", "man"])?)?;
+    for (shell, rel) in [
+        ("bash", "share/bash-completion/completions/jizzcraft-cli"),
+        ("zsh", "share/zsh/site-functions/_jizzcraft-cli"),
+        ("fish", "share/fish/vendor_completions.d/jizzcraft-cli.fish"),
+    ] {
+        write(rel, &gen_out(&["gen", "completions", shell])?)?;
+    }
+    // The desktop app has a short hand-written page.
+    put("assets/jizzcraft.1", "share/man/man1/jizzcraft.1", 0o644)?;
+    println!("dist: staged in {}", destdir.display());
+    if tarball {
+        let ver = env!("CARGO_PKG_VERSION");
+        let arch = std::env::consts::ARCH;
+        let name = format!(
+            "jizzcraft{}-{ver}-{arch}-linux",
+            if network { "-network" } else { "" }
+        );
+        std::fs::create_dir_all("dist").map_err(|e| e.to_string())?;
+        let top = PathBuf::from("target/tarball").join(&name);
+        let _ = std::fs::remove_dir_all(&top);
+        std::fs::create_dir_all(top.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
+        let st = Command::new("cp")
+            .arg("-a")
+            .arg(&root)
+            .arg(&top)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err("cp failed".into());
+        }
+        let st = Command::new("tar")
+            .args(["-C", "target/tarball", "-cJf"])
+            .arg(format!("dist/{name}.tar.xz"))
+            .arg(&name)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err("tar failed".into());
+        }
+        println!("dist: dist/{name}.tar.xz");
+    }
+    Ok(())
+}
+
+/// Packaging files must agree with each other: every file `dist` stages is
+/// listed by the deb metadata, and the Arch and Fedora recipes call `dist`.
+fn check_packaging() -> Result<(), String> {
+    let read = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"));
+    let deb = read("apps/jizzcraft/Cargo.toml")?;
+    let mut missing = Vec::new();
+    for needle in [
+        "stage/usr/bin/jizzcraft-cli",
+        "share/applications/*.desktop",
+        "share/metainfo/*.xml",
+        "share/man/man1/*",
+        "bash-completion/completions/*",
+        "zsh/site-functions/*",
+        "fish/vendor_completions.d/*",
+        "share/jizzcraft/*",
+    ] {
+        if !deb.contains(needle) {
+            missing.push(format!("deb metadata lacks {needle}"));
+        }
+    }
+    for f in [
+        "packaging/arch/jizzcraft/PKGBUILD",
+        "packaging/fedora/jizzcraft.spec",
+    ] {
+        if !read(f)?.contains("xtask") {
+            missing.push(format!("{f} does not stage with `cargo xtask dist`"));
+        }
+    }
+    for a in [
+        "assets/gst-packages.tsv",
+        "assets/jizzcraft.1",
+        "assets/icons/hicolor/scalable/apps/local.Viewer.svg",
+    ] {
+        if !Path::new(a).exists() {
+            missing.push(format!("missing {a}"));
+        }
+    }
+    if missing.is_empty() {
+        println!("check-packaging: ok");
+        Ok(())
+    } else {
+        Err(missing.join("\n"))
+    }
 }

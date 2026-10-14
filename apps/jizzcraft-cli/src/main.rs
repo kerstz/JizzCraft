@@ -53,6 +53,40 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[derive(Subcommand)]
+enum GenWhat {
+    /// Print completions for a shell.
+    Completions { shell: clap_complete::Shell },
+    /// Print the man page.
+    Man,
+}
+
+/// `doctor`: human report or JSON, exit 0 fine, 1 required missing, 2 codecs.
+fn doctor(json: bool) -> ExitCode {
+    jizzcraft_media::prepare_bundled_env();
+    let r = jizzcraft_media::doctor::run();
+    let fix = r.fix();
+    if json {
+        let checks: Vec<Value> = r
+            .checks
+            .iter()
+            .map(|c| json!({ "id": c.id, "group": c.group, "label": c.label, "ok": c.ok, "element": c.element }))
+            .collect();
+        let dirs: Vec<Value> = r
+            .dirs_ok
+            .iter()
+            .map(|(n, ok)| json!({ "dir": n, "writable": ok }))
+            .collect();
+        println!(
+            "{}",
+            json!({ "checks": checks, "dirs": dirs, "fix": fix, "exit": r.exit_code() })
+        );
+    } else {
+        print!("{}", r.render_text());
+    }
+    ExitCode::from(r.exit_code())
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum TypeArg {
     Image,
@@ -61,6 +95,14 @@ enum TypeArg {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Check that this machine can play things, and say how to fix it.
+    Doctor,
+    /// Generate shell completions or the man page (for packagers).
+    #[command(hide = true)]
+    Gen {
+        #[command(subcommand)]
+        what: GenWhat,
+    },
     /// Import a folder and index it recursively.
     Scan { dir: PathBuf },
     /// Rescan every imported folder.
@@ -205,6 +247,28 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    match &cli.cmd {
+        Cmd::Doctor => return doctor(cli.json),
+        Cmd::Gen { what } => {
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            match what {
+                GenWhat::Completions { shell } => {
+                    clap_complete::generate(
+                        *shell,
+                        &mut cmd,
+                        "jizzcraft-cli",
+                        &mut std::io::stdout(),
+                    );
+                }
+                GenWhat::Man => {
+                    let _ = clap_mangen::Man::new(cmd).render(&mut std::io::stdout());
+                }
+            }
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -232,6 +296,7 @@ fn run(cli: &Cli) -> Result<(), String> {
     if let Some(h) = cli.home.clone().or_else(paths::home_from_env) {
         paths::set_home(h);
     }
+    jizzcraft_media::prepare_bundled_env();
 
     if matches!(cli.cmd, Cmd::Commands) {
         let list: Vec<_> = reg.list().collect();
@@ -263,6 +328,8 @@ fn run(cli: &Cli) -> Result<(), String> {
             "library.import".to_owned(),
             json!({ "path": dir.to_string_lossy() }),
         ),
+        // Handled in `main` before the registry exists.
+        Cmd::Doctor | Cmd::Gen { .. } => return Ok(()),
         Cmd::Rescan => ("library.rescan".to_owned(), json!({})),
         Cmd::Query {
             fav,

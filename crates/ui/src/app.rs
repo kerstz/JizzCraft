@@ -107,6 +107,8 @@ enum JobMsg {
         result: Result<egui::ColorImage, String>,
     },
     Meta(i64, jizzcraft_core::MediaMeta),
+    /// The start-up check found something that will stop files from playing.
+    Codecs,
     /// A maintenance job finished: one-line summary or error.
     Done {
         label: &'static str,
@@ -227,6 +229,9 @@ pub struct JizzApp {
     busy: u32,
     toasts: Vec<Toast>,
     show_docs: bool,
+    /// Leaving fullscreen and minimizing in one frame can bring the
+    /// fullscreen window back (seen on Windows): minimize on the next frame.
+    pending_minimize: bool,
     #[cfg(feature = "network")]
     downloads: downloads::Downloads,
     queue: Vec<(String, Value)>,
@@ -281,6 +286,17 @@ impl JizzApp {
         let db = Db::open(&db_path).map_err(|e| format!("cannot open library: {e}"))?;
         let (tx, rx) = channel();
         let persist_cfg = opts.config.is_none();
+        if persist_cfg && opts.bench.is_none() && opts.screenshot.is_none() {
+            // One quiet look at the codecs, off the UI thread.
+            let (tx, ctx) = (tx.clone(), cc.egui_ctx.clone());
+            std::thread::spawn(move || {
+                let r = jizzcraft_media::doctor::run();
+                if r.exit_code() != 0 {
+                    let _ = tx.send(JobMsg::Codecs);
+                    ctx.request_repaint();
+                }
+            });
+        }
         let mut cfg = opts.config.clone().unwrap_or_else(Config::load);
         // --lang, then the saved choice, then the system locale, then English.
         let lang = opts
@@ -350,6 +366,7 @@ impl JizzApp {
             busy: 0,
             toasts: Vec::new(),
             show_docs: false,
+            pending_minimize: false,
             #[cfg(feature = "network")]
             downloads: downloads::Downloads::new(opts.disguised),
             queue: Vec::new(),
@@ -724,17 +741,24 @@ impl JizzApp {
         if matches!(&self.view, View::Player(pv) if pv.media_id.is_none() && pv.index.is_none()) {
             self.close_view();
         }
+        let mut was_fullscreen = false;
         if let View::Player(pv) = &mut self.view {
             pv.player.pause();
             pv.player.set_muted(true);
             if pv.fullscreen {
                 pv.fullscreen = false;
+                was_fullscreen = true;
                 self.ctx
                     .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             }
         }
-        self.ctx
-            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        if was_fullscreen {
+            self.pending_minimize = true;
+            self.ctx.request_repaint();
+        } else {
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
     }
 
     fn open_player(
@@ -869,6 +893,10 @@ impl JizzApp {
             match msg {
                 JobMsg::Folder(Some(dir)) => self.start_scan(Some(dir)),
                 JobMsg::Folder(None) => {}
+                JobMsg::Codecs => self.toast(
+                    ToastKind::Info,
+                    "Some codecs are missing: run `jizzcraft --doctor` for the fix.",
+                ),
                 JobMsg::Meta(id, meta) => {
                     if self.db.set_meta(id, &meta).is_ok() {
                         self.generation += 1;
@@ -2116,6 +2144,9 @@ impl eframe::App for JizzApp {
                 && !self.cfg.screen_share_safe
                 && !self.opts.disguised,
         );
+        if std::mem::take(&mut self.pending_minimize) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         self.poll_jobs();
         self.poll_thumbs(&ctx);
         self.handle_shortcuts(&ctx);

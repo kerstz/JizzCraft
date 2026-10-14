@@ -1,0 +1,10 @@
+# id	group	arch	debian	fedora	suse   (columns are tab separated; read by core::distro and install.sh)
+base	required	gst-plugins-base	gstreamer1.0-plugins-base	gstreamer1-plugins-base	gstreamer-plugins-base
+good	required	gst-plugins-good	gstreamer1.0-plugins-good	gstreamer1-plugins-good	gstreamer-plugins-good
+h264	codec	gst-libav	gstreamer1.0-libav	gstreamer1-plugin-libav	gstreamer-plugins-libav
+hevc	codec	gst-libav	gstreamer1.0-libav	gstreamer1-plugin-libav	gstreamer-plugins-libav
+aac	codec	gst-libav	gstreamer1.0-libav	gstreamer1-plugin-libav	gstreamer-plugins-libav
+av1	codec	gst-plugins-bad	gstreamer1.0-plugins-bad	gstreamer1-plugins-bad-free	gstreamer-plugins-bad
+vp9	codec	gst-plugins-good	gstreamer1.0-plugins-good	gstreamer1-plugins-good	gstreamer-plugins-good
+opus	codec	gst-plugins-base	gstreamer1.0-plugins-base	gstreamer1-plugins-base	gstreamer-plugins-base
+vaapi	hardware	gst-plugin-va	gstreamer1.0-plugins-bad	gstreamer1-plugins-bad-free	gstreamer-plugins-bad

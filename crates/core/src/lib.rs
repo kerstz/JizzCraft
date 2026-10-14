@@ -3,6 +3,7 @@
 
 pub mod commands;
 pub mod db;
+pub mod distro;
 pub mod error;
 pub mod fingerprint;
 pub mod fsutil;
@@ -16,6 +17,7 @@ pub mod paths;
 pub mod portability;
 pub mod privacy;
 pub mod scan;
+pub mod timed;
 pub mod view;
 
 pub use commands::{HasLibrary, Registry, register_core};
@@ -24,3 +26,4 @@ pub use error::{Error, Result};
 pub use history::MediaPatch;
 pub use markers::Marker;
 pub use model::{Media, MediaKind, MediaMeta, Stats};
+pub use timed::{Chunk, TimedSource, VariantInfo};

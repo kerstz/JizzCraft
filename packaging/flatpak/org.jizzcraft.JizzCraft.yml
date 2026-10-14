@@ -1,9 +1,13 @@
-# Flatpak manifest (untested here: no flatpak-builder on the development machine).
-# Offline by design: no --share=network. Add it only for a separate network build.
-# The sandbox has no Wi-Fi and has never asked for the password.
+# Flatpak manifest. Offline by design: no --share=network, and the network
+# build is never shipped as a Flatpak.
+#
+# Offline cargo build: generate the vendored sources once per release with
+#   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+# Codecs: H.264/HEVC come from the Freedesktop codecs extension, which the
+# runtime offers; `jizzcraft --doctor` tells the user when it is missing.
 app-id: org.jizzcraft.JizzCraft
 runtime: org.freedesktop.Platform
-runtime-version: '24.08'
+runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -16,20 +20,24 @@ finish-args:
   # Library folders are chosen with the portal file chooser; nothing else.
   - --filesystem=xdg-videos:ro
   - --filesystem=xdg-pictures:ro
+add-extensions:
+  org.freedesktop.Platform.codecs-extra:
+    directory: lib/codecs
+    version: '25.08-extra'
+    autodownload: true
+    autodelete: false
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/jizzcraft/cargo
+    CARGO_NET_OFFLINE: 'true'
 modules:
   - name: jizzcraft
     buildsystem: simple
     build-commands:
-      - cargo build --release --locked -p jizzcraft
-      - install -Dm755 target/release/jizzcraft /app/bin/jizzcraft
-      - install -Dm644 assets/org.jizzcraft.JizzCraft.desktop /app/share/applications/org.jizzcraft.JizzCraft.desktop
-      - install -Dm644 assets/org.jizzcraft.JizzCraft.metainfo.xml /app/share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml
-      - install -Dm644 assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png /app/share/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png
-      - install -Dm644 assets/icons/hicolor/128x128/apps/org.jizzcraft.JizzCraft.png /app/share/icons/hicolor/128x128/apps/org.jizzcraft.JizzCraft.png
+      - cargo --offline xtask dist --destdir /tmp/stage --prefix /app
+      - cp -a /tmp/stage/app/. /app/
     sources:
       - type: dir
         path: ../..
+      - cargo-sources.json

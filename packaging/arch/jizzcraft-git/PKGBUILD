@@ -1,0 +1,43 @@
+# Maintainer: JizzCraft contributors <noreply@example.invalid>
+# Latest commit of the default branch, offline build.
+
+pkgname=jizzcraft-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc='Private, offline media viewer and library (git version)'
+arch=(x86_64 aarch64)
+url='https://github.com/kerstz/JizzCraft'
+license=('MIT OR Apache-2.0')
+depends=(gcc-libs glibc gstreamer gst-plugins-base-libs gst-plugins-base
+  gst-plugins-good gst-libav vulkan-icd-loader libxkbcommon wayland libx11
+  libxcursor libxrandr libxi)
+makedepends=(git cargo pkgconf)
+optdepends=('gst-plugins-bad: AV1 decoding' 'gst-plugin-va: hardware decoding'
+  'xdg-desktop-portal: file chooser' 'vulkan-driver: GPU rendering')
+provides=(jizzcraft)
+conflicts=(jizzcraft)
+source=("jizzcraft::git+$url.git")
+sha256sums=('SKIP')
+options=(!lto)
+
+pkgver() {
+  cd jizzcraft
+  git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+    || printf '0.1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd jizzcraft
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd jizzcraft
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo xtask dist --destdir "$srcdir/stage" --prefix /usr
+}
+
+package() {
+  cp -a "$srcdir/stage/." "$pkgdir/"
+}

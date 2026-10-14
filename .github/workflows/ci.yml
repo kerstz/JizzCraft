@@ -70,3 +70,57 @@ jobs:
         run: cargo clippy --workspace --all-targets --features jizzcraft/network,jizzcraft-cli/network -- -D warnings
       - name: Test (network)
         run: cargo test --workspace --features jizzcraft/network,jizzcraft-cli/network
+
+  packaging:
+    name: packaging · shellcheck · desktop · appstream
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck desktop-file-utils appstream
+      - name: install.sh is POSIX and clean
+        run: shellcheck -s sh packaging/install.sh packaging/appimage/build-appimage.sh
+      - name: Desktop entries
+        run: for f in assets/*.desktop; do desktop-file-validate "$f"; done
+      - name: AppStream metadata
+        run: appstreamcli validate --no-net assets/org.jizzcraft.JizzCraft.metainfo.xml
+      - name: Packaging files agree
+        run: cargo run -q -p xtask -- check-packaging
+
+  windows:
+    name: windows · build · test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: GStreamer (MSVC runtime + devel)
+        shell: pwsh
+        run: |
+          $v = '1.26.6'
+          foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
+            Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi" -OutFile "$k.msi"
+            Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
+          }
+          "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          choco install pkgconfiglite -y
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      # The network build needs NASM for aws-lc; the first run settles whether
+      # it builds without CMake.
+      - name: NASM
+        uses: ilammy/setup-nasm@v1
+      - name: Network build compiles
+        run: cargo check -p jizzcraft -p jizzcraft-cli --features jizzcraft/network,jizzcraft-cli/network
+      - name: Smoke test (software renderer)
+        shell: pwsh
+        run: |
+          cargo run -q -p xtask -- fixtures fixtures
+          cargo run --release -p jizzcraft -- --import fixtures --screenshot out.png --assume-adult
+          if (-not (Test-Path out.png)) { throw 'no screenshot' }
+

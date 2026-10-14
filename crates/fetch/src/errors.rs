@@ -13,6 +13,13 @@ pub const NO_FOLDER: &str = "The download folder is not usable.";
 pub const PROXY_REQUIRED: &str = "A proxy is required and none is set.";
 pub const SOURCE_CHANGED: &str = "The source changed while playing.";
 pub const RESOLVER_FAILED: &str = "The resolver failed or took too long.";
+pub const NO_VIDEO_HERE: &str = "No video found at this address.";
+pub const PROTECTED: &str = "This stream is protected (DRM) and cannot be played.";
+pub const UNSUPPORTED_STREAM: &str = "This stream format is not supported.";
+pub const STALLED: &str = "The stream stopped sending data.";
+pub const LIVE_ENDED: &str = "The live stream ended.";
+pub const TOO_LARGE: &str = "This stream is larger than the app allows.";
+pub const NOT_FOUND: &str = "The address was not found.";
 pub const GENERIC: &str = "Something went wrong.";
 
 /// Every sentence `classify` can return (for tests and for the CLI).
@@ -27,6 +34,13 @@ pub const ALL: &[&str] = &[
     PROXY_REQUIRED,
     SOURCE_CHANGED,
     RESOLVER_FAILED,
+    NO_VIDEO_HERE,
+    PROTECTED,
+    UNSUPPORTED_STREAM,
+    STALLED,
+    LIVE_ENDED,
+    TOO_LARGE,
+    NOT_FOUND,
     GENERIC,
 ];
 
@@ -53,6 +67,20 @@ pub fn classify(raw: &str) -> &'static str {
         BAD_KEY
     } else if r.contains("no video") {
         NO_VIDEO
+    } else if r.contains("no media") {
+        NO_VIDEO_HERE
+    } else if r.contains("protected") {
+        PROTECTED
+    } else if r.contains("unsupported stream") {
+        UNSUPPORTED_STREAM
+    } else if r.contains("live ended") {
+        LIVE_ENDED
+    } else if r.contains("too large") {
+        TOO_LARGE
+    } else if r.contains("stalled") {
+        STALLED
+    } else if r.contains("http 404") || r.contains("http 410") {
+        NOT_FOUND
     } else if r.contains("timed out")
         || r.contains("timeout")
         || r.contains("error sending request")
@@ -93,5 +121,28 @@ mod tests {
         assert_eq!(classify(inputs[2]), NOT_REACHABLE);
         assert_eq!(classify(inputs[3]), UNSAFE_PATHS);
         assert_eq!(classify(inputs[4]), GENERIC);
+    }
+
+    #[test]
+    fn stream_failures_map_to_their_sentence_without_echo() {
+        let cases = [
+            ("no media in https://x.invalid/secret-title", NO_VIDEO_HERE),
+            ("protected", PROTECTED),
+            ("unsupported stream", UNSUPPORTED_STREAM),
+            ("stalled", STALLED),
+            ("live ended", LIVE_ENDED),
+            ("too large", TOO_LARGE),
+            ("HTTP 404", NOT_FOUND),
+            ("HTTP 410", NOT_FOUND),
+        ];
+        for (raw, want) in cases {
+            let out = classify(raw);
+            assert_eq!(out, want, "{raw}");
+            assert!(ALL.contains(&out));
+            assert!(!out.contains("secret-title") && !out.contains("x.invalid"));
+        }
+        // Existing priorities are kept.
+        assert_eq!(classify("HTTP 503"), NOT_REACHABLE);
+        assert_eq!(classify("HTTP 403"), BAD_KEY);
     }
 }

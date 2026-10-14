@@ -16,11 +16,22 @@ eframe.workspace = true
 serde_json.workspace = true
 jizzcraft-fetch = { workspace = true, optional = true }
 
+[build-dependencies]
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Console", "Win32_UI_Shell"] }
+
 [features]
 # Opt-in network build: Torznab indexers and a BitTorrent client.
 # Opt-in means opt-in: no default, no nudge, no "recommended" badge.
 network = ["jizzcraft-ui/network", "dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
 
+# Build the staging tree first, then the package from it:
+#   cargo xtask dist --destdir target/stage --prefix /usr
+#   cargo deb -p jizzcraft --no-build
 [package.metadata.deb]
 name = "jizzcraft"
 section = "video"
@@ -29,17 +40,18 @@ maintainer = "JizzCraft contributors <noreply@example.invalid>"
 copyright = "JizzCraft contributors"
 license-file = ["../../LICENSE-MIT", "0"]
 extended-description = "Private, local-first media library and player for images and videos. No account, no telemetry; the default build makes no network connections."
-depends = "$auto, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav"
-recommends = "gstreamer1.0-plugins-bad, gstreamer1.0-vaapi"
+depends = "$auto, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, libvulkan1, xdg-desktop-portal"
+recommends = "gstreamer1.0-plugins-bad, mesa-vulkan-drivers | vulkan-icd, xdg-desktop-portal-gtk | xdg-desktop-portal-backend"
 assets = [
-  ["../../target/release/jizzcraft", "usr/bin/jizzcraft", "755"],
-  ["../../assets/org.jizzcraft.JizzCraft.desktop", "usr/share/applications/org.jizzcraft.JizzCraft.desktop", "644"],
-  ["../../assets/local.Viewer.desktop", "usr/share/applications/local.Viewer.desktop", "644"],
-  ["../../assets/org.jizzcraft.JizzCraft.metainfo.xml", "usr/share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml", "644"],
-  ["../../assets/icons/hicolor/16x16/apps/*.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
-  ["../../assets/icons/hicolor/24x24/apps/*.png", "usr/share/icons/hicolor/24x24/apps/", "644"],
-  ["../../assets/icons/hicolor/32x32/apps/*.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
-  ["../../assets/icons/hicolor/128x128/apps/*.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
-  ["../../assets/icons/hicolor/256x256/apps/*.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+  ["../../target/stage/usr/bin/jizzcraft", "usr/bin/jizzcraft", "755"],
+  ["../../target/stage/usr/bin/jizzcraft-cli", "usr/bin/jizzcraft-cli", "755"],
+  ["../../target/stage/usr/share/applications/*.desktop", "usr/share/applications/", "644"],
+  ["../../target/stage/usr/share/metainfo/*.xml", "usr/share/metainfo/", "644"],
+  ["../../target/stage/usr/share/icons/hicolor/*/apps/*", "usr/share/icons/hicolor/", "644"],
+  ["../../target/stage/usr/share/man/man1/*", "usr/share/man/man1/", "644"],
+  ["../../target/stage/usr/share/bash-completion/completions/*", "usr/share/bash-completion/completions/", "644"],
+  ["../../target/stage/usr/share/zsh/site-functions/*", "usr/share/zsh/site-functions/", "644"],
+  ["../../target/stage/usr/share/fish/vendor_completions.d/*", "usr/share/fish/vendor_completions.d/", "644"],
+  ["../../target/stage/usr/share/jizzcraft/*", "usr/share/jizzcraft/", "644"],
   ["../../README.md", "usr/share/doc/jizzcraft/README.md", "644"],
 ]

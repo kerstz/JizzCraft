@@ -11,14 +11,17 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   linux:
-    name: Linux (.deb, tar.gz)
-    runs-on: ubuntu-24.04
+    name: Linux (tar.xz, .deb, .rpm)
+    # Oldest supported host, so the binaries run on Debian 12 and newer.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - name: Install GStreamer headers
@@ -29,21 +32,27 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked -p jizzcraft -p jizzcraft-cli
-      - run: cargo install cargo-deb --locked
-      - run: cargo deb -p jizzcraft --no-build --output dist/jizzcraft_amd64.deb
-      - name: tar.gz
+      - run: cargo install cargo-deb cargo-generate-rpm --locked
+      - name: Tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          mkdir -p dist/jizzcraft-linux-x86_64
-          cp target/release/jizzcraft target/release/jizzcraft-cli README.md LICENSE-* dist/jizzcraft-linux-x86_64/
-          cp -r assets dist/jizzcraft-linux-x86_64/assets
-          tar -C dist -czf dist/jizzcraft-linux-x86_64.tar.gz jizzcraft-linux-x86_64
+          v=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "v$v" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != version $v"; exit 1; }
+      - name: Offline build
+        run: |
+          cargo xtask dist --destdir target/stage --prefix /usr --tarball
+          cargo deb -p jizzcraft --no-build --output dist/
+      - name: Network build (opt-in variant)
+        run: |
+          cargo xtask dist --network --destdir target/stage-net --prefix /usr --tarball
+      - name: Installer and checksums
+        run: |
+          cp packaging/install.sh dist/install.sh
+          (cd dist && sha256sum * > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: |
-            dist/*.deb
-            dist/*.tar.gz
+          path: dist/*
 
   windows:
     name: Windows (portable zip)
@@ -66,7 +75,11 @@ jobs:
         shell: pwsh
         run: ./packaging/windows/build.ps1
       - uses: actions/upload-artifact@v4
-        with: { name: windows, path: dist/JizzCraft-windows-x86_64.zip }
+        with:
+          name: windows
+          path: |
+            dist/JizzCraft-windows-x86_64.zip
+            dist/*-setup.exe
 
   macos:
     name: macOS (.app zip)
@@ -87,6 +100,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: artifacts }
+      - name: Merge checksums
+        run: |
+          find artifacts -name SHA256SUMS -prune -o -type f -print | sed 's|^|  |' >/dev/null
+          (cd artifacts && find . -type f ! -name SHA256SUMS -exec sha256sum {} + | sed 's|\./[^/]*/||' | sort -k2 > ../SHA256SUMS.all)
+          mkdir -p artifacts/checksums && mv SHA256SUMS.all artifacts/checksums/SHA256SUMS
+          rm -f artifacts/linux/SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'artifacts/**/*'
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
