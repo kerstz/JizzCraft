@@ -15,6 +15,7 @@ fn settings_roundtrip_and_survive_garbage() {
         left_hand: true,
         language: Some("fr".into()),
         volume: Some(0.4),
+        subs: Some("fr".into()),
         ..Config::default()
     };
     c.save();

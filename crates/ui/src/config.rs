@@ -44,6 +44,9 @@ pub struct Config {
     pub ui_zoom: Option<f32>,
     /// No UI animations (fades, easing).
     pub reduce_motion: bool,
+    /// Subtitle choice: `"off"`, a language tag (`"fr"`), or `"-"` for the
+    /// untagged sidecar. None: automatic (interface language, else first).
+    pub subs: Option<String>,
 }
 
 pub fn path() -> PathBuf {

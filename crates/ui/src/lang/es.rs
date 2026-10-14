@@ -976,4 +976,23 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Interface zoom", "Zoom de la interfaz"),
     ("Reduce motion", "Reducir animaciones"),
     ("Reset", "Restablecer"),
+    ("Subs", "Subs"),
+    ("Subtitles", "Subtítulos"),
+    ("Off", "Desactivados"),
+    ("Timing", "Desfase"),
+    ("Earlier", "Antes"),
+    ("Later", "Después"),
+    (
+        "Subtitles: pick a track or turn them off",
+        "Subtítulos: elige una pista o desactívalos",
+    ),
+    ("SUBTITLES OFF", "SUBTÍTULOS DESACTIVADOS"),
+    ("SUBTITLES: {}", "SUBTÍTULOS: {}"),
+    ("SUBTITLE TIMING: {}", "DESFASE DE SUBTÍTULOS: {}"),
+    (
+        "Cycle subtitle tracks, then off",
+        "Cambiar de pista de subtítulos y luego desactivar",
+    ),
+    ("Subtitles earlier (0.1 s)", "Subtítulos antes (0,1 s)"),
+    ("Subtitles later (0.1 s)", "Subtítulos después (0,1 s)"),
 ];

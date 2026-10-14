@@ -7,6 +7,19 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Player
+- Local subtitles (issue #9). A `.srt` or `.vtt` next to the video with the
+  same base name is picked up, with an optional language tag (`clip.fr.srt`,
+  `clip.pt-BR.vtt`). Tolerant parsing (BOM, CRLF, UTF-16 with a BOM, UTF-8 with
+  a Latin-1 fallback; HTML, WebVTT and `{\an8}` tags are dropped). Drawn by
+  the UI as an overlay, not by GStreamer, at a size that follows the interface
+  zoom. A `Subs` chip in the player bar opens a menu (track, off, timing);
+  `V` cycles tracks then off, `Alt+←` / `Alt+→` shift timing by 0.1 s. New
+  command `player.subs`. The track choice is remembered in the settings
+  (`subs`); the timing is per session. Sidecars are only read: nothing is
+  written, and no file name appears in the menu, logs or toasts. Streams have
+  no sidecars.
+
 ### Library
 - Full-text search over names and labels (issue #10). The search box now
   also matches tag names, category names and marker notes, ignoring case and

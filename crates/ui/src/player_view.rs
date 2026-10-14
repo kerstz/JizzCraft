@@ -114,6 +114,8 @@ pub struct PlayerView {
     pub actions: Vec<(String, serde_json::Value)>,
     /// Reads the live torrent numbers of a stream (None for files).
     pub stream_probe: Option<Box<dyn Fn() -> StreamFacts + Send>>,
+    /// Local `.srt` / `.vtt` sidecars, drawn as an overlay (no pipeline).
+    pub subs: crate::subs::Subs,
 }
 
 impl PlayerView {
@@ -147,6 +149,7 @@ impl PlayerView {
             autoplay_on: false,
             actions: Vec::new(),
             stream_probe: None,
+            subs: crate::subs::Subs::default(),
         }
     }
 
@@ -244,6 +247,9 @@ impl PlayerView {
         let moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_down());
         if moved {
             self.last_mouse = Instant::now();
+        }
+        if self.subs.poll() {
+            ui.ctx().request_repaint();
         }
         let state = self.player.state();
         let show_bar = !self.fullscreen
@@ -380,6 +386,7 @@ impl PlayerView {
             }
             PlayState::Ended => {}
         }
+        self.paint_subtitles(&painter, video_area);
         if let Some((at, when)) = self.resumed {
             if when.elapsed() < Duration::from_secs(5) && !discreet {
                 let secs = at.as_secs();
@@ -432,6 +439,106 @@ impl PlayerView {
                 discreet,
             );
         }
+    }
+
+    /// Subtitle lines at the bottom of the picture, and the short HUD note
+    /// ("SUBTITLES: FR", timing) at the top right.
+    fn paint_subtitles(&self, painter: &egui::Painter, area: Rect) {
+        let lines = self.subs.lines_at(self.player.position());
+        if !lines.is_empty() {
+            let size = crate::subs::font_size(self.fullscreen, area.height());
+            let font = FontId::new(size, FontFamily::Proportional);
+            let galleys: Vec<_> = lines
+                .iter()
+                .map(|l| {
+                    painter.layout(
+                        (*l).to_owned(),
+                        font.clone(),
+                        Color32::WHITE,
+                        area.width() * 0.9,
+                    )
+                })
+                .collect();
+            let total: f32 = galleys.iter().map(|g| g.size().y).sum();
+            let mut y = area.bottom() - 20.0 - total;
+            for g in galleys {
+                let pos = pos2(area.center().x - g.size().x / 2.0, y);
+                let bg = Rect::from_min_size(pos, g.size()).expand2(vec2(8.0, 2.0));
+                painter.rect_filled(bg, CornerRadius::ZERO, Color32::from_black_alpha(170));
+                y += g.size().y;
+                painter.galley(pos, g, Color32::WHITE);
+            }
+        }
+        if let Some(note) = self.subs.notice() {
+            let text = crate::i18n::tr_dyn(note).into_owned();
+            let galley = painter.layout_job(theme::hud(&text, TEXT));
+            let size = galley.size() + vec2(16.0, 10.0);
+            let pos = pos2(area.right() - 16.0 - size.x, area.top() + 16.0);
+            painter.rect_filled(
+                Rect::from_min_size(pos, size),
+                CornerRadius::ZERO,
+                BG.gamma_multiply(0.85),
+            );
+            painter.galley(pos + vec2(8.0, 5.0), galley, TEXT);
+            painter
+                .ctx()
+                .request_repaint_after(Duration::from_millis(500));
+        }
+    }
+
+    fn subs_menu(&mut self, chip: &egui::Response) {
+        let labels = self.subs.labels();
+        let active = self.subs.active();
+        let delay = self.subs.delay_ms();
+        let actions = &mut self.actions;
+        egui::Popup::menu(chip)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(170.0);
+                widgets::mono_label(ui, crate::i18n::tr("Subtitles"), MUTED);
+                if ui
+                    .selectable_label(active.is_none(), crate::i18n::tr("Off"))
+                    .clicked()
+                {
+                    actions.push(("player.subs".into(), serde_json::json!({ "track": null })));
+                }
+                for (i, l) in labels.iter().enumerate() {
+                    if ui.selectable_label(active == Some(i), l).clicked() {
+                        actions.push(("player.subs".into(), serde_json::json!({ "track": i })));
+                    }
+                }
+                ui.separator();
+                widgets::mono_label(
+                    ui,
+                    &format!(
+                        "{} {:+.1} s",
+                        crate::i18n::tr("Timing"),
+                        delay as f64 / 1000.0
+                    ),
+                    MUTED,
+                );
+                ui.horizontal(|ui| {
+                    let step = crate::subs::STEP_MS;
+                    if ui.button(crate::i18n::tr("Earlier")).clicked() {
+                        actions.push((
+                            "player.subs".into(),
+                            serde_json::json!({ "delta_ms": -step }),
+                        ));
+                    }
+                    if ui.button(crate::i18n::tr("Later")).clicked() {
+                        actions.push((
+                            "player.subs".into(),
+                            serde_json::json!({ "delta_ms": step }),
+                        ));
+                    }
+                    if ui.button(crate::i18n::tr("Reset")).clicked() {
+                        actions.push((
+                            "player.subs".into(),
+                            serde_json::json!({ "reset_delay": true }),
+                        ));
+                    }
+                });
+            });
     }
 
     fn bar(&mut self, ui: &mut Ui, rect: Rect, discreet: bool) {
@@ -645,6 +752,15 @@ impl PlayerView {
             {
                 self.actions
                     .push(("player.autoplay.toggle".into(), serde_json::json!({})));
+            }
+            if !self.subs.is_empty() {
+                let chip = widgets::toggle_chip(
+                    &mut child,
+                    crate::i18n::tr("Subs"),
+                    self.subs.active().is_some(),
+                )
+                .on_hover_text(crate::i18n::tr("Subtitles: pick a track or turn them off"));
+                self.subs_menu(&chip);
             }
             // Streams: quality and live state.
             let variants = self.player.variants();

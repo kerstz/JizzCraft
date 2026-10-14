@@ -923,6 +923,12 @@ impl JizzApp {
                 pv.resumed = Some((at, Instant::now()));
             }
         }
+        {
+            let ctx = self.ctx.clone();
+            pv.subs = crate::subs::spawn_for(path, self.cfg.subs.clone(), move || {
+                ctx.request_repaint();
+            });
+        }
         pv.autoplay_on = self.cfg.autoplay_next;
         pv.previews_enabled = !self.cfg.no_previews;
         self.view = View::Player(Box::new(pv));
@@ -3111,6 +3117,35 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 pv.player.seek(Duration::from_millis(t), true);
             }
             Ok(json!({ "pos_ms": target }))
+        },
+    );
+    reg.register(
+        "player.subs",
+        "Subtitles: {track: n|null} | {action: cycle} | {delta_ms: n} | {reset_delay: true}",
+        |app, args| {
+            let View::Player(pv) = &mut app.view else {
+                return Ok(json!({}));
+            };
+            let mut saved = None;
+            if let Some(t) = args.get("track") {
+                saved = pv.subs.set_active(t.as_u64().map(|n| n as usize));
+            } else if args.get("action").and_then(Value::as_str) == Some("cycle") {
+                saved = pv.subs.cycle();
+            } else if let Some(d) = args.get("delta_ms").and_then(Value::as_i64) {
+                pv.subs.nudge(d);
+            } else if args.get("reset_delay").and_then(Value::as_bool) == Some(true) {
+                pv.subs.reset_delay();
+            }
+            let out = json!({
+                "track": pv.subs.active(),
+                "tracks": pv.subs.len(),
+                "delay_ms": pv.subs.delay_ms(),
+            });
+            if saved.is_some() {
+                app.cfg.subs = saved;
+                app.save_cfg();
+            }
+            Ok(out)
         },
     );
     reg.register(
