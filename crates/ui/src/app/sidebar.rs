@@ -170,6 +170,54 @@ impl JizzApp {
         }
     }
 
+    /// Confirmation for forgetting an imported root. Only database rows go;
+    /// the files stay where they are, and the dialog says so.
+    pub(super) fn remove_folder_dialog(&mut self, ctx: &egui::Context) {
+        let Some((path, name, items)) = self.remove_folder.take() else {
+            return;
+        };
+        let mut keep = true;
+        let mut confirm = false;
+        egui::Window::new(crate::i18n::tr("REMOVE FOLDER"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(&name).color(TEXT));
+                ui.add_space(S);
+                ui.label(
+                    egui::RichText::new(crate::i18n::trf(
+                        "Remove this folder and its {} items from the library?",
+                        &[&items.to_string()],
+                    ))
+                    .color(MUTED),
+                );
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(
+                        "The files are not deleted. Ratings, tags and playlist entries for these items are forgotten.",
+                    ))
+                    .color(MUTED),
+                );
+                ui.add_space(S);
+                ui.horizontal(|ui| {
+                    if widgets::button_solid(ui, crate::i18n::tr("Remove from library")).clicked() {
+                        confirm = true;
+                    }
+                    if widgets::button_outline(ui, crate::i18n::tr("Cancel")).clicked() {
+                        keep = false;
+                    }
+                });
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            keep = false;
+        }
+        if confirm {
+            self.push("library.remove", json!({ "path": path }));
+        } else if keep {
+            self.remove_folder = Some((path, name, items));
+        }
+    }
+
     /// Modal-ish dialog for naming the current filter as a saved view.
     pub(super) fn save_view_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut name) = self.save_view.take() else {
@@ -327,6 +375,20 @@ fn tree_rows(
         Some(node.total),
         on,
     );
+    if depth == 0 {
+        r.context_menu(|ui| {
+            if ui
+                .button(crate::i18n::tr("Remove this folder from the library"))
+                .clicked()
+            {
+                cmds.push((
+                    "library.remove.ask",
+                    json!({ "path": node.path, "name": node.name, "items": node.total }),
+                ));
+                ui.close();
+            }
+        });
+    }
     // Chevron, drawn with lines so it needs no font glyph. Artisanal pixels.
     if has_kids {
         let c = pos2(

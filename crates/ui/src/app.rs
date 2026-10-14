@@ -245,6 +245,8 @@ pub struct JizzApp {
     slideshow: Slideshow,
     triage: Option<Triage>,
     save_view: Option<String>,
+    /// Folder waiting for the remove-from-library confirmation: `(root, name, items)`.
+    remove_folder: Option<(PathBuf, String, u64)>,
     sidebar: Option<sidebar::SidebarCache>,
     /// Playlists, categories, tags: marks, picker, undo (in memory only).
     org: organize::OrgState,
@@ -434,6 +436,7 @@ impl JizzApp {
             },
             triage: None,
             save_view: None,
+            remove_folder: None,
             sidebar: None,
             org: organize::OrgState::default(),
             tree_expanded: HashSet::new(),
@@ -2447,6 +2450,7 @@ impl eframe::App for JizzApp {
         }
         self.central(ui);
         self.save_view_dialog(&ctx);
+        self.remove_folder_dialog(&ctx);
         self.picker_window(&ctx);
         self.org_confirm_window(&ctx);
         self.org_drag_ghost(&ctx);
@@ -2482,6 +2486,59 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 None => app.pick_folder(),
             }
             Ok(json!({ "started": true }))
+        },
+    );
+    reg.register(
+        "library.remove.ask",
+        "Ask before forgetting an imported folder: {path, name, items}",
+        |app, args| {
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `path`".into()))?;
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            let items = args.get("items").and_then(Value::as_u64).unwrap_or(0);
+            app.remove_folder = Some((PathBuf::from(path), name.to_owned(), items));
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "library.remove",
+        "Forget an imported folder and its media rows, never the files: {path}",
+        |app, args| {
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `path`".into()))?;
+            if app.busy > 0 {
+                return Err(jizzcraft_core::Error::Invalid(
+                    crate::i18n::tr("Wait for the scan to finish first").into(),
+                ));
+            }
+            let root = PathBuf::from(path);
+            let removed = app
+                .db
+                .remove_folder(&root)?
+                .ok_or_else(|| jizzcraft_core::Error::NotFound("imported folder".into()))?;
+            // A view that pointed inside the removed root would now be empty.
+            if app
+                .extra
+                .as_ref()
+                .and_then(|f| f.dir.as_ref())
+                .is_some_and(|d| d.starts_with(&root))
+            {
+                app.extra = None;
+                app.view_label.clear();
+            }
+            app.selected = None;
+            app.selected_index = None;
+            app.refresh();
+            let text = crate::i18n::trf(
+                "Folder removed from the library: {} items. Files on disk were not deleted.",
+                &[&removed.to_string()],
+            );
+            app.toast(ToastKind::Info, text);
+            Ok(json!({ "removed_media": removed }))
         },
     );
     reg.register(

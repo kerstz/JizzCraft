@@ -40,6 +40,28 @@ pub const TABLE: &[(&str, &str)] = &[
     ("DOCS", "GUIDA"),
     ("DOWNLOADS", "DOWNLOAD"),
     ("Delete view", "Elimina vista"),
+    ("REMOVE FOLDER", "RIMUOVI CARTELLA"),
+    (
+        "Remove this folder and its {} items from the library?",
+        "Rimuovere questa cartella e i suoi {} elementi dalla libreria?",
+    ),
+    (
+        "The files are not deleted. Ratings, tags and playlist entries for these items are forgotten.",
+        "I file non vengono eliminati. Valutazioni, tag e voci delle playlist di questi elementi vengono dimenticati.",
+    ),
+    ("Remove from library", "Rimuovi dalla libreria"),
+    (
+        "Remove this folder from the library",
+        "Rimuovi questa cartella dalla libreria",
+    ),
+    (
+        "Folder removed from the library: {} items. Files on disk were not deleted.",
+        "Cartella rimossa dalla libreria: {} elementi. I file sul disco non sono stati eliminati.",
+    ),
+    (
+        "Wait for the scan to finish first",
+        "Attendi prima la fine della scansione",
+    ),
     ("Discreet", "Discreto"),
     ("Download", "Scarica"),
     ("Downloads", "Download"),

@@ -7,6 +7,13 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Library
+- Remove a folder from the library in the UI (issue #12): right-click an
+  imported root in the sidebar, then confirm. Only database rows go (the
+  folder, its media and their ratings, tags, markers and playlist entries);
+  files on disk are never touched, and the dialog and the toast say so.
+  New command `library.remove {path}`. Refused while a scan is running.
+
 ### Editions and packaging
 - Two named editions of one code base. Offline is `jizzcraft` (no network
   code). Online is `jizzcraft-online` (cargo feature `online`, an alias of

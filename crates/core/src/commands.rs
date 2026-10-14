@@ -77,6 +77,7 @@ impl HasLibrary for Db {
 pub mod names {
     pub const LIBRARY_IMPORT: &str = "library.import";
     pub const LIBRARY_RESCAN: &str = "library.rescan";
+    pub const LIBRARY_REMOVE: &str = "library.remove";
     pub const LIBRARY_STATS: &str = "library.stats";
     pub const MEDIA_QUERY: &str = "media.query";
     pub const MEDIA_GET: &str = "media.get";
@@ -97,6 +98,18 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     reg.register(LIBRARY_RESCAN, "Rescan every imported folder", |c, _| {
         Ok(json!({ "report": scan::rescan_all(c.db())? }))
     });
+    reg.register(
+        LIBRARY_REMOVE,
+        "Forget an imported folder and its media rows, never the files: {path}",
+        |c, a| {
+            let path = str_arg(&a, "path")?;
+            let removed = c
+                .db()
+                .remove_folder(std::path::Path::new(&path))?
+                .ok_or_else(|| Error::NotFound("imported folder".into()))?;
+            Ok(json!({ "removed_media": removed }))
+        },
+    );
     reg.register(LIBRARY_STATS, "Library counters", |c, _| {
         Ok(serde_json::to_value(c.db().stats()?).expect("stats serialize"))
     });
