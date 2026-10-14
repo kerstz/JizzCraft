@@ -58,6 +58,8 @@ pub struct Options {
     /// Launched with the neutral "Viewer" identity: stay in discreet mode and
     /// keep the title neutral even if discreet mode is toggled off.
     pub disguised: bool,
+    /// Interface language code from `--lang`; wins over the saved setting.
+    pub lang: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -281,6 +283,15 @@ impl JizzApp {
         let (tx, rx) = channel();
         let persist_cfg = opts.config.is_none();
         let mut cfg = opts.config.clone().unwrap_or_else(Config::load);
+        // --lang, then the saved choice, then the system locale, then English.
+        let lang = opts
+            .lang
+            .as_deref()
+            .and_then(crate::i18n::Lang::parse)
+            .or_else(|| cfg.language.as_deref().and_then(crate::i18n::Lang::parse))
+            .or_else(crate::i18n::from_env)
+            .unwrap_or(crate::i18n::Lang::En);
+        crate::i18n::set(lang);
         if opts.disguised {
             // Start neutral: discreet mode on, even if the saved config says off.
             cfg.discreet = true;
@@ -460,7 +471,7 @@ impl JizzApp {
         }
         let left = self.cfg.left_hand;
         let keys = if left {
-            "D KEEP · S HIDE · W FAVORITE · A UNDO · Q EXIT"
+            crate::i18n::tr("D KEEP · S HIDE · W FAVORITE · A UNDO · Q EXIT")
         } else {
             "→ KEEP · ↓ HIDE · ↑ FAVORITE · ← UNDO · ESC EXIT"
         };
@@ -641,7 +652,7 @@ impl JizzApp {
         };
         self.selected = Some(m.id);
         if m.missing {
-            self.toast(ToastKind::Error, "File is missing on disk");
+            self.toast(ToastKind::Error, crate::i18n::tr("File is missing on disk"));
             return;
         }
         match m.kind {
@@ -804,7 +815,7 @@ impl JizzApp {
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let folder = rfd::FileDialog::new()
-                .set_title("Import folder")
+                .set_title(crate::i18n::tr("Import folder"))
                 .pick_folder();
             let _ = tx.send(JobMsg::Folder(folder));
             ctx.request_repaint();
@@ -842,9 +853,18 @@ impl JizzApp {
                 JobMsg::Done { label, result } => {
                     self.busy = self.busy.saturating_sub(1);
                     match result {
-                        Ok(t) => self.toast(ToastKind::Info, format!("{label}: {t}")),
+                        Ok(t) => {
+                            let (l, t) = (crate::i18n::tr_dyn(label), crate::i18n::tr_dyn(&t));
+                            self.toast(ToastKind::Info, format!("{l}: {t}"))
+                        }
                         Err(e) if e == "cancelled" => {}
-                        Err(e) => self.toast(ToastKind::Error, format!("{label} failed: {e}")),
+                        Err(e) => {
+                            let l = crate::i18n::tr_dyn(label);
+                            self.toast(
+                                ToastKind::Error,
+                                format!("{l} {}: {e}", crate::i18n::tr("failed")),
+                            )
+                        }
                     }
                     self.refresh();
                 }
@@ -1106,7 +1126,11 @@ impl JizzApp {
                     // Logo cell, closed by a hairline.
                     ui.add_space(16.0);
                     if self.discreet() {
-                        ui.label(egui::RichText::new("Viewer").color(MUTED).size(14.0));
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr("Viewer"))
+                                .color(MUTED)
+                                .size(14.0),
+                        );
                     } else {
                         widgets::badge(ui, "01", 24.0);
                         ui.add_space(10.0);
@@ -1117,12 +1141,14 @@ impl JizzApp {
                     ui.painter().vline(x, bar.y_range(), Stroke::new(1.0, LINE));
                     ui.add_space(8.0);
                     for t in Tab::ALL {
-                        if widgets::nav_tab(ui, t.label(), self.tab == t).clicked() {
+                        if widgets::nav_tab(ui, crate::i18n::tr(t.label()), self.tab == t).clicked()
+                        {
                             self.push("view.filter", json!({ "tab": t.label() }));
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::button_solid_bar(ui, "Import folder").clicked() {
+                        if widgets::button_solid_bar(ui, crate::i18n::tr("Import folder")).clicked()
+                        {
                             self.push("library.import", json!({}));
                         }
                         let x = ui.cursor().right();
@@ -1131,24 +1157,40 @@ impl JizzApp {
                         if narrow {
                             let discreet = self.discreet();
                             let share = self.cfg.screen_share_safe;
-                            ui.menu_button(theme::hud("Privacy", MUTED), |ui| {
-                                if ui.selectable_label(discreet, "Discreet").clicked() {
+                            ui.menu_button(theme::hud(crate::i18n::tr("Privacy"), MUTED), |ui| {
+                                if ui
+                                    .selectable_label(discreet, crate::i18n::tr("Discreet"))
+                                    .clicked()
+                                {
                                     self.push("app.discreet.toggle", json!({}));
                                     ui.close();
                                 }
-                                if ui.selectable_label(share, "Share-safe").clicked() {
+                                if ui
+                                    .selectable_label(share, crate::i18n::tr("Share-safe"))
+                                    .clicked()
+                                {
                                     self.push("app.share_safe.toggle", json!({}));
                                     ui.close();
                                 }
                             });
                         } else {
-                            if widgets::toggle_chip(ui, "Discreet", self.discreet()).clicked() {
+                            if widgets::toggle_chip(
+                                ui,
+                                crate::i18n::tr("Discreet"),
+                                self.discreet(),
+                            )
+                            .clicked()
+                            {
                                 self.push("app.discreet.toggle", json!({}));
                             }
                             ui.add_space(8.0);
-                            if widgets::toggle_chip(ui, "Share-safe", self.cfg.screen_share_safe)
-                                .on_hover_text("Blur every thumbnail until hovered")
-                                .clicked()
+                            if widgets::toggle_chip(
+                                ui,
+                                crate::i18n::tr("Share-safe"),
+                                self.cfg.screen_share_safe,
+                            )
+                            .on_hover_text(crate::i18n::tr("Blur every thumbnail until hovered"))
+                            .clicked()
                             {
                                 self.push("app.share_safe.toggle", json!({}));
                             }
@@ -1158,7 +1200,7 @@ impl JizzApp {
                         let resp = ui.add_sized(
                             [w, 28.0],
                             egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Search")
+                                .hint_text(crate::i18n::tr("Search"))
                                 .id(egui::Id::new("search"))
                                 .margin(egui::Margin::symmetric(8, 6)),
                         );
@@ -1223,33 +1265,42 @@ impl JizzApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if self.stats.total > 0 {
                             let on = self.cfg.inspector_open;
-                            if widgets::toggle_chip(ui, "Inspector", on).clicked() {
+                            if widgets::toggle_chip(ui, crate::i18n::tr("Inspector"), on).clicked()
+                            {
                                 self.push("inspector.toggle", json!({}));
                             }
                             if self.stats.total > 0 {
                                 let mut chosen = Vec::new();
-                                ui.menu_button(theme::hud("Library", MUTED), |ui| {
-                                    chosen = self.tools_menu(ui);
-                                });
+                                ui.menu_button(
+                                    theme::hud(crate::i18n::tr("Library"), MUTED),
+                                    |ui| {
+                                        chosen = self.tools_menu(ui);
+                                    },
+                                );
                                 for (name, args) in chosen {
                                     self.push(name, args);
                                 }
-                                if widgets::toggle_chip(ui, "Save view", false)
-                                    .on_hover_text("Ctrl+S")
+                                if widgets::toggle_chip(ui, crate::i18n::tr("Save view"), false)
+                                    .on_hover_text(crate::i18n::tr("Ctrl+S"))
                                     .clicked()
                                 {
                                     self.push("views.save.open", json!({}));
                                 }
-                                if widgets::toggle_chip(ui, "Shuffle", self.sort == SortKey::Random)
-                                    .clicked()
+                                if widgets::toggle_chip(
+                                    ui,
+                                    crate::i18n::tr("Shuffle"),
+                                    self.sort == SortKey::Random,
+                                )
+                                .clicked()
                                 {
                                     self.push("view.shuffle", json!({}));
                                 }
                             }
                             let arrow = if self.sort_desc { "↓" } else { "↑" };
-                            let label = format!("Sort: {} {arrow}", self.sort.as_str());
+                            let label =
+                                format!("Sort: {} {arrow}", crate::i18n::tr(self.sort.as_str()));
                             let mut pick: Option<SortKey> = None;
-                            ui.menu_button(theme::hud(&label, MUTED), |ui| {
+                            ui.menu_button(theme::hud(&crate::i18n::tr_dyn(&label), MUTED), |ui| {
                                 let hide_hist = self.cfg.discreet || self.cfg.hide_history;
                                 for k in SortKey::ALL {
                                     if k.is_history() && hide_hist {
@@ -1271,9 +1322,9 @@ impl JizzApp {
                             }
                             let mut text = format!("{} items", self.total);
                             if self.busy > 0 {
-                                text += " · Scanning…";
+                                text += &format!(" · {}", crate::i18n::tr("Scanning…"));
                             }
-                            widgets::mono_label(ui, &text, FAINT);
+                            widgets::mono_label(ui, &crate::i18n::tr_dyn(&text), FAINT);
                         }
                     });
                 });
@@ -1297,23 +1348,35 @@ impl JizzApp {
                     .stroke(theme::hairline()),
             )
             .show(ui, |ui| {
-                widgets::mono_label(ui, "Inspector", MUTED);
+                widgets::mono_label(ui, crate::i18n::tr("Inspector"), MUTED);
                 ui.add_space(S);
                 widgets::hairline_h(ui);
                 ui.add_space(S);
                 let Some(m) = media else {
-                    widgets::mono_label(ui, "Select an item, then press Enter to open", FAINT);
+                    widgets::mono_label(
+                        ui,
+                        crate::i18n::tr("Select an item, then press Enter to open"),
+                        FAINT,
+                    );
                     return;
                 };
-                widgets::kv(ui, "Name", if discreet { "—" } else { &m.name });
-                let path = m.path.to_string_lossy();
-                let hide_path = discreet || self.opts.screenshot.is_some();
-                widgets::kv(ui, "Path", if hide_path { "hidden" } else { &path });
-                widgets::kv(ui, "Type", m.kind.label());
-                widgets::kv(ui, "Size", &fmt_size(m.size));
                 widgets::kv(
                     ui,
-                    "Resolution",
+                    crate::i18n::tr("Name"),
+                    if discreet { "—" } else { &m.name },
+                );
+                let path = m.path.to_string_lossy();
+                let hide_path = discreet || self.opts.screenshot.is_some();
+                widgets::kv(
+                    ui,
+                    crate::i18n::tr("Path"),
+                    if hide_path { "hidden" } else { &path },
+                );
+                widgets::kv(ui, crate::i18n::tr("Type"), crate::i18n::tr(m.kind.label()));
+                widgets::kv(ui, crate::i18n::tr("Size"), &fmt_size(m.size));
+                widgets::kv(
+                    ui,
+                    crate::i18n::tr("Resolution"),
                     &match (m.width, m.height) {
                         (Some(w), Some(h)) => format!("{w} × {h}"),
                         _ => "—".into(),
@@ -1321,22 +1384,30 @@ impl JizzApp {
                 );
                 widgets::kv(
                     ui,
-                    "Duration",
+                    crate::i18n::tr("Duration"),
                     &m.duration_ms.map_or("—".into(), fmt_duration),
                 );
-                widgets::kv(ui, "Codec", m.codec.as_deref().unwrap_or("—"));
-                widgets::kv(ui, "Added", &fmt_date(m.added_at));
-                widgets::kv(ui, "Favorite", if m.favorite { "yes" } else { "no" });
+                widgets::kv(
+                    ui,
+                    crate::i18n::tr("Codec"),
+                    m.codec.as_deref().unwrap_or("—"),
+                );
+                widgets::kv(ui, crate::i18n::tr("Added"), &fmt_date(m.added_at));
+                widgets::kv(
+                    ui,
+                    crate::i18n::tr("Favorite"),
+                    if m.favorite { "yes" } else { "no" },
+                );
                 let show_history = !discreet && !self.cfg.hide_history;
                 if show_history {
-                    widgets::kv(ui, "Plays", &m.play_count.to_string());
+                    widgets::kv(ui, crate::i18n::tr("Plays"), &m.play_count.to_string());
                     widgets::kv(
                         ui,
-                        "Last played",
+                        crate::i18n::tr("Last played"),
                         &m.last_played_at.map_or("—".into(), fmt_date),
                     );
                     if let Some(ms) = m.resume_ms {
-                        widgets::kv(ui, "Resume at", &fmt_duration(ms));
+                        widgets::kv(ui, crate::i18n::tr("Resume at"), &fmt_duration(ms));
                     }
                 }
                 if m.damaged > 0 {
@@ -1349,14 +1420,19 @@ impl JizzApp {
                         DANGER,
                     ));
                 } else if let Some(at) = m.checked_at {
-                    widgets::kv(ui, "Checked", &fmt_date(at));
+                    widgets::kv(ui, crate::i18n::tr("Checked"), &fmt_date(at));
                 }
                 if m.missing {
                     ui.add_space(S);
-                    ui.label(theme::spaced("File missing on disk", 10.0, 1.2, DANGER));
+                    ui.label(theme::spaced(
+                        crate::i18n::tr("File missing on disk"),
+                        10.0,
+                        1.2,
+                        DANGER,
+                    ));
                 }
                 ui.add_space(S);
-                ui.label(theme::hud("Rating", theme::FAINT));
+                ui.label(theme::hud(crate::i18n::tr("Rating"), theme::FAINT));
                 if let Some(r) = widgets::rating_stars(ui, m.rating, 16.0) {
                     self.push("media.rate", json!({ "id": m.id, "rating": r }));
                 }
@@ -1366,7 +1442,7 @@ impl JizzApp {
                     let marks = self.markers_of(m.id);
                     if marks.is_empty() {
                         ui.label(
-                            egui::RichText::new("None yet")
+                            egui::RichText::new(crate::i18n::tr("None yet"))
                                 .size(11.0)
                                 .color(theme::FAINT),
                         );
@@ -1398,7 +1474,7 @@ impl JizzApp {
                             }
                             if ui
                                 .small_button("×")
-                                .on_hover_text("Remove marker")
+                                .on_hover_text(crate::i18n::tr("Remove marker"))
                                 .clicked()
                             {
                                 self.push("markers.remove", json!({ "marker_id": mk.id }));
@@ -1408,11 +1484,19 @@ impl JizzApp {
                 }
                 ui.add_space(S * 2.0);
                 ui.horizontal(|ui| {
-                    let label = if m.favorite { "Unfavorite" } else { "Favorite" };
+                    let label = if m.favorite {
+                        crate::i18n::tr("Unfavorite")
+                    } else {
+                        crate::i18n::tr("Favorite")
+                    };
                     if widgets::button_outline(ui, label).clicked() {
                         self.push("media.favorite.toggle", json!({ "id": m.id }));
                     }
-                    let hide = if m.hidden { "Unhide" } else { "Hide" };
+                    let hide = if m.hidden {
+                        crate::i18n::tr("Unhide")
+                    } else {
+                        crate::i18n::tr("Hide")
+                    };
                     if widgets::button_outline(ui, hide).clicked() {
                         self.push("media.hide", json!({ "id": m.id }));
                     }
@@ -1464,7 +1548,7 @@ impl JizzApp {
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
-            "NO MATCHING ITEMS",
+            crate::i18n::tr("NO MATCHING ITEMS"),
             FontId::new(11.0, FontFamily::Monospace),
             FAINT,
         );
@@ -1576,9 +1660,9 @@ impl JizzApp {
         painter.rect_filled(rect, CornerRadius::ZERO, BG);
         if self.slideshow.active {
             let text = if self.slideshow.paused {
-                "SLIDESHOW PAUSED · SPACE RESUMES · T STOPS"
+                crate::i18n::tr("SLIDESHOW PAUSED · SPACE RESUMES · T STOPS")
             } else {
-                "SLIDESHOW · SPACE PAUSES · T STOPS"
+                crate::i18n::tr("SLIDESHOW · SPACE PAUSES · T STOPS")
             };
             let galley = painter.layout_job(theme::hud(text, TEXT));
             let at = rect.left_top() + vec2(16.0, 16.0);
@@ -1607,7 +1691,7 @@ impl JizzApp {
                 painter.text(
                     rect.center(),
                     Align2::CENTER_CENTER,
-                    "LOADING…",
+                    crate::i18n::tr("LOADING…"),
                     FontId::new(12.0, FontFamily::Monospace),
                     MUTED,
                 );
@@ -1748,7 +1832,7 @@ impl JizzApp {
                     col_w.min(900.0),
                 ));
                 let sub = if discreet {
-                    "Your library, in a native app. Offline, and yours."
+                    crate::i18n::tr("Your library, in a native app. Offline, and yours.")
                 } else {
                     "Point it at a folder. It indexes your images and videos in place, \
                      never touches the files, and stays offline: no account, no ads, no network."
@@ -1762,31 +1846,35 @@ impl JizzApp {
                 ui.horizontal(|ui| {
                     let w = 220.0 + 150.0 + 12.0;
                     ui.add_space(((col_w - w) * 0.5).max(0.0));
-                    if widgets::button_solid_hero(ui, "Import folder").clicked() {
+                    if widgets::button_solid_hero(ui, crate::i18n::tr("Import folder")).clicked() {
                         self.push("library.import", json!({}));
                     }
-                    if widgets::button_outline_hero(ui, "Shortcuts").clicked() {
+                    if widgets::button_outline_hero(ui, crate::i18n::tr("Shortcuts")).clicked() {
                         self.push("docs.toggle", json!({}));
                     }
                 });
                 if !discreet {
                     ui.label(theme::hud(
-                        "Linux · Offline · No ads · Free and open source",
+                        crate::i18n::tr("Linux · Offline · No ads · Free and open source"),
                         FAINT,
                     ));
                     ui.add_space(S);
                     let cells = [
                         (
                             "01",
-                            "Point it at a folder",
-                            "Indexed in place, never modified.",
+                            crate::i18n::tr("Point it at a folder"),
+                            crate::i18n::tr("Indexed in place, never modified."),
                         ),
                         (
                             "02",
-                            "Browse by keyboard",
-                            "Filter, favorite and play without the mouse.",
+                            crate::i18n::tr("Browse by keyboard"),
+                            crate::i18n::tr("Filter, favorite and play without the mouse."),
                         ),
-                        ("03", "Stays offline", "No account, no ads, no network."),
+                        (
+                            "03",
+                            crate::i18n::tr("Stays offline"),
+                            crate::i18n::tr("No account, no ads, no network."),
+                        ),
                     ];
                     let w = col_w.min(900.0);
                     let (grid, _) = ui.allocate_exact_size(vec2(w, 112.0), Sense::hover());
@@ -1846,10 +1934,10 @@ impl JizzApp {
                     ui.spacing_mut().item_spacing = vec2(S * 2.0, S * 2.0);
                     ui.horizontal(|ui| {
                         widgets::badge(ui, "18", 28.0);
-                        widgets::mono_label(ui, "Age check", MUTED);
+                        widgets::mono_label(ui, crate::i18n::tr("Age check"), MUTED);
                     });
                     ui.label(
-                        egui::RichText::new("You must be 18 or older.")
+                        egui::RichText::new(crate::i18n::tr("You must be 18 or older."))
                             .font(FontId::new(44.0, theme::title_family()))
                             .color(Color32::WHITE),
                     );
@@ -1866,10 +1954,10 @@ impl JizzApp {
                     );
                     ui.add_space(S);
                     ui.horizontal(|ui| {
-                        if widgets::button_solid(ui, "I am 18 or older").clicked() {
+                        if widgets::button_solid(ui, crate::i18n::tr("I am 18 or older")).clicked() {
                             self.push("app.age.confirm", json!({}));
                         }
-                        if widgets::button_outline(ui, "Exit").clicked() {
+                        if widgets::button_outline(ui, crate::i18n::tr("Exit")).clicked() {
                             self.push("app.quit", json!({}));
                         }
                     });
@@ -1889,6 +1977,7 @@ impl JizzApp {
             .order(egui::Order::Tooltip)
             .show(ctx, |ui| {
                 for t in &self.toasts {
+                    let shown = crate::i18n::tr_dyn(&t.text).into_owned();
                     let (edge, fg) = match t.kind {
                         ToastKind::Info => (LINE_STRONG, TEXT),
                         ToastKind::Error => (DANGER, TEXT),
@@ -1898,7 +1987,7 @@ impl JizzApp {
                         .stroke(Stroke::new(1.0, edge))
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(&t.text).size(12.0).color(fg));
+                            ui.label(egui::RichText::new(&shown).size(12.0).color(fg));
                         });
                 }
             });
@@ -1909,7 +1998,7 @@ impl JizzApp {
             return;
         }
         let mut open = true;
-        egui::Window::new("DOCS")
+        egui::Window::new(crate::i18n::tr("DOCS"))
             .open(&mut open)
             .collapsible(false)
             .default_width(420.0)
@@ -1920,15 +2009,15 @@ impl JizzApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for (ctx, rows) in keys::docs(lh) {
-                            widgets::eyebrow(ui, "", ctx.title(), "");
+                            widgets::eyebrow(ui, "", crate::i18n::tr(ctx.title()), "");
                             for r in rows {
-                                widgets::kv(ui, r.keys, r.doc);
+                                widgets::kv(ui, r.keys, crate::i18n::tr(r.doc));
                             }
                             ui.add_space(S);
                         }
                     });
                 ui.add_space(S);
-                if widgets::toggle_chip(ui, "Left-hand keys", lh).clicked() {
+                if widgets::toggle_chip(ui, crate::i18n::tr("Left-hand keys"), lh).clicked() {
                     self.push("app.left_hand.toggle", json!({}));
                 }
                 ui.add_space(S);
@@ -1937,7 +2026,7 @@ impl JizzApp {
                         "Network build: it connects only to the indexers you add and to BitTorrent \
                              peers. No account, no telemetry."
                     } else {
-                        "Everything stays on this machine. No account, no telemetry, no network."
+                        crate::i18n::tr("Everything stays on this machine. No account, no telemetry, no network.")
                     })
                     .color(MUTED),
                 );
@@ -2267,7 +2356,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             app.search.clear();
             app.refresh();
             if app.total == 0 {
-                app.toast(ToastKind::Info, "Inbox is empty");
+                app.toast(ToastKind::Info, crate::i18n::tr("Inbox is empty"));
                 return Ok(json!({ "started": false }));
             }
             app.triage = Some(Triage {
@@ -2340,7 +2429,10 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `on`".into()))?;
             app.cfg.disguise = on;
             app.save_cfg();
-            app.toast(ToastKind::Info, "Takes effect at the next launch");
+            app.toast(
+                ToastKind::Info,
+                crate::i18n::tr("Takes effect at the next launch"),
+            );
             Ok(json!({ "disguise": on }))
         },
     );
@@ -2365,7 +2457,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         let f = Filter::from_json(args.get("spec").unwrap_or(&Value::Null))?;
         let id = app.db.save_view(name, &f)?;
         app.generation += 1;
-        app.toast(ToastKind::Info, "View saved");
+        app.toast(ToastKind::Info, crate::i18n::tr("View saved"));
         Ok(json!({ "id": id }))
     });
     reg.register(
@@ -2782,6 +2874,22 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({ "left_hand": app.cfg.left_hand }))
         },
     );
+    reg.register(
+        "app.language",
+        "Set the interface language: {lang: en|fr|es|de|it|pt}",
+        |app, args| {
+            let code = args
+                .get("lang")
+                .and_then(Value::as_str)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("missing `lang`".into()))?;
+            let lang = crate::i18n::Lang::parse(code)
+                .ok_or_else(|| jizzcraft_core::Error::Invalid("unsupported language".into()))?;
+            crate::i18n::set(lang);
+            app.cfg.language = Some(lang.code().to_owned());
+            app.save_cfg();
+            Ok(json!({ "lang": lang.code() }))
+        },
+    );
     reg.register("docs.toggle", "Show or hide the docs window", |app, _| {
         app.show_docs = !app.show_docs;
         Ok(json!({}))
@@ -2907,7 +3015,11 @@ fn draw_tile(
     p.text(
         badge.center(),
         Align2::CENTER_CENTER,
-        if m.hidden { "HIDDEN" } else { m.kind.label() },
+        if m.hidden {
+            crate::i18n::tr("HIDDEN")
+        } else {
+            crate::i18n::tr(m.kind.label())
+        },
         FontId::new(9.0, FontFamily::Monospace),
         if m.hidden { DANGER } else { MUTED },
     );

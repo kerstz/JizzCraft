@@ -20,6 +20,7 @@ OPTIONS:
   --bench-gst-play          also measure gst-play-1.0 on the same file
   --assume-adult            (screenshots only) skip the age gate without saving
   magnet:…                  play a magnet link (network build)
+  --lang <CODE>             interface language: en fr es de it pt (default: system)
   --disguise                launch as a neutral \"Viewer\" (window name, app ID, discreet mode)
   --portable                keep database, config and cache in ./jizzcraft-data next to the executable
   --home <DIR>              keep database, config and cache under DIR
@@ -75,6 +76,7 @@ fn main() -> eframe::Result {
             "--bench-gst-play" => bench_gst = true,
             "--assume-adult" => assume_adult = true,
             "--disguise" => disguise_flag = true,
+            "--lang" => opts.lang = args.next(),
             "--portable" => {
                 if let Some(h) = jizzcraft_core::paths::portable_home() {
                     jizzcraft_core::paths::set_home(h);
