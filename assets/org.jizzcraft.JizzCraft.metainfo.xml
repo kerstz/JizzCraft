@@ -10,12 +10,13 @@
   <url type="bugtracker">https://github.com/kerstz/JizzCraft/issues</url>
   <description>
     <p>
-      JizzCraft is a parody project: a private, offline viewer and library
-      manager for local images and videos, written in Rust. No accounts, no
-      telemetry, no network connections.
+      JizzCraft is a private, local-first viewer and library manager for
+      images and videos, written in Rust. Your files are indexed in place and
+      never modified. No accounts, no telemetry, and no network connections in
+      the default build.
     </p>
     <p>
-      Not affiliated with or endorsed by the ArtCraft team.
+      Independent project, not affiliated with any other product.
     </p>
   </description>
   <launchable type="desktop-id">org.jizzcraft.JizzCraft.desktop</launchable>

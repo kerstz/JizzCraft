@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Read this first. JizzCraft is a private, offline adult-media viewer written in
-Rust (egui/eframe + wgpu, GStreamer, SQLite). It is a parody project.
+Rust (egui/eframe + wgpu, GStreamer, SQLite).
 
 ## Layout (engine first)
 

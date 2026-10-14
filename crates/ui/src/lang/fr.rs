@@ -442,4 +442,15 @@ pub const TABLE: &[(&str, &str)] = &[
     ("played", "lecture"),
     ("plays", "lectures"),
     ("random", "aléatoire"),
+    ("Add folder", "Ajouter un dossier"),
+    ("Back", "Retour"),
+    ("Your private media library.", "Votre médiathèque privée."),
+    (
+        "Add a folder. Your images and videos are indexed in place and never modified. No account, no ads, no network.",
+        "Ajoutez un dossier. Vos images et vidéos sont indexées sur place et jamais modifiées. Aucun compte, aucune pub, aucun réseau.",
+    ),
+    (
+        "Offline · No ads · Free and open source",
+        "Hors ligne · Sans pub · Libre et open source",
+    ),
 ];
