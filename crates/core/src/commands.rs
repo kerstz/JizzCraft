@@ -345,6 +345,36 @@ fn register_userdata<C: HasLibrary>(reg: &mut Registry<C>) {
         },
     );
     reg.register(
+        "media.bulk",
+        "Patch user data of many items in one transaction: {ids, favorite?, rating?, hidden?}",
+        |c, a| {
+            let ids: Vec<i64> = a
+                .get("ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Error::Invalid("missing array argument `ids`".into()))?
+                .iter()
+                .filter_map(Value::as_i64)
+                .collect();
+            if ids.len() > crate::organize::MAX_IDS {
+                return Err(Error::Invalid(format!(
+                    "at most {} items per call",
+                    crate::organize::MAX_IDS
+                )));
+            }
+            let patch = crate::history::MediaPatch {
+                favorite: a.get("favorite").and_then(Value::as_bool),
+                rating: a
+                    .get("rating")
+                    .and_then(Value::as_u64)
+                    .map(|r| r.min(255) as u8),
+                hidden: a.get("hidden").and_then(Value::as_bool),
+                inbox: None,
+            };
+            let before = c.db().bulk_patch(&ids, &patch)?;
+            Ok(json!({ "changed": before.len(), "skipped": ids.len() - before.len() }))
+        },
+    );
+    reg.register(
         "media.set",
         "Patch user data: {id, favorite?, rating?, hidden?, inbox?}",
         |c, a| {
