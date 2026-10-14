@@ -14,11 +14,12 @@ network = ["dep:librqbit", "dep:tokio", "dep:reqwest"]
 
 [dependencies]
 jizzcraft-core.workspace = true
+directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 quick-xml.workspace = true
 librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros", "io-util"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 
 [dev-dependencies]

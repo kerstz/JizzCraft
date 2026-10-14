@@ -30,7 +30,8 @@ pub fn portable_home() -> Option<PathBuf> {
         .map(|p| p.join("jizzcraft-data"))
 }
 
-fn home() -> Option<&'static Path> {
+/// The explicit home (portable or `--home`), if one was chosen.
+pub fn home() -> Option<&'static Path> {
     HOME.get().map(PathBuf::as_path)
 }
 

@@ -60,8 +60,12 @@ Add behaviour as a command first, UI second.
   (`cargo tree`) and `tests/network.rs` (zero connections). Network code lives
   only in `crates/fetch`, behind the off-by-default `network` feature
   (`cargo build -p jizzcraft --features network`). No telemetry in any build.
-  The player stays `file://`-only in every build: nothing is streamed from a
-  URL, a download is played from disk.
+  The player never takes a URL in any build. It gets a `file://` URI from
+  `jizzcraft_media::file_uri`, or, for `Player::open_stream` only, bytes read
+  in-process from a local reader and pushed into an `appsrc` (no URL, no
+  socket). Only that pipeline may contain an `appsrc` (`guard::watch_with`);
+  streamed bytes are sniffed with `guard::looks_like_manifest` first, and
+  `tests/network.rs::stream_player_never_connects` must stay at zero connections.
   GStreamer only gets `file://` URIs from `jizzcraft_media::file_uri`; call
   `jizzcraft_media::init()` before building any pipeline (it removes
   network-capable elements from the process registry) and pass every new
