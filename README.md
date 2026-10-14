@@ -8,6 +8,8 @@
 
 <p align="center">Native Linux desktop application written in Rust. No account, no telemetry, no network connections.</p>
 
+<p align="center"><em>Fully usable with one hand. We are told this is an accessibility feature, and we are sticking to that.</em></p>
+
 <p align="center">
   <a href="https://github.com/kerstz/JizzCraft/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/kerstz/JizzCraft/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/language-Rust-b7410e?style=flat-square" alt="Language: Rust">
@@ -24,6 +26,8 @@
 
 ![Library grid](docs/screenshots/library.png)
 
+Yes, the name is exactly what you think it is. Everything else in this repository tries hard to be more serious than the name: the code is tested, the claims below match it, and the only thing the application ever talks to is your own disk.
+
 ## Features
 
 - **Library**: recursive indexing of local folders into SQLite; search by file name; tabs for images, videos and favorites; sorting by name, date added, size, duration, rating, last played or play count, or a stable shuffle; manual rescan; missing files are flagged rather than dropped.
@@ -34,10 +38,37 @@
 - **Video player**: GStreamer playback rendered through wgpu, with seeking and scrubbing, volume, fullscreen, playback speed, A-B loop, frame step, markers, resume points, watch history and autoplay-next.
 - **Maintenance**: integrity check (decode test, optional checksum against silent corruption), backup, metadata export/import, cache clearing, portable mode.
 - **Privacy controls**: 18+ age gate, boss key, discreet mode, screen-share-safe mode; watch history can be paused, cleared or hidden.
+- **One-handed operation**: a left-hand key preset puts browsing, opening, playback, seeking, volume, favorites, ratings and the boss key under one hand, around `WASD`. See [One hand is enough](#one-hand-is-enough).
 - **Command registry and CLI**: menus, shortcuts, a JSON command-line tool and `--cmd` startup commands all call the same named commands.
 - **Local only**: no accounts, telemetry, update checks or remote URLs; GStreamer's network-capable elements are disabled inside the application.
 
-The interface follows familiar file-browser conventions: a top bar with tabs and search, a sidebar with views and folders, a thumbnail grid, and an inspector panel.
+The interface follows familiar file-browser conventions: a top bar with tabs and search, a sidebar with views and folders, a thumbnail grid, and an inspector panel. If you can operate a file manager, you are overqualified.
+
+## One hand is enough
+
+*The left-hand preset keeps every routine action under the left hand. What the right hand does in the meantime is outside the scope of this README.*
+
+Turn it on once: press `?` in the library and click *Left-hand keys*, or start the application with `jizzcraft --cmd app.left_hand.toggle`. The choice is saved. Letters match the physical key, so on AZERTY the same keys sit under `ZQSD`.
+
+| | Library | Image viewer | Video player |
+| --- | --- | --- | --- |
+| Move / step | `W` `A` `S` `D` move the selection | `A` / `D` previous / next | `A` / `D` back / forward 5 s |
+| Open / play | `E` or `Space` | | `Space` play / pause |
+| Up / down | | `W` / `S` zoom, `Z` fit | `W` / `S` volume |
+| Favorite | `F` | `F` | `F` |
+| Back | `Q` clears the search | `Q` back to the library | `Q` leaves fullscreen, then goes back |
+| Also | `1`–`4` switch tabs | `X` hide / unhide | `X` mute, `G` fullscreen, `Shift+A` / `Shift+D` previous / next item |
+
+Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key (a one-hand chord, with a mild stretch to `H`). Inbox triage: `D` keep, `S` or `X` hide, `W` favorite, `A` undo, `Q` leave. The complete table, both presets, is under [Keyboard shortcuts](#keyboard-shortcuts).
+
+**Honest footnote: what still wants the other hand or a pointer.**
+
+- Turning the preset on: one click in the `?` window, or the `--cmd` above.
+- Keys on the right side of the keyboard: `?`, `/` and typing a search, `Home` / `End`, `Alt+0` (clear a rating).
+- The folder picker behind `Ctrl+O`: it is the system dialog, not ours.
+- Dragging the timeline and its hover previews, panning a zoomed image, the sidebar (views, folder tree), sorting, shuffle, *Save view*, the *Library* menu, the inspector and the player-bar chips (speed, A-B loop, autoplay).
+- Starting triage (`jizzcraft --cmd triage.start`, no key yet) and seeking during triage (`Shift+←` / `Shift+→`).
+- The bindings are checked by tests as a table (no duplicate chords, physical keys on AZERTY) but have not yet been verified by hand; see [Project status](#project-status).
 
 ## Details
 
@@ -98,7 +129,7 @@ The *Library* menu runs each job in the background and reports counts only, neve
 
 ## Keyboard shortcuts
 
-Press `?` in the library to display the shortcuts in the application. The left-hand preset is enabled from that window ("Left-hand keys") or with `--cmd app.left_hand.toggle`, and is saved in the configuration. Digits and left-hand letters match the physical key, so they work on AZERTY and other layouts.
+Available in two-handed and [one-handed](#one-hand-is-enough) editions. Press `?` in the library to display the shortcuts in the application. The left-hand preset is enabled from that window ("Left-hand keys") or with `--cmd app.left_hand.toggle`, and is saved in the configuration. Digits and left-hand letters match the physical key, so they work on AZERTY and other layouts.
 
 | Action | Default | Left-hand preset |
 | --- | --- | --- |
@@ -269,20 +300,20 @@ Media tests need `gst-launch-1.0` and the GStreamer base and good plugins; when 
 
 **"missing GStreamer plugin: …"**: install the plugin sets listed above (good, bad, ugly, libav). The message names the missing element; check with `gst-inspect-1.0 <element>`, e.g. `gst-inspect-1.0 avdec_h264`.
 
-**"refused: this file refers to network media…"**: the file is a streaming playlist (HLS, DASH, Smooth Streaming) or an SDP description rather than a video. JizzCraft does not follow the addresses inside it, by design; installing plugins will not change that.
+**"refused: this file refers to network media…"**: the file is a streaming playlist (HLS, DASH, Smooth Streaming) or an SDP description rather than a video. JizzCraft does not follow the addresses inside it, by design; installing plugins will not change that, and neither will asking nicely.
 
-**Black window or wgpu error at startup**: check your Vulkan driver (`vulkaninfo` should list your GPU). Vulkan is the only backend that has been tested.
+**Black window or wgpu error at startup**: check your Vulkan driver (`vulkaninfo` should list your GPU). Vulkan is the only backend that has been tested. A black window is discreet, but not the kind of discreet we were going for.
 
 **Wayland**: JizzCraft runs natively on Wayland. To force X11 (XWayland), run `WAYLAND_DISPLAY= jizzcraft`. The folder dialog uses the XDG desktop portal; `xdg-desktop-portal` and a backend for your desktop must be running.
 
-**High CPU or stutter on 4K**: expected in the current version; see [`docs/bench.md`](docs/bench.md).
+**High CPU or stutter on 4K**: expected in the current version. Your fans are not judging you; they are converting colours on the CPU. See [`docs/bench.md`](docs/bench.md).
 
-**File names in logs**: paths and file names are redacted by default. `JIZZCRAFT_DEBUG=1` logs full paths and the selected decoder. Redact such logs before sharing them.
+**File names in logs**: paths and file names are redacted by default. `JIZZCRAFT_DEBUG=1` logs full paths and the selected decoder. Redact such logs before sharing them: an issue tracker is a very public place to find out what your files are called.
 
 ## Project status
 
 > [!IMPORTANT]
-> JizzCraft is **early alpha**.
+> JizzCraft is **early alpha**, held together by clippy and optimism. The lists below say which of the two is doing the work.
 >
 > **Covered by automated tests**: library scanning, search, favorites and persistence; schema migration; ratings, hiding, inbox, history settings and markers; filters, saved views, the folder tree and the stable shuffle; fingerprint relinking and merging; backup and metadata export/import; checksum-based corruption detection; a test that hashes a media tree before and after every command to prove nothing is written to it; image and video thumbnails, scrub previews and integrity checks; the player state machine on a real GStreamer pipeline (play, pause, seek, coalesced scrubbing, end of stream and replay, speed, frame step, A-B loop, error reporting); the network guard; keymap invariants. The CLI examples above have been run end to end. Rendering of the library, viewer, player, triage and discreet mode has been checked through generated screenshots. Playback was benchmarked on one machine (H.264, VA-API, AMD GPU, Wayland).
 >
@@ -293,6 +324,8 @@ Media tests need `gst-launch-1.0` and the GStreamer base and good plugins; when 
 Planned work is listed in [`ROADMAP.md`](ROADMAP.md).
 
 ## Privacy
+
+*The boring section. Boring is the point.*
 
 - No accounts, telemetry, analytics, cloud sync, advertising or network connections. The player accepts local file paths only, and GStreamer's network-capable elements are disabled inside the application (see [Architecture](#architecture)). Files stored on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file.
 - No scraping, downloading or external feeds.
@@ -306,7 +339,7 @@ Planned work is listed in [`ROADMAP.md`](ROADMAP.md).
 
 ## Contributing
 
-Contributions are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). In short: no network code, no real adult content in the repository or in issues (use `cargo xtask fixtures`), no site-specific code, and new behaviour is added to the command registry before it is exposed in the UI.
+Contributions are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). In short: no network code, no real adult content in the repository or in issues (use `cargo xtask fixtures`; the gradients are very tasteful), no site-specific code, and new behaviour is added to the command registry before it is exposed in the UI.
 
 ## Security
 
@@ -314,11 +347,13 @@ Please report vulnerabilities privately as described in [`SECURITY.md`](SECURITY
 
 ## Inspiration
 
-The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
+The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. One-handed use was raised as an accessibility point and has been implemented as one, with a completely straight face. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
 
 ## Parody disclaimer
 
 The name "JizzCraft", the structure of this README and the look of the interface parody the "Craft" family of apps by Crafting Apps (ArtCraft and its siblings). JizzCraft is an independent project and is not affiliated with, endorsed by or connected to the ArtCraft team or Crafting Apps. It contains no code, assets, logos or wordmarks from those projects. Application ID: `org.jizzcraft.JizzCraft`.
+
+The resemblance is intentional; the endorsement is not. If the name made you wince, the disclaimer is working as designed.
 
 ## License and credits
 
