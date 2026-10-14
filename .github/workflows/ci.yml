@@ -29,7 +29,7 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Headers to build, plus the plugins the media tests use. Tests whose
       # GStreamer elements are missing print "skipped: …" instead of failing.
@@ -69,7 +69,7 @@ jobs:
     name: cargo-deny · cargo-audit
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: cargo-deny (advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -85,14 +85,14 @@ jobs:
     name: msrv (rust 1.95)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer headers
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       # Keep in step with rust-version in Cargo.toml.
-      - uses: dtolnay/rust-toolchain@1.95
+      - uses: dtolnay/rust-toolchain@1.120
       - uses: Swatinem/rust-cache@v2
       - name: Check
         run: cargo check --workspace --all-targets
@@ -103,7 +103,7 @@ jobs:
     if: false
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -q -p xtask -- e2e
@@ -112,7 +112,7 @@ jobs:
     name: network build · clippy · test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer
         run: |
           sudo apt-get update
@@ -135,7 +135,7 @@ jobs:
     name: packaging · shellcheck · desktop · appstream
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Tools
         run: |
           sudo apt-get update
@@ -157,7 +157,7 @@ jobs:
     env:
       JIZZCRAFT_REQUIRE_PLUGINS: "0"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: GStreamer (MSVC runtime + devel)
         shell: pwsh
         run: |
@@ -220,7 +220,7 @@ jobs:
     name: install · tarball → install.sh → doctor → uninstall
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer
         run: |
           sudo apt-get update

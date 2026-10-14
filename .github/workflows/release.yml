@@ -23,7 +23,7 @@ jobs:
     # Oldest supported host, so the binaries run on Debian 12 and newer.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer headers
         run: |
           sudo apt-get update
@@ -53,7 +53,7 @@ jobs:
         run: |
           cp packaging/install.sh dist/install.sh
           (cd dist && sha256sum * > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*
@@ -65,7 +65,7 @@ jobs:
     # release; the Windows files are simply absent from it.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: GStreamer (MSVC runtime + devel)
         shell: pwsh
         run: |
@@ -110,7 +110,7 @@ jobs:
       - name: Build the zip
         shell: pwsh
         run: ./packaging/windows/build.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: |
@@ -124,12 +124,12 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: brew install gstreamer pkgconf
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./packaging/macos/build-app.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: macos, path: "dist/*.zip" }
 
   publish:
@@ -138,17 +138,17 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: artifacts }
       - name: Merge checksums
         run: |
           (cd artifacts && find . -type f ! -name SHA256SUMS -exec sha256sum {} + | sed 's|\./[^/]*/||' | sort -k2 > ../SHA256SUMS.all)
           mkdir -p artifacts/checksums && mv SHA256SUMS.all artifacts/checksums/SHA256SUMS
           rm -f artifacts/linux/SHA256SUMS
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'artifacts/**/*'
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: JizzCraft ${{ github.ref_name }} (alpha)
           files: artifacts/**/*
