@@ -767,6 +767,9 @@ impl JizzApp {
                 });
                 if busy {
                     ui.label(RichText::new(crate::i18n::tr("Starting playback…")).color(MUTED));
+                    if let Some(q) = crate::fun::steady(crate::fun::Quip::Starting) {
+                        ui.label(RichText::new(q).italics().color(FAINT));
+                    }
                 }
                 if let Some(Flow::Choosing { files, picks, .. }) = &d.flow {
                     ui.add_space(4.0);
@@ -870,6 +873,9 @@ impl JizzApp {
                 widgets::eyebrow(ui, "", crate::i18n::tr("Downloads"), "");
                 if d.torrents.is_empty() {
                     ui.label(RichText::new(crate::i18n::tr("Nothing downloading.")).color(FAINT));
+                    if let Some(q) = crate::fun::steady(crate::fun::Quip::NothingDownloading) {
+                        ui.label(RichText::new(q).italics().color(FAINT));
+                    }
                     if !d.host.host_started()
                         && ui
                             .small_button(crate::i18n::tr("Resume saved downloads"))

@@ -123,6 +123,20 @@ impl JizzApp {
             "app.disguise.set",
             json!({ "on": !self.cfg.disguise }),
         );
+        item(
+            ui,
+            &format!(
+                "{}: {}",
+                crate::i18n::tr("Playful messages"),
+                if self.cfg.no_jokes {
+                    crate::i18n::tr("off")
+                } else {
+                    crate::i18n::tr("on")
+                }
+            ),
+            "app.jokes.toggle",
+            json!({}),
+        );
         ui.separator();
         for l in crate::i18n::ALL {
             let mark = if crate::i18n::current() == l {

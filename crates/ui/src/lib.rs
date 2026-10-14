@@ -3,6 +3,7 @@
 pub mod app;
 pub mod bench;
 pub mod config;
+pub mod fun;
 pub mod i18n;
 pub mod identity;
 pub mod keys;
