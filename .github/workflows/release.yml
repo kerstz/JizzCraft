@@ -52,7 +52,9 @@ jobs:
           cargo xtask dist --network --destdir target/stage-net --prefix /usr --tarball
       - name: Install, run doctor, uninstall (both tarballs)
         run: |
-          for t in dist/jizzcraft-*-linux.tar.xz; do sh packaging/smoke-install.sh "$t"; done
+          off=$(ls dist/jizzcraft-[0-9]*-linux.tar.xz | head -n 1)
+          on=$(ls dist/jizzcraft-online-*-linux.tar.xz | head -n 1)
+          sh packaging/smoke-install.sh "$off" "$on"
       - name: Installer and checksums
         run: |
           cp packaging/install.sh dist/install.sh
