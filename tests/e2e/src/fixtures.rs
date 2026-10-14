@@ -141,36 +141,67 @@ pub fn fmp4(w: u32, h: u32, seconds: u32) -> Option<Arc<Fmp4>> {
             "fragment-duration=1000",
         ]));
         let data = gst(&a, &tmp.path().join("c.mp4"))?;
-        let (mut init, mut frags) = (Vec::new(), Vec::new());
-        let mut off = 0usize;
-        let mut cur: Vec<u8> = Vec::new();
-        while off + 8 <= data.len() {
-            let size = u32::from_be_bytes(data[off..off + 4].try_into().ok()?) as usize;
-            let kind = &data[off + 4..off + 8];
-            if size < 8 || off + size > data.len() {
-                return None;
-            }
-            let atom = &data[off..off + size];
-            match kind {
-                b"ftyp" | b"moov" => init.extend_from_slice(atom),
-                b"moof" => {
-                    if !cur.is_empty() {
-                        frags.push(std::mem::take(&mut cur));
-                    }
-                    cur.extend_from_slice(atom);
+        split_fmp4(&data, seconds)
+    })
+}
+
+/// The audio-only counterpart of [`fmp4`]: AAC in fragmented MP4, one
+/// fragment per second. Played together with a video track it exercises the
+/// separate audio path.
+pub fn fmp4_audio(seconds: u32) -> Option<Arc<Fmp4>> {
+    cached(&format!("fmp4-audio-{seconds}"), || {
+        let tmp = tempfile::tempdir().ok()?;
+        let mut a = s(&["audiotestsrc", "wave=sine"]);
+        a.push(format!("num-buffers={}", seconds * 44));
+        a.push("samplesperbuffer=1024".to_owned());
+        a.extend(s(&[
+            "!",
+            "audio/x-raw,rate=44100,channels=2",
+            "!",
+            "audioconvert",
+            "!",
+            "avenc_aac",
+            "!",
+            "aacparse",
+            "!",
+            "mp4mux",
+            "fragment-duration=1000",
+        ]));
+        let data = gst(&a, &tmp.path().join("a.mp4"))?;
+        split_fmp4(&data, seconds.saturating_sub(1))
+    })
+}
+
+fn split_fmp4(data: &[u8], seconds: u32) -> Option<Fmp4> {
+    let (mut init, mut frags) = (Vec::new(), Vec::new());
+    let mut off = 0usize;
+    let mut cur: Vec<u8> = Vec::new();
+    while off + 8 <= data.len() {
+        let size = u32::from_be_bytes(data[off..off + 4].try_into().ok()?) as usize;
+        let kind = &data[off + 4..off + 8];
+        if size < 8 || off + size > data.len() {
+            return None;
+        }
+        let atom = &data[off..off + size];
+        match kind {
+            b"ftyp" | b"moov" => init.extend_from_slice(atom),
+            b"moof" => {
+                if !cur.is_empty() {
+                    frags.push(std::mem::take(&mut cur));
                 }
-                b"mdat" => cur.extend_from_slice(atom),
-                _ => {}
+                cur.extend_from_slice(atom);
             }
-            off += size;
+            b"mdat" => cur.extend_from_slice(atom),
+            _ => {}
         }
-        if !cur.is_empty() {
-            frags.push(cur);
-        }
-        (!init.is_empty() && frags.len() + 1 >= seconds as usize).then_some(Fmp4 {
-            init,
-            fragments: frags,
-        })
+        off += size;
+    }
+    if !cur.is_empty() {
+        frags.push(cur);
+    }
+    (!init.is_empty() && frags.len() + 1 >= seconds as usize).then_some(Fmp4 {
+        init,
+        fragments: frags,
     })
 }
 

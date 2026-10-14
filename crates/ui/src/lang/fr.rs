@@ -322,8 +322,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "Les flux DASH en direct ne sont pas pris en charge.",
     ),
     (
-        "This stream has separate video and audio tracks, which are not supported.",
-        "Ce flux a des pistes vidéo et audio séparées, ce qui n'est pas pris en charge.",
+        "This stream keeps video and audio apart in a format that cannot be combined.",
+        "Ce flux sépare la vidéo et l'audio dans un format qui ne peut pas être combiné.",
     ),
     (
         "The secure connection failed. Check the computer's date and time.",

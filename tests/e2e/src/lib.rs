@@ -51,6 +51,20 @@ pub const TS: &[&str] = &[
     "avdec_h264",
     "tsdemux",
 ];
+/// Fragmented MP4 video plus a separate AAC track.
+pub const FMP4_AV: &[&str] = &[
+    "videotestsrc",
+    "x264enc",
+    "h264parse",
+    "mp4mux",
+    "avdec_h264",
+    "qtdemux",
+    "audiotestsrc",
+    "audioconvert",
+    "avenc_aac",
+    "aacparse",
+    "avdec_aac",
+];
 pub const FMP4: &[&str] = &[
     "videotestsrc",
     "x264enc",

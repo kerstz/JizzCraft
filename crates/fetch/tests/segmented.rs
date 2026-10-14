@@ -15,7 +15,8 @@ use jizzcraft_fetch::FetchConfig;
 use jizzcraft_fetch::errors;
 use jizzcraft_fetch::pick::{Prefer, Quality};
 use jizzcraft_fetch::segmented::{
-    AbrConfig, LiveTuning, SegmentedReader, open_dash, open_hls, open_hls_with,
+    AbrConfig, LiveTuning, SegmentedReader, open_dash, open_dash_audio, open_hls, open_hls_audio,
+    open_hls_with,
 };
 use jizzcraft_fetch::service::FetchService;
 
@@ -1286,4 +1287,283 @@ fn quality_goes_down_when_the_server_is_slow_and_back_up_when_it_recovers() {
     );
     // The pipeline never had to be rebuilt: codecs agree.
     assert!(!r.wants_downgrade());
+}
+
+// ---- separate audio and video (fragmented MP4) -------------------------------
+
+fn bx(kind: &[u8; 4], parts: &[&[u8]]) -> Vec<u8> {
+    let n: usize = parts.iter().map(|p| p.len()).sum::<usize>() + 8;
+    let mut out = (n as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    for p in parts {
+        out.extend_from_slice(p);
+    }
+    out
+}
+
+fn fbx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    bx(kind, &[&[0, 0, 0, 0], body])
+}
+
+/// Synthetic init segment of one track (id 1), `format` is the sample entry.
+fn init_mp4(handler: &[u8; 4], format: &[u8; 4]) -> Vec<u8> {
+    let mut mvhd = vec![0u8; 96];
+    mvhd.extend_from_slice(&2u32.to_be_bytes());
+    let mut tk = vec![0u8; 8];
+    tk.extend_from_slice(&1u32.to_be_bytes());
+    tk.extend_from_slice(&[0u8; 68]);
+    let entry = bx(format, &[&[0u8; 8]]);
+    let mut stsd = 1u32.to_be_bytes().to_vec();
+    stsd.extend_from_slice(&entry);
+    let stbl = bx(b"stbl", &[&fbx(b"stsd", &stsd)]);
+    let minf = bx(b"minf", &[&stbl]);
+    let mut hd = vec![0u8; 4];
+    hd.extend_from_slice(handler);
+    hd.extend_from_slice(&[0u8; 12]);
+    let mdia = bx(b"mdia", &[&fbx(b"hdlr", &hd), &minf]);
+    let trak = bx(b"trak", &[&fbx(b"tkhd", &tk), &mdia]);
+    let mut tx = 1u32.to_be_bytes().to_vec();
+    tx.extend_from_slice(&[0u8; 16]);
+    let mvex = bx(b"mvex", &[&fbx(b"trex", &tx)]);
+    let moov = bx(b"moov", &[&fbx(b"mvhd", &mvhd), &trak, &mvex]);
+    let mut out = bx(b"ftyp", &[b"isom", &[0, 0, 0, 0], b"isomiso6"]);
+    out.extend_from_slice(&moov);
+    out
+}
+
+fn frag_mp4(seq: u32, payload: &[u8]) -> Vec<u8> {
+    let traf = bx(b"traf", &[&fbx(b"tfhd", &1u32.to_be_bytes())]);
+    let moof = bx(b"moof", &[&fbx(b"mfhd", &seq.to_be_bytes()), &traf]);
+    let mut out = moof;
+    out.extend_from_slice(&bx(b"mdat", &[payload]));
+    out
+}
+
+/// Track id written in the first `tfhd` of a combined fragment.
+fn tfhd_id(frag: &[u8]) -> u32 {
+    let at = frag.windows(4).position(|w| w == b"tfhd").unwrap() + 4 + 4;
+    u32::from_be_bytes(frag[at..at + 4].try_into().unwrap())
+}
+
+/// Payload tag of a fragment built by `frag_mp4` (the `mdat` content).
+fn tag_of(frag: &[u8]) -> Vec<u8> {
+    let at = frag.windows(4).position(|w| w == b"mdat").unwrap() + 4;
+    frag[at..].to_vec()
+}
+
+fn count_of(hay: &[u8], needle: &[u8]) -> usize {
+    hay.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+const SPLIT_MPD: &str = r#"<MPD type="static" mediaPresentationDuration="PT4S"><Period>
+<AdaptationSet mimeType="video/mp4"><Representation id="v1" bandwidth="500000" height="360">
+<SegmentTemplate timescale="1" duration="2" startNumber="0" initialization="vinit.mp4" media="v$Number$.m4s"/>
+</Representation><Representation id="v2" bandwidth="900000" height="720">
+<SegmentTemplate timescale="1" duration="2" startNumber="0" initialization="vinit.mp4" media="w$Number$.m4s"/>
+</Representation></AdaptationSet>
+<AdaptationSet mimeType="audio/mp4" lang="en"><Representation id="a1" bandwidth="64000">
+<SegmentTemplate timescale="1" duration="2" startNumber="0" initialization="ainit.mp4" media="aen$Number$.m4s"/>
+</Representation></AdaptationSet>
+<AdaptationSet mimeType="audio/mp4" lang="fr"><Representation id="a2" bandwidth="64000">
+<SegmentTemplate timescale="1" duration="2" startNumber="0" initialization="ainit.mp4" media="afr$Number$.m4s"/>
+</Representation></AdaptationSet>
+</Period></MPD>"#;
+
+fn split_handler(audio_init: Vec<u8>) -> Handler {
+    let vinit = init_mp4(b"vide", b"avc1");
+    Arc::new(move |p: &str| {
+        let seq = |name: &str| -> u32 {
+            name.trim_end_matches(".m4s")
+                .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+                .parse()
+                .unwrap_or(0)
+        };
+        let n = seq(p.trim_start_matches('/'));
+        match p {
+            "/s.mpd" => ok(SPLIT_MPD),
+            "/vinit.mp4" => ok(vinit.clone()),
+            "/ainit.mp4" => ok(audio_init.clone()),
+            p if p.starts_with("/v") => ok(frag_mp4(n, format!("V{n}").as_bytes())),
+            p if p.starts_with("/w") => ok(frag_mp4(n, format!("W{n}").as_bytes())),
+            p if p.starts_with("/aen") => ok(frag_mp4(n, format!("E{n}").as_bytes())),
+            p if p.starts_with("/afr") => ok(frag_mp4(n, format!("F{n}").as_bytes())),
+            _ => status(404),
+        }
+    })
+}
+
+fn open_split(
+    rt: &tokio::runtime::Runtime,
+    port: u16,
+    lang: Option<&str>,
+) -> Result<SegmentedReader, String> {
+    rt.block_on(open_dash_audio(
+        rt.handle().clone(),
+        reqwest::Client::new(),
+        format!("http://127.0.0.1:{port}/s.mpd"),
+        Quality {
+            max_height: Some(360),
+            prefer: Prefer::Best,
+        },
+        Vec::new(),
+        lang.map(str::to_owned),
+    ))
+}
+
+#[test]
+fn dash_video_and_audio_tracks_are_combined_in_time_order() {
+    let _g = serial();
+    reset_policy();
+    let port = serve(split_handler(init_mp4(b"soun", b"mp4a")), hits());
+    let rt = rt();
+    let mut r = open_split(&rt, port, None).unwrap();
+    assert_eq!(r.duration(), Some(Duration::from_secs(4)));
+    // Quality concerns the video only: two variants, audio is not one.
+    assert_eq!(r.variants().len(), 2);
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    // One combined init, then v0 a0 v1 a1.
+    assert_eq!(chunks.len(), 5);
+    assert_eq!(chunks[0].pts, None);
+    assert_eq!(count_of(&chunks[0].bytes, b"trak"), 2);
+    assert_eq!(count_of(&chunks[0].bytes, b"moov"), 1);
+    let media: Vec<(u32, Vec<u8>, Option<Duration>)> = chunks[1..]
+        .iter()
+        .map(|c| (tfhd_id(&c.bytes), tag_of(&c.bytes), c.pts))
+        .collect();
+    let s = Duration::from_secs;
+    assert_eq!(
+        media,
+        vec![
+            (1, b"V0".to_vec(), Some(s(0))),
+            (2, b"E0".to_vec(), Some(s(0))),
+            (1, b"V1".to_vec(), Some(s(2))),
+            (2, b"E1".to_vec(), Some(s(2))),
+        ]
+    );
+    // A language preference picks the French set; sample bytes are intact.
+    let mut r = open_split(&rt, port, Some("fr-CA")).unwrap();
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none());
+    assert_eq!(tag_of(&chunks[2].bytes), b"F0");
+}
+
+#[test]
+fn separate_tracks_seek_restarts_both_with_a_new_init() {
+    let _g = serial();
+    reset_policy();
+    let port = serve(split_handler(init_mp4(b"soun", b"mp4a")), hits());
+    let rt = rt();
+    let mut r = open_split(&rt, port, None).unwrap();
+    for _ in 0..3 {
+        pull_one(&mut r);
+    }
+    assert_eq!(r.seek(Duration::from_secs(2)), Duration::from_secs(2));
+    let init = pull_one(&mut r);
+    assert_eq!(init.pts, None);
+    assert!(init.discont);
+    assert_eq!(count_of(&init.bytes, b"trak"), 2);
+    let (rest, err) = drain(&mut r);
+    assert!(err.is_none());
+    let tags: Vec<Vec<u8>> = rest.iter().map(|c| tag_of(&c.bytes)).collect();
+    assert_eq!(tags, vec![b"V1".to_vec(), b"E1".to_vec()]);
+    // Past the end: nothing more.
+    r.seek(Duration::from_secs(99));
+    assert!(drain(&mut r).0.is_empty());
+}
+
+#[test]
+fn audio_that_cannot_be_combined_is_refused_and_protected_audio_is() {
+    let _g = serial();
+    reset_policy();
+    let rt = rt();
+    // Audio that is not fragmented MP4 (here: transport stream bytes).
+    let port = serve(split_handler(vec![0x47; 188]), hits());
+    let err = open_split(&rt, port, None).err().expect("refused");
+    assert_eq!(errors::classify(&err), errors::SEPARATE_TRACKS);
+    // Audio whose sample entry says encrypted.
+    let port = serve(split_handler(init_mp4(b"soun", b"enca")), hits());
+    let err = open_split(&rt, port, None).err().expect("refused");
+    assert_eq!(errors::classify(&err), errors::PROTECTED);
+}
+
+#[test]
+fn dropping_a_two_track_reader_stops_both_downloads() {
+    let _g = serial();
+    reset_policy();
+    let inner = split_handler(init_mp4(b"soun", b"mp4a"));
+    let h: Handler = Arc::new(move |p: &str| {
+        if p.ends_with(".m4s") {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        inner(p)
+    });
+    let count = hits();
+    let port = serve(h, count.clone());
+    let rt = rt();
+    let mut r = open_split(&rt, port, None).unwrap();
+    pull_one(&mut r);
+    drop(r);
+    std::thread::sleep(Duration::from_millis(300));
+    let snap = count.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(count.load(Ordering::SeqCst), snap);
+}
+
+#[test]
+fn hls_audio_group_is_combined_and_language_is_chosen() {
+    let _g = serial();
+    reset_policy();
+    let master = "#EXTM3U\n\
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"English\",LANGUAGE=\"en\",DEFAULT=YES,URI=\"aen.m3u8\"\n\
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Portugues\",LANGUAGE=\"pt-BR\",URI=\"apt.m3u8\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,AUDIO=\"a\"\nv.m3u8\n";
+    let media = |prefix: &str| {
+        format!(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MAP:URI=\"{prefix}init.mp4\"\n\
+#EXTINF:2,\n{prefix}0.m4s\n#EXTINF:2,\n{prefix}1.m4s\n#EXT-X-ENDLIST\n"
+        )
+    };
+    let (v, en, pt) = (media("v"), media("en"), media("pt"));
+    let h: Handler = Arc::new(move |p: &str| match p {
+        "/m.m3u8" => ok(master),
+        "/v.m3u8" => ok(v.clone()),
+        "/aen.m3u8" => ok(en.clone()),
+        "/apt.m3u8" => ok(pt.clone()),
+        "/vinit.mp4" => ok(init_mp4(b"vide", b"avc1")),
+        "/eninit.mp4" | "/ptinit.mp4" => ok(init_mp4(b"soun", b"mp4a")),
+        "/v0.m4s" => ok(frag_mp4(0, b"V0")),
+        "/v1.m4s" => ok(frag_mp4(1, b"V1")),
+        "/en0.m4s" => ok(frag_mp4(0, b"E0")),
+        "/en1.m4s" => ok(frag_mp4(1, b"E1")),
+        "/pt0.m4s" => ok(frag_mp4(0, b"P0")),
+        "/pt1.m4s" => ok(frag_mp4(1, b"P1")),
+        _ => status(404),
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let open_lang = |lang: Option<&str>| {
+        rt.block_on(open_hls_audio(
+            rt.handle().clone(),
+            reqwest::Client::new(),
+            format!("http://127.0.0.1:{port}/m.m3u8"),
+            Quality::default(),
+            Vec::new(),
+            LiveTuning::default(),
+            lang.map(str::to_owned),
+        ))
+        .unwrap()
+    };
+    let tags = |mut r: SegmentedReader| {
+        let (c, e) = drain(&mut r);
+        assert!(e.is_none(), "{e:?}");
+        assert_eq!(count_of(&c[0].bytes, b"trak"), 2);
+        c[1..].iter().map(|c| tag_of(&c.bytes)).collect::<Vec<_>>()
+    };
+    let want =
+        |a: &[u8; 2], b: &[u8; 2]| vec![b"V0".to_vec(), a.to_vec(), b"V1".to_vec(), b.to_vec()];
+    // Default rendition without a preference, Portuguese on request.
+    assert_eq!(tags(open_lang(None)), want(b"E0", b"E1"));
+    assert_eq!(tags(open_lang(Some("pt"))), want(b"P0", b"P1"));
+    assert_eq!(tags(open_lang(Some("xx"))), want(b"E0", b"E1"));
 }

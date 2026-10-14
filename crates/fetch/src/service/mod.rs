@@ -62,6 +62,9 @@ pub struct StreamOpts {
     /// Extra request headers. Only `User-Agent`, `Referer` and `Origin` are
     /// ever sent; anything else is dropped.
     pub headers: Vec<(String, String)>,
+    /// Preferred audio language (`fr`, `pt-BR`) when a stream keeps its
+    /// audio in separate tracks. `None` plays the default one.
+    pub audio_lang: Option<String>,
 }
 
 impl StreamOpts {
@@ -71,6 +74,7 @@ impl StreamOpts {
         Self {
             quality,
             headers: r.media_headers.clone(),
+            audio_lang: None,
         }
     }
 }

@@ -316,8 +316,8 @@ pub const TABLE: &[(&str, &str)] = &[
         "Live-DASH-Streams werden nicht unterstützt.",
     ),
     (
-        "This stream has separate video and audio tracks, which are not supported.",
-        "Dieser Stream hat getrennte Video- und Audiospuren, was nicht unterstützt wird.",
+        "This stream keeps video and audio apart in a format that cannot be combined.",
+        "Dieser Stream trennt Video und Audio in einem Format, das sich nicht zusammenführen lässt.",
     ),
     (
         "The secure connection failed. Check the computer's date and time.",

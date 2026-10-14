@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use jizzcraft_e2e::drive::{Pump, wake};
 use jizzcraft_e2e::http::{Reply, Req, Server};
 use jizzcraft_e2e::proc::Baseline;
-use jizzcraft_e2e::{FMP4, Svc, TS, WEBM, assert_clean, assert_sentence, fixtures, ready, serial};
+use jizzcraft_e2e::{
+    FMP4, FMP4_AV, Svc, TS, WEBM, assert_clean, assert_sentence, fixtures, ready, serial,
+};
 use jizzcraft_fetch::config::ResumeOnStart;
 use jizzcraft_fetch::errors;
 use jizzcraft_fetch::resolver::ResolverDef;
@@ -736,6 +738,73 @@ fn s10_dash_segment_template_muxed() {
         pump.to_end(60);
         assert!(pump.frames > 10);
         assert_eq!(s.downloaded_files(), 0);
+        drop(p);
+    }
+    base.assert_settled();
+}
+
+#[test]
+fn s10b_dash_separate_audio_and_video_tracks() {
+    let _g = serial();
+    if !ready(FMP4_AV) {
+        return;
+    }
+    let v = fixtures::fmp4(320, 240, 6).expect("encode fMP4 video");
+    let a = fixtures::fmp4_audio(6).expect("encode fMP4 audio");
+    let n = v.fragments.len().min(a.fragments.len());
+    let mpd = format!(
+        r#"<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT{n}S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+<Period><AdaptationSet mimeType="video/mp4" segmentAlignment="true">
+<Representation id="v1" bandwidth="800000" width="320" height="240" codecs="avc1.42c01e">
+<SegmentTemplate timescale="1" duration="1" startNumber="0" initialization="vinit.mp4" media="v$Number$.m4s"/>
+</Representation></AdaptationSet>
+<AdaptationSet mimeType="audio/mp4" lang="en"><Representation id="a1" bandwidth="64000" codecs="mp4a.40.2">
+<SegmentTemplate timescale="1" duration="1" startNumber="0" initialization="ainit.mp4" media="a$Number$.m4s"/>
+</Representation></AdaptationSet></Period></MPD>"#
+    );
+    let mut routes: Vec<(String, &str, Arc<Vec<u8>>)> = vec![
+        (
+            "/v/manifest.mpd".into(),
+            "application/dash+xml",
+            Arc::new(mpd.into_bytes()),
+        ),
+        ("/v/vinit.mp4".into(), MP4, Arc::new(v.init.clone())),
+        ("/v/ainit.mp4".into(), MP4, Arc::new(a.init.clone())),
+    ];
+    for i in 0..n {
+        routes.push((
+            format!("/v/v{i}.m4s"),
+            MP4,
+            Arc::new(v.fragments[i].clone()),
+        ));
+        routes.push((
+            format!("/v/a{i}.m4s"),
+            MP4,
+            Arc::new(a.fragments[i].clone()),
+        ));
+    }
+    let srv = Server::start(Arc::new(move |r: &Req| {
+        match routes.iter().find(|(p, _, _)| *p == r.path) {
+            Some((_, t, b)) => Reply::shared(t, b.clone()),
+            None => Reply::status(404),
+        }
+    }));
+    let base = Baseline::take();
+    {
+        let s = Svc::plain();
+        let p = timed(open(&s, srv.url("/v/manifest.mpd")).expect("ticket"));
+        let mut pump = Pump::new(&p);
+        first_frame(&mut pump);
+        pump.until("duration", 10, |p| p.duration().is_some());
+        // A seek lands on both tracks, then the clip plays to the end.
+        p.seek(Duration::from_secs(2), true);
+        pump.to_end(60);
+        assert!(pump.frames > 10, "frames {}", pump.frames);
+        assert!(srv.hits_for("/v/ainit.mp4") >= 1, "audio never requested");
+        assert!(srv.hits_for("/v/a3.m4s") >= 1);
+        assert_eq!(s.downloaded_files(), 0);
+        pump.assert_memory();
         drop(p);
     }
     base.assert_settled();

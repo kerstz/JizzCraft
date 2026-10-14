@@ -10,10 +10,17 @@
 //! is checked before each request; only User-Agent, Referer and Origin are
 //! sent on top of the defaults, never a source key.
 //!
-//! Limits for now: muxed representations only (a stream whose audio is a
-//! separate rendition is refused with `separate tracks`; a master that also
-//! offers a muxed variant plays that one). Live is HLS only (see below); a
-//! dynamic DASH manifest is refused with `live`.
+//! Separate audio (DASH audio adaptation sets, HLS `EXT-X-MEDIA` audio
+//! groups): the audio track is a second `SegmentedReader` owned by the video
+//! one, so it gets the same prefetch, retries, address checks, proxy kill
+//! switch and cancellation. The two init segments are merged into one `moov`
+//! and the fragments are interleaved by presentation time (see [`crate::fmp4`]),
+//! so the player still receives one plain byte stream. Quality switching only
+//! concerns the video track; a master that also offers a muxed variant plays
+//! that one. Only fragmented MP4 on both sides can be combined; anything else
+//! (TS or WebM audio, live HLS with an audio group) is refused with
+//! `separate tracks`, and a protected track with `protected`. Live is HLS only
+//! (see below); a dynamic DASH manifest is refused with `live`.
 //!
 //! Live HLS (a media playlist without `ENDLIST`): a refresh task reloads the
 //! playlist every target duration (half of it while nothing changed, never
@@ -507,6 +514,146 @@ impl Shared {
 pub struct SegmentedReader {
     handle: Handle,
     sh: Arc<Shared>,
+    /// The separate audio track, when the stream has one.
+    pair: Option<Box<Pair>>,
+}
+
+/// The audio half of a stream that keeps picture and sound apart, with the
+/// merge state. At most one chunk per side is held back, so the merge adds
+/// no memory beyond the two readers' own windows.
+struct Pair {
+    audio: SegmentedReader,
+    pv: Option<Chunk>,
+    pa: Option<Chunk>,
+    v_end: bool,
+    a_end: bool,
+    v_init: Option<Vec<u8>>,
+    a_init: Option<Vec<u8>>,
+    /// A new init arrived on either side: a combined one is due.
+    init_due: bool,
+    init_discont: bool,
+    out: VecDeque<Chunk>,
+}
+
+impl Pair {
+    fn new(audio: SegmentedReader) -> Self {
+        Pair {
+            audio,
+            pv: None,
+            pa: None,
+            v_end: false,
+            a_end: false,
+            v_init: None,
+            a_init: None,
+            init_due: false,
+            init_discont: false,
+            out: VecDeque::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.pv = None;
+        self.pa = None;
+        self.v_end = false;
+        self.a_end = false;
+        self.v_init = None;
+        self.a_init = None;
+        self.init_due = false;
+        self.init_discont = false;
+        self.out.clear();
+    }
+}
+
+fn would_block() -> io::Error {
+    io::ErrorKind::WouldBlock.into()
+}
+
+/// Next chunk of the combined stream: initialisation first (both inits in one
+/// `moov`), then the fragments of both tracks by presentation time.
+fn pair_pull(v: &mut SegmentedReader, p: &mut Pair) -> io::Result<Option<Chunk>> {
+    loop {
+        if let Some(c) = p.out.pop_front() {
+            return Ok(Some(c));
+        }
+        let mut blocked = false;
+        if p.pv.is_none() && !p.v_end {
+            match TimedSource::pull(v) {
+                Ok(Some(c)) => p.pv = Some(c),
+                Ok(None) => p.v_end = true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => blocked = true,
+                Err(e) => return Err(e),
+            }
+        }
+        if p.pa.is_none() && !p.a_end {
+            match TimedSource::pull(&mut p.audio) {
+                Ok(Some(c)) => p.pa = Some(c),
+                Ok(None) => p.a_end = true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => blocked = true,
+                Err(e) => return Err(e),
+            }
+        }
+        if p.pv.as_ref().is_some_and(|c| c.pts.is_none()) {
+            if let Some(c) = p.pv.take() {
+                p.v_init = Some(c.bytes);
+                p.init_due = true;
+                p.init_discont |= c.discont;
+            }
+            continue;
+        }
+        if p.pa.as_ref().is_some_and(|c| c.pts.is_none()) {
+            if let Some(c) = p.pa.take() {
+                p.a_init = Some(c.bytes);
+                p.init_due = true;
+                p.init_discont |= c.discont;
+            }
+            continue;
+        }
+        if p.init_due {
+            if let (Some(vi), Some(ai)) = (&p.v_init, &p.a_init) {
+                let bytes = crate::fmp4::merge_init(vi, ai).map_err(io::Error::other)?;
+                p.out.push_back(Chunk {
+                    bytes,
+                    pts: None,
+                    discont: p.init_discont,
+                });
+                p.init_due = false;
+                p.init_discont = false;
+                continue;
+            }
+            // The side without an init must send it next, not media.
+            let (ended, has_media) = if p.v_init.is_none() {
+                (p.v_end, p.pv.is_some())
+            } else {
+                (p.a_end, p.pa.is_some())
+            };
+            if ended || has_media {
+                return Err(io::Error::other("separate tracks"));
+            }
+            return Err(would_block());
+        }
+        let video_first = match (&p.pv, &p.pa) {
+            (Some(a), Some(b)) => a.pts <= b.pts,
+            (Some(_), None) if p.a_end => true,
+            (None, Some(_)) if p.v_end => false,
+            (None, None) if p.v_end && p.a_end => return Ok(None),
+            _ => {
+                debug_assert!(blocked);
+                return Err(would_block());
+            }
+        };
+        if p.v_init.is_none() || p.a_init.is_none() {
+            return Err(io::Error::other("separate tracks"));
+        }
+        let (src, id) = if video_first {
+            (p.pv.take(), crate::fmp4::VIDEO_ID)
+        } else {
+            (p.pa.take(), crate::fmp4::AUDIO_ID)
+        };
+        if let Some(mut c) = src {
+            crate::fmp4::retag_fragment(&mut c.bytes, id).map_err(io::Error::other)?;
+            p.out.push_back(c);
+        }
+    }
 }
 
 impl SegmentedReader {
@@ -1009,7 +1156,11 @@ fn finish(
         state: Mutex::new(new_state(track, variant, true)),
         cv: Condvar::new(),
     });
-    SegmentedReader { handle, sh }
+    SegmentedReader {
+        handle,
+        sh,
+        pair: None,
+    }
 }
 
 fn probe(
@@ -1089,6 +1240,21 @@ pub async fn open_hls_with(
     headers: Vec<(String, String)>,
     tuning: LiveTuning,
 ) -> Result<SegmentedReader, String> {
+    open_hls_audio(handle, client, url, quality, headers, tuning, None).await
+}
+
+/// [`open_hls_with`] with a preferred audio language (`fr`, `pt-BR`...) for a
+/// master whose audio is a separate rendition. Without a match the
+/// rendition marked `DEFAULT=YES`, then the first one, plays.
+pub async fn open_hls_audio(
+    handle: Handle,
+    client: reqwest::Client,
+    url: String,
+    quality: Quality,
+    headers: Vec<(String, String)>,
+    tuning: LiveTuning,
+    audio_lang: Option<String>,
+) -> Result<SegmentedReader, String> {
     let p = probe(client.clone(), &url, headers.clone(), tuning);
     let raw = get_bytes(&p, &url, None, hls::MAX_TEXT).await?;
     let text = String::from_utf8(raw).map_err(|_| "no media".to_owned())?;
@@ -1122,6 +1288,7 @@ pub async fn open_hls_with(
             let mut srcs = Vec::new();
             let mut codecs = Vec::new();
             let mut separate_audio = Vec::new();
+            let mut groups: Vec<Option<String>> = Vec::new();
             for v in &variants {
                 // A variant pointing inward from a public master is dropped.
                 let Ok(u) = resolve(&url, &v.uri, &url) else {
@@ -1137,19 +1304,40 @@ pub async fn open_hls_with(
                         .is_some_and(|g| audio.iter().any(|a| &a.group == g && a.uri.is_some())),
                 );
                 codecs.push(v.codecs.clone());
+                groups.push(v.audio_group.clone());
                 srcs.push(VariantSrc::Playlist(u));
             }
             if info.is_empty() {
                 return Err("unsupported stream".into());
             }
-            // Muxed variants win when the master offers any; a master that
-            // only has video plus separate audio cannot be played yet.
+            // Muxed variants win when the master offers any. Otherwise the
+            // audio rendition of the chosen variant's group is combined with
+            // the video; quality choices stay within that group.
+            let mut audio_uri: Option<String> = None;
+            let mut drop_v = separate_audio.clone();
             if separate_audio.iter().all(|s| *s) {
-                return Err("separate tracks".into());
+                let all: Vec<(Option<u32>, u64)> =
+                    info.iter().map(|i| (i.height, i.bandwidth)).collect();
+                let first = pick_variant(&all, quality, None);
+                let group = groups[first].clone();
+                let cands: Vec<&hls::Rendition> = audio
+                    .iter()
+                    .filter(|a| Some(&a.group) == group.as_ref() && a.uri.is_some())
+                    .collect();
+                let choice: Vec<(Option<&str>, bool)> = cands
+                    .iter()
+                    .map(|a| (a.lang.as_deref(), a.default))
+                    .collect();
+                let rend = cands
+                    .get(pick_audio(&choice, audio_lang.as_deref()))
+                    .ok_or_else(|| "separate tracks".to_owned())?;
+                let rel = rend.uri.as_deref().unwrap_or_default();
+                audio_uri = Some(resolve(&url, rel, &url)?);
+                drop_v = groups.iter().map(|g| *g != group).collect();
             }
-            retain_muxed(&mut info, &separate_audio);
-            retain_muxed(&mut srcs, &separate_audio);
-            retain_muxed(&mut codecs, &separate_audio);
+            retain_muxed(&mut info, &drop_v);
+            retain_muxed(&mut srcs, &drop_v);
+            retain_muxed(&mut codecs, &drop_v);
             let pairs: Vec<(Option<u32>, u64)> =
                 info.iter().map(|i| (i.height, i.bandwidth)).collect();
             let idx = pick_variant(&pairs, quality, None);
@@ -1160,15 +1348,39 @@ pub async fn open_hls_with(
             let raw = get_bytes(&p, &pl, None, hls::MAX_TEXT).await?;
             let text = String::from_utf8(raw).map_err(|_| "no media".to_owned())?;
             match hls_load(&pl, &url, &text)? {
-                Hls::Vod(track) => Ok(finish(
-                    handle,
-                    client,
-                    url,
-                    headers,
-                    (info, srcs, codecs),
-                    (track, idx),
-                    (quality, tuning),
-                )),
+                Hls::Vod(track) => {
+                    let audio_track = match &audio_uri {
+                        Some(au) => {
+                            let raw = get_bytes(&p, au, None, hls::MAX_TEXT).await?;
+                            let text = String::from_utf8(raw).map_err(|_| "no media".to_owned())?;
+                            Some(hls_media(au, &url, &text)?)
+                        }
+                        None => None,
+                    };
+                    let vtrack = track.clone();
+                    let mut r = finish(
+                        handle.clone(),
+                        client.clone(),
+                        url.clone(),
+                        headers.clone(),
+                        (info, srcs, codecs),
+                        (track, idx),
+                        (quality, tuning),
+                    );
+                    if let Some(at) = audio_track {
+                        r = with_audio(
+                            r,
+                            &p,
+                            &vtrack,
+                            at,
+                            (handle, client, url, headers, quality, tuning),
+                        )
+                        .await?;
+                    }
+                    Ok(r)
+                }
+                // A live window with a separate audio group is not combined.
+                Hls::Live { .. } if audio_uri.is_some() => Err("separate tracks".into()),
                 Hls::Live {
                     track,
                     target,
@@ -1195,15 +1407,48 @@ pub async fn open_dash(
     quality: Quality,
     headers: Vec<(String, String)>,
 ) -> Result<SegmentedReader, String> {
+    open_dash_audio(handle, client, url, quality, headers, None).await
+}
+
+/// [`open_dash`] with a preferred audio language for a manifest that keeps
+/// the audio in its own adaptation sets. Without a match the first audio set
+/// plays.
+pub async fn open_dash_audio(
+    handle: Handle,
+    client: reqwest::Client,
+    url: String,
+    quality: Quality,
+    headers: Vec<(String, String)>,
+    audio_lang: Option<String>,
+) -> Result<SegmentedReader, String> {
     let tuning = LiveTuning::default();
     let p = probe(client.clone(), &url, headers.clone(), tuning);
     let raw = get_bytes(&p, &url, None, dash::MAX_TEXT).await?;
     let mpd = dash::parse(&raw)?;
     let has = |k: dash::Kind| mpd.sets.iter().any(|s| s.kind == k);
-    if has(dash::Kind::Video) && has(dash::Kind::Audio) {
-        // Separate audio is not muxed in yet.
-        return Err("separate tracks".into());
-    }
+    let audio_rep: Option<dash::Representation> = if has(dash::Kind::Video)
+        && has(dash::Kind::Audio)
+    {
+        let sets: Vec<&dash::AdaptationSet> = mpd
+            .sets
+            .iter()
+            .filter(|s| s.kind == dash::Kind::Audio && !s.reps.is_empty())
+            .collect();
+        let choice: Vec<(Option<&str>, bool)> =
+            sets.iter().map(|s| (s.lang.as_deref(), false)).collect();
+        let set = sets
+            .get(pick_audio(&choice, audio_lang.as_deref()))
+            .ok_or_else(|| "separate tracks".to_owned())?;
+        // Audio quality follows the preference, not the video's cap.
+        let pairs: Vec<(Option<u32>, u64)> = set.reps.iter().map(|r| (None, r.bandwidth)).collect();
+        let q = Quality {
+            max_height: None,
+            prefer: quality.prefer,
+        };
+        Some(set.reps[pick_variant(&pairs, q, None)].clone())
+    } else {
+        None
+    };
     let set = mpd
         .sets
         .iter()
@@ -1227,15 +1472,91 @@ pub async fn open_dash(
         .map(|r| VariantSrc::Dash(Box::new(r.clone())))
         .collect();
     let track = load_track(&p, &srcs[idx]).await?;
-    Ok(finish(
-        handle,
-        client,
-        url,
-        headers,
+    let audio_track = match audio_rep {
+        Some(rep) => Some(load_track(&p, &VariantSrc::Dash(Box::new(rep))).await?),
+        None => None,
+    };
+    let vtrack = track.clone();
+    let r = finish(
+        handle.clone(),
+        client.clone(),
+        url.clone(),
+        headers.clone(),
         (info, srcs, codecs),
         (track, idx),
         (quality, tuning),
-    ))
+    );
+    match audio_track {
+        Some(at) => {
+            with_audio(
+                r,
+                &p,
+                &vtrack,
+                at,
+                (handle, client, url, headers, quality, tuning),
+            )
+            .await
+        }
+        None => Ok(r),
+    }
+}
+
+/// Index of the audio choice to play: exact language, then the same primary
+/// language, then the one marked default, then the first. `choices` =
+/// (language tag, default flag).
+pub(crate) fn pick_audio(choices: &[(Option<&str>, bool)], pref: Option<&str>) -> usize {
+    let norm = |s: &str| s.trim().replace('_', "-").to_ascii_lowercase();
+    if let Some(p) = pref.map(norm).filter(|p| !p.is_empty()) {
+        let primary = |s: &str| s.split('-').next().unwrap_or("").to_owned();
+        let langs: Vec<Option<String>> = choices.iter().map(|c| c.0.map(norm)).collect();
+        if let Some(i) = langs.iter().position(|l| l.as_deref() == Some(p.as_str())) {
+            return i;
+        }
+        let pp = primary(&p);
+        if let Some(i) = langs
+            .iter()
+            .position(|l| l.as_deref().is_some_and(|l| primary(l) == pp))
+        {
+            return i;
+        }
+    }
+    choices.iter().position(|c| c.1).unwrap_or(0)
+}
+
+/// Attach the audio track to the video reader after checking that the two
+/// can be combined (both fragmented MP4, neither protected).
+async fn with_audio(
+    mut video: SegmentedReader,
+    probe_sh: &Shared,
+    vtrack: &Track,
+    atrack: Track,
+    (handle, client, origin, headers, quality, tuning): (
+        Handle,
+        reqwest::Client,
+        String,
+        Vec<(String, String)>,
+        Quality,
+        LiveTuning,
+    ),
+) -> Result<SegmentedReader, String> {
+    let init_of = |t: &Track| t.segs.first().and_then(|s| s.init.clone());
+    let (Some(vi), Some(ai)) = (init_of(vtrack), init_of(&atrack)) else {
+        return Err("separate tracks".into());
+    };
+    let vb = get_init(probe_sh, &vi).await?;
+    let ab = get_init(probe_sh, &ai).await?;
+    crate::fmp4::merge_init(&vb, &ab).map_err(str::to_owned)?;
+    let audio = finish(
+        handle,
+        client,
+        origin,
+        headers,
+        (Vec::new(), Vec::new(), Vec::new()),
+        (atrack, 0),
+        (quality, tuning),
+    );
+    video.pair = Some(Box::new(Pair::new(audio)));
+    Ok(video)
 }
 
 // ---- live ----------------------------------------------------------------
@@ -1643,6 +1964,15 @@ impl TimedSource for SegmentedReader {
     }
 
     fn seek(&mut self, t: Duration) -> Duration {
+        if let Some(mut p) = self.pair.take() {
+            // Both tracks move to the same time; the audio one is a plain
+            // reader, so this cannot come back here.
+            let at = TimedSource::seek(self, t);
+            TimedSource::seek(&mut p.audio, t);
+            p.reset();
+            self.pair = Some(p);
+            return at;
+        }
         let mut st = self.sh.lock();
         let track = Arc::clone(&st.track);
         if st.live.is_some() {
@@ -1666,6 +1996,11 @@ impl TimedSource for SegmentedReader {
     }
 
     fn pull(&mut self) -> io::Result<Option<Chunk>> {
+        if let Some(mut p) = self.pair.take() {
+            let r = pair_pull(self, &mut p);
+            self.pair = Some(p);
+            return r;
+        }
         let deadline = Instant::now() + WAIT_SLICE;
         let sh = Arc::clone(&self.sh);
         let mut st = sh.lock();
@@ -1738,6 +2073,34 @@ impl TimedSource for SegmentedReader {
     }
 
     fn buffered_until(&self) -> Option<Duration> {
+        let own = self.buffered_plain();
+        match (&self.pair, own) {
+            (Some(p), Some(v)) => Some(p.audio.buffered_plain().map_or(v, |a| a.min(v))),
+            _ => own,
+        }
+    }
+
+    fn variants(&self) -> Vec<VariantInfo> {
+        self.sh.variants.clone()
+    }
+
+    fn current_variant(&self) -> Option<usize> {
+        (!self.sh.variants.is_empty()).then(|| self.sh.lock().variant)
+    }
+
+    fn select_variant(&mut self, v: Option<usize>) {
+        self.select_plain(v);
+    }
+
+    fn wants_downgrade(&mut self) -> bool {
+        let mut st = self.sh.lock();
+        std::mem::take(&mut st.rebuild)
+    }
+}
+
+impl SegmentedReader {
+    /// End of the downloaded part of this reader's own track.
+    fn buffered_plain(&self) -> Option<Duration> {
         let st = self.sh.lock();
         let track = &st.track;
         let first = track.get(st.next)?;
@@ -1751,15 +2114,7 @@ impl TimedSource for SegmentedReader {
         Some(t)
     }
 
-    fn variants(&self) -> Vec<VariantInfo> {
-        self.sh.variants.clone()
-    }
-
-    fn current_variant(&self) -> Option<usize> {
-        (!self.sh.variants.is_empty()).then(|| self.sh.lock().variant)
-    }
-
-    fn select_variant(&mut self, v: Option<usize>) {
+    fn select_plain(&mut self, v: Option<usize>) {
         let mut st = self.sh.lock();
         let Some(i) = v else {
             st.auto = true;
@@ -1771,11 +2126,6 @@ impl TimedSource for SegmentedReader {
         }
         st.rebuild = false;
         self.start_switch(&mut st, i);
-    }
-
-    fn wants_downgrade(&mut self) -> bool {
-        let mut st = self.sh.lock();
-        std::mem::take(&mut st.rebuild)
     }
 }
 
@@ -1873,6 +2223,26 @@ mod tests {
         assert_eq!(at(&mut p, 165, 35, 2.0e6, 0), AbrChoice::Stay);
         assert_eq!(at(&mut p, 200, 35, 2.0e6, 0), AbrChoice::Stay);
         assert_eq!(at(&mut p, 201, 35, 2.0e6, 0), AbrChoice::Switch(1));
+    }
+
+    #[test]
+    fn audio_choice_prefers_language_then_default_then_first() {
+        let c = [
+            (Some("en"), true),
+            (Some("pt-BR"), false),
+            (Some("fr"), false),
+            (None, false),
+        ];
+        assert_eq!(pick_audio(&c, None), 0);
+        assert_eq!(pick_audio(&c, Some("fr")), 2);
+        assert_eq!(pick_audio(&c, Some("FR_ca")), 2);
+        assert_eq!(pick_audio(&c, Some("pt")), 1);
+        assert_eq!(pick_audio(&c, Some("pt-br")), 1);
+        assert_eq!(pick_audio(&c, Some("de")), 0);
+        assert_eq!(pick_audio(&c, Some("")), 0);
+        let no_default = [(Some("it"), false), (Some("es"), false)];
+        assert_eq!(pick_audio(&no_default, None), 0);
+        assert_eq!(pick_audio(&[], Some("fr")), 0);
     }
 
     #[test]
