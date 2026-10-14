@@ -17,6 +17,12 @@ The peach icon (`assets/icons/jizzcraft.svg`) and the neutral "Viewer" icon
 (`assets/icons/viewer.svg`) were drawn for this project and are released under
 the project license.
 
+## Inspiration
+
+The project was inspired by the r/linuxmemes thread "Not another one"
+(https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/).
+No text, code or media from the thread is included.
+
 ## Conventions
 
 README structure and the "engine first, agent-ready" layout follow the
