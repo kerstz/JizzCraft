@@ -1,0 +1,92 @@
+name: Release
+
+# Builds installable artifacts for Linux, Windows and macOS when a version tag
+# is pushed (or by hand). The default (offline) build is what is published.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux (.deb, tar.gz)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install GStreamer headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config dpkg-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p jizzcraft -p jizzcraft-cli
+      - run: cargo install cargo-deb --locked
+      - run: cargo deb -p jizzcraft --no-build --output dist/jizzcraft_amd64.deb
+      - name: tar.gz
+        run: |
+          mkdir -p dist/jizzcraft-linux-x86_64
+          cp target/release/jizzcraft target/release/jizzcraft-cli README.md LICENSE-* dist/jizzcraft-linux-x86_64/
+          cp -r assets dist/jizzcraft-linux-x86_64/assets
+          tar -C dist -czf dist/jizzcraft-linux-x86_64.tar.gz jizzcraft-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+
+  windows:
+    name: Windows (portable zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: GStreamer (MSVC runtime + devel)
+        shell: pwsh
+        run: |
+          $v = '1.26.6'
+          foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
+            $u = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
+            Invoke-WebRequest $u -OutFile "$k.msi"
+            Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
+          }
+          choco install pkgconfiglite -y
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the zip
+        shell: pwsh
+        run: ./packaging/windows/build.ps1
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: dist/JizzCraft-windows-x86_64.zip }
+
+  macos:
+    name: macOS (.app zip)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install gstreamer pkgconf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./packaging/macos/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: "dist/*.zip" }
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

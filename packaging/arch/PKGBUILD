@@ -1,0 +1,36 @@
+# Maintainer: JizzCraft contributors
+# Builds from the repository checkout this file lives in (makepkg -si).
+pkgname=jizzcraft
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Private, local-first media library and player (images and videos)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/kerstz/JizzCraft'
+license=('MIT' 'Apache-2.0')
+depends=('gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'gst-libav' 'libxkbcommon' 'wayland' 'vulkan-icd-loader')
+optdepends=('gst-plugins-bad: more formats'
+            'gst-plugins-ugly: more codecs'
+            'gstreamer-vaapi: hardware decoding'
+            'mpv: external player (network build)')
+makedepends=('rust' 'cargo' 'pkgconf')
+options=('!lto')
+
+build() {
+  cd "$startdir/../.."
+  cargo build --release --locked -p jizzcraft -p jizzcraft-cli
+}
+
+package() {
+  cd "$startdir/../.."
+  install -Dm755 target/release/jizzcraft "$pkgdir/usr/bin/jizzcraft"
+  install -Dm755 target/release/jizzcraft-cli "$pkgdir/usr/bin/jizzcraft-cli"
+  install -Dm644 assets/org.jizzcraft.JizzCraft.desktop "$pkgdir/usr/share/applications/org.jizzcraft.JizzCraft.desktop"
+  install -Dm644 assets/local.Viewer.desktop "$pkgdir/usr/share/applications/local.Viewer.desktop"
+  install -Dm644 assets/org.jizzcraft.JizzCraft.metainfo.xml "$pkgdir/usr/share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml"
+  for s in 16x16 24x24 32x32 128x128 256x256; do
+    install -Dm644 assets/icons/hicolor/$s/apps/org.jizzcraft.JizzCraft.png "$pkgdir/usr/share/icons/hicolor/$s/apps/org.jizzcraft.JizzCraft.png"
+    install -Dm644 assets/icons/hicolor/$s/apps/org.jizzcraft.JizzCraft.viewer.png "$pkgdir/usr/share/icons/hicolor/$s/apps/org.jizzcraft.JizzCraft.viewer.png"
+  done
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

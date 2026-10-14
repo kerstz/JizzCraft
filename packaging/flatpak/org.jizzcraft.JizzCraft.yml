@@ -1,0 +1,34 @@
+# Flatpak manifest (untested here: no flatpak-builder on the development machine).
+# Offline by design: no --share=network. Add it only for a separate network build.
+app-id: org.jizzcraft.JizzCraft
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: jizzcraft
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio
+  # Library folders are chosen with the portal file chooser; nothing else.
+  - --filesystem=xdg-videos:ro
+  - --filesystem=xdg-pictures:ro
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/jizzcraft/cargo
+modules:
+  - name: jizzcraft
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked -p jizzcraft
+      - install -Dm755 target/release/jizzcraft /app/bin/jizzcraft
+      - install -Dm644 assets/org.jizzcraft.JizzCraft.desktop /app/share/applications/org.jizzcraft.JizzCraft.desktop
+      - install -Dm644 assets/org.jizzcraft.JizzCraft.metainfo.xml /app/share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml
+      - install -Dm644 assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png /app/share/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png
+      - install -Dm644 assets/icons/hicolor/128x128/apps/org.jizzcraft.JizzCraft.png /app/share/icons/hicolor/128x128/apps/org.jizzcraft.JizzCraft.png
+    sources:
+      - type: dir
+        path: ../..
