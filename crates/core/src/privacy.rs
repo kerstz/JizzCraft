@@ -28,3 +28,22 @@ macro_rules! debug_log {
         }
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacted_paths_are_stable_opaque_tags() {
+        // Not running under JIZZCRAFT_DEBUG=1 in CI; the tag must hide the path.
+        if debug_enabled() {
+            return;
+        }
+        let a = redact(Path::new("/home/me/secret/clip.mp4"));
+        let b = redact(Path::new("/home/me/secret/clip.mp4"));
+        let c = redact(Path::new("/home/me/secret/other.mp4"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.starts_with("<path:") && !a.contains("secret") && !a.contains("clip"));
+    }
+}

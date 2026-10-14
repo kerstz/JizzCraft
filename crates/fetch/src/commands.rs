@@ -214,18 +214,16 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
     );
     reg.register(
         "fetch.indexers.add",
-        "Add a Torznab indexer: {name, url, api_key}. Nothing is bundled.",
+        "Add a Torznab indexer: {url, api_key, name?}. Nothing is bundled.",
         |c, a| {
-            let h = c.fetch();
-            let id = h.cfg.next_indexer_id();
-            h.cfg.indexers.push(Indexer {
-                id,
-                name: s(&a, "name")?,
-                url: s(&a, "url")?,
-                api_key: Secret::new(s(&a, "api_key")?),
-                enabled: true,
-            });
-            h.save()?;
+            let name = a
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let id = c
+                .fetch()
+                .add_indexer(name, s(&a, "url")?, s(&a, "api_key")?)?;
             Ok(json!({ "id": id }))
         },
     );
