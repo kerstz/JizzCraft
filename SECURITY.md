@@ -32,7 +32,8 @@ exploitable.
 
 Out of scope: the age gate, boss key, discreet mode and share-safe mode are
 conveniences, not security boundaries. The library database and thumbnail cache
-are **not encrypted** today. Bugs in GStreamer, its plugins or the `image`
+are stored in clear: an encrypted vault is in progress (issue #13, see
+`docs/vault.md`) but **not delivered**, so nothing is encrypted yet. Bugs in GStreamer, its plugins or the `image`
 decoders themselves should be reported upstream.
 
 ## Things to know
