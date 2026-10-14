@@ -44,7 +44,7 @@ pub fn save_cached(file: &Path, img: &RgbImage) -> Result<(), String> {
             .encode_image(img)
             .map_err(|e| format!("cache encode: {e}"))?;
     }
-    std::fs::rename(&tmp, file).map_err(|e| format!("cache rename: {e}"))
+    jizzcraft_core::fsutil::replace(&tmp, file).map_err(|e| format!("cache rename: {e}"))
 }
 
 /// Tiny version for discreet / screen-share-safe mode; the UI upscales it with

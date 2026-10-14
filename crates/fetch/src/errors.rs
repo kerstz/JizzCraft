@@ -10,6 +10,9 @@ pub const DISK_FULL: &str = "Disk full. Downloads paused.";
 pub const CANCELLED: &str = "Cancelled.";
 pub const NO_VIDEO: &str = "No video file in this torrent.";
 pub const NO_FOLDER: &str = "The download folder is not usable.";
+pub const PROXY_REQUIRED: &str = "A proxy is required and none is set.";
+pub const SOURCE_CHANGED: &str = "The source changed while playing.";
+pub const RESOLVER_FAILED: &str = "The resolver failed or took too long.";
 pub const GENERIC: &str = "Something went wrong.";
 
 /// Every sentence `classify` can return (for tests and for the CLI).
@@ -21,6 +24,9 @@ pub const ALL: &[&str] = &[
     CANCELLED,
     NO_VIDEO,
     NO_FOLDER,
+    PROXY_REQUIRED,
+    SOURCE_CHANGED,
+    RESOLVER_FAILED,
     GENERIC,
 ];
 
@@ -29,6 +35,12 @@ pub fn classify(raw: &str) -> &'static str {
     let r = raw.to_ascii_lowercase();
     if r.contains("cancelled") {
         CANCELLED
+    } else if r.contains("proxy required") {
+        PROXY_REQUIRED
+    } else if r.contains("resolver") {
+        RESOLVER_FAILED
+    } else if r.contains("source changed") {
+        SOURCE_CHANGED
     } else if r.contains("unsafe file path") {
         UNSAFE_PATHS
     } else if r.contains("os error 28") || r.contains("no space left") {

@@ -460,4 +460,29 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Playful messages", "Messages coquins"),
     ("on", "activés"),
     ("off", "désactivés"),
+    ("Panic video", "Vidéo d'urgence"),
+    ("set", "définie"),
+    ("none", "aucune"),
+    ("Forget the panic video", "Oublier la vidéo d'urgence"),
+    (
+        "Panic: jump to the chosen video, full screen",
+        "Urgence : aller à la vidéo choisie, plein écran",
+    ),
+    ("Skip the age gate", "Ignorer la vérification d'âge"),
+    (
+        "Block the network without a proxy",
+        "Bloquer le réseau sans proxy",
+    ),
+    (
+        "A proxy is required and none is set.",
+        "Un proxy est requis et aucun n'est défini.",
+    ),
+    (
+        "The source changed while playing.",
+        "La source a changé pendant la lecture.",
+    ),
+    (
+        "The resolver failed or took too long.",
+        "Le résolveur a échoué ou a mis trop de temps.",
+    ),
 ];

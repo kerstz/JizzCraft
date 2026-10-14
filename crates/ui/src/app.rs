@@ -701,6 +701,40 @@ impl JizzApp {
         }
     }
 
+    /// Forget every stream that is still opening, so it cannot take over the
+    /// window (or start playing audio) after a panic or boss key.
+    fn cancel_pending_streams(&mut self) {
+        #[cfg(feature = "network")]
+        {
+            self.downloads.cancel_pending();
+        }
+    }
+
+    /// Boss key: pause, mute, discreet mode, leave fullscreen, minimize.
+    fn boss_key(&mut self) {
+        self.cancel_pending_streams();
+        self.cfg.discreet = true;
+        self.autoplay_at = None;
+        self.slideshow.active = false;
+        self.save_cfg();
+        // A stream (no library row) is closed outright: dropping the reader
+        // cancels every request still in flight.
+        if matches!(&self.view, View::Player(pv) if pv.media_id.is_none() && pv.index.is_none()) {
+            self.close_view();
+        }
+        if let View::Player(pv) = &mut self.view {
+            pv.player.pause();
+            pv.player.set_muted(true);
+            if pv.fullscreen {
+                pv.fullscreen = false;
+                self.ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
+        }
+        self.ctx
+            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+    }
+
     fn open_player(
         &mut self,
         index: Option<u64>,
@@ -2083,7 +2117,7 @@ impl eframe::App for JizzApp {
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);
 
-        if !self.cfg.age_confirmed {
+        if !self.cfg.age_confirmed && !self.cfg.skip_age_gate {
             self.age_gate(ui);
             self.toasts_ui(&ctx);
             self.drain_queue();
@@ -2807,6 +2841,19 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         app.save_cfg();
         Ok(json!({}))
     });
+    reg.register(
+        "app.age.skip",
+        "Skip the 18+ gate at start: {on?: bool}",
+        |app, args| {
+            let on = args
+                .get("on")
+                .and_then(Value::as_bool)
+                .unwrap_or(!app.cfg.skip_age_gate);
+            app.cfg.skip_age_gate = on;
+            app.save_cfg();
+            Ok(json!({ "skip_age_gate": on }))
+        },
+    );
     reg.register("app.quit", "Quit the application", |app, _| {
         app.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         Ok(json!({}))
@@ -2820,23 +2867,65 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         "app.boss_key",
         "Pause, mute, discreet mode, minimize",
         |app, _| {
+            app.boss_key();
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "app.panic.set",
+        "Choose the video the panic switch opens: {path?, clear?}",
+        |app, args| {
+            if args.get("clear").and_then(Value::as_bool) == Some(true) {
+                app.cfg.panic_video = None;
+                app.save_cfg();
+                return Ok(json!({ "set": false }));
+            }
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .or_else(|| {
+                    rfd::FileDialog::new()
+                        .add_filter("Video", &["mp4", "mkv", "webm", "mov", "avi", "m4v"])
+                        .pick_file()
+                });
+            let Some(path) = path else {
+                return Ok(json!({ "set": app.cfg.panic_video.is_some() }));
+            };
+            if !path.is_file() {
+                return Err(jizzcraft_core::Error::Invalid("not a file".into()));
+            }
+            app.cfg.panic_video = Some(path);
+            app.save_cfg();
+            Ok(json!({ "set": true }))
+        },
+    );
+    reg.register(
+        "app.panic.maths",
+        "Panic: jump full-screen to the chosen video (boss key if none)",
+        |app, _| {
+            let target = app.cfg.panic_video.clone().filter(|p| p.is_file());
+            let Some(path) = target else {
+                // Nothing usable configured: do the safe thing, hide.
+                app.boss_key();
+                return Ok(json!({ "opened": false }));
+            };
+            app.cancel_pending_streams();
             app.cfg.discreet = true;
             app.autoplay_at = None;
             app.slideshow.active = false;
             app.save_cfg();
-            // Pause and mute whatever is playing, leave fullscreen, then hide.
+            // No library row: no history, no resume point, no counted play.
+            app.open_player(None, String::new(), &path, None);
             if let View::Player(pv) = &mut app.view {
-                pv.player.pause();
-                pv.player.set_muted(true);
-                if pv.fullscreen {
-                    pv.fullscreen = false;
-                    app.ctx
-                        .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                }
+                pv.player.set_muted(false);
+                pv.fullscreen = true;
+                pv.autoplay_on = false;
+                pv.previews_enabled = false;
             }
             app.ctx
-                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            Ok(json!({}))
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            Ok(json!({ "opened": true }))
         },
     );
     reg.register(

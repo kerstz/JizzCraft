@@ -2541,6 +2541,7 @@ version = "0.1.0"
 dependencies = [
  "directories",
  "jizzcraft-core",
+ "libc",
  "librqbit",
  "quick-xml",
  "reqwest 0.12.28",

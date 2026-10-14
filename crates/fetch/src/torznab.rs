@@ -39,7 +39,7 @@ impl std::fmt::Display for TorznabError {
 
 impl std::error::Error for TorznabError {}
 
-fn pct_encode(s: &str) -> String {
+pub(crate) fn pct_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

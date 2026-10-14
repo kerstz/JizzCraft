@@ -61,7 +61,8 @@ fn scan_bundled_plugins() {
 
 /// A `file://` URI for a local path. Never produces anything else.
 pub fn file_uri(path: &std::path::Path) -> Result<String, String> {
-    let abs = std::fs::canonicalize(path).map_err(|e| format!("cannot open file: {e}"))?;
+    let abs =
+        jizzcraft_core::pathbytes::canonical(path).map_err(|e| format!("cannot open file: {e}"))?;
     let uri = gstreamer::glib::filename_to_uri(&abs, None)
         .map(|u| u.to_string())
         .map_err(|e| format!("bad path: {e}"))?;

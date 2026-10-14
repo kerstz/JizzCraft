@@ -48,7 +48,16 @@ pub fn db_path() -> PathBuf {
         return h.join("library.db");
     }
     dirs()
-        .map(|d| d.data_dir().join("library.db"))
+        .map(|d| {
+            let local = d.data_local_dir().join("library.db");
+            // An existing library in the old (roaming) place stays where it is.
+            let old = d.data_dir().join("library.db");
+            if !local.exists() && old.exists() {
+                old
+            } else {
+                local
+            }
+        })
         .unwrap_or_else(|| PathBuf::from("library.db"))
 }
 
@@ -79,6 +88,6 @@ pub fn state_dir() -> PathBuf {
     }
     dirs()
         .and_then(|d| d.state_dir().map(|p| p.to_path_buf()))
-        .or_else(|| dirs().map(|d| d.data_dir().to_path_buf()))
+        .or_else(|| dirs().map(|d| d.data_local_dir().to_path_buf()))
         .unwrap_or_else(|| PathBuf::from(".state"))
 }

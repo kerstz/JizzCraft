@@ -77,6 +77,14 @@ Add behaviour as a command first, UI second.
   torrents never overwrite files, unsafe torrent paths are refused. Toasts
   carry counts only. Nothing connects before the user acts. Schema changes go
   in `MIGRATIONS` regardless of features.
+- **Streaming sources are the user's.** No source, host, catalog or preset in
+  the repo (docs use `.invalid` hosts). Sources are declarative JSON; a key
+  lives only in `fetch.json`, needs https, and never follows a redirect off its
+  host. Resolvers run from an argument vector with an emptied environment,
+  a timeout and a capped output, and never deliver bytes. Playback of any
+  remote file goes through `fetch::stream` into `Player::open_stream`; the
+  player still never takes a URL. `require_proxy` is the kill switch: every
+  request path must honour it (see `service::proxy_blocked`).
 - **No shell** built from filenames. Pass paths as argv or through the APIs.
 - **No full paths or filenames in logs** unless `JIZZCRAFT_DEBUG=1`.
 - Tests, fixtures and screenshots are **100 % SFW and synthetic**. Never commit

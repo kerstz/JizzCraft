@@ -4,6 +4,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod fingerprint;
+pub mod fsutil;
 pub mod history;
 pub mod integrity;
 pub mod manifest;

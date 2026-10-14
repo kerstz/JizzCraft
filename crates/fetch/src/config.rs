@@ -31,6 +31,14 @@ fn yes() -> bool {
 pub struct FetchConfig {
     #[serde(default)]
     pub indexers: Vec<Indexer>,
+    /// User-defined streaming sources. The app ships none.
+    #[serde(default)]
+    pub sources: Vec<crate::sources::SourceDef>,
+    /// Programs the user installed that turn a page address into a file
+    /// address. The app ships none.
+    #[cfg(feature = "network")]
+    #[serde(default)]
+    pub resolvers: Vec<crate::resolver::ResolverDef>,
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
     #[serde(default = "yes")]
@@ -44,6 +52,11 @@ pub struct FetchConfig {
     /// through it when set.
     #[serde(default)]
     pub proxy: Option<Secret>,
+    /// Kill switch: nothing connects unless a proxy is set (use it with a
+    /// VPN or Tor SOCKS endpoint so a dropped proxy never falls back to the
+    /// direct connection).
+    #[serde(default)]
+    pub require_proxy: bool,
     /// Speed caps in MiB/s (0 or absent = unlimited).
     #[serde(default)]
     pub down_limit_mibps: Option<u32>,
@@ -59,11 +72,15 @@ impl Default for FetchConfig {
     fn default() -> Self {
         Self {
             indexers: Vec::new(),
+            sources: Vec::new(),
+            #[cfg(feature = "network")]
+            resolvers: Vec::new(),
             download_dir: None,
             dht: true,
             listen_incoming: false,
             seed_after_complete: false,
             proxy: None,
+            require_proxy: false,
             down_limit_mibps: None,
             up_limit_mibps: None,
             disguised: false,
@@ -122,7 +139,7 @@ impl FetchConfig {
         let mut f = opts.open(&tmp)?;
         f.write_all(&serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        jizzcraft_core::fsutil::replace(&tmp, path)
     }
 
     /// Where downloads go. Nothing to configure: the chosen folder if there

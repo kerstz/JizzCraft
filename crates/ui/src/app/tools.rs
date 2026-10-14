@@ -137,6 +137,42 @@ impl JizzApp {
             "app.jokes.toggle",
             json!({}),
         );
+        item(
+            ui,
+            &format!(
+                "{}: {}",
+                crate::i18n::tr("Skip the age gate"),
+                if self.cfg.skip_age_gate {
+                    crate::i18n::tr("on")
+                } else {
+                    crate::i18n::tr("off")
+                }
+            ),
+            "app.age.skip",
+            json!({}),
+        );
+        item(
+            ui,
+            &format!(
+                "{}: {}",
+                crate::i18n::tr("Panic video"),
+                if self.cfg.panic_video.is_some() {
+                    crate::i18n::tr("set")
+                } else {
+                    crate::i18n::tr("none")
+                }
+            ),
+            "app.panic.set",
+            json!({}),
+        );
+        if self.cfg.panic_video.is_some() {
+            item(
+                ui,
+                crate::i18n::tr("Forget the panic video"),
+                "app.panic.set",
+                json!({ "clear": true }),
+            );
+        }
         ui.separator();
         for l in crate::i18n::ALL {
             let mark = if crate::i18n::current() == l {
