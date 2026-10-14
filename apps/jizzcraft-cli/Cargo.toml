@@ -17,3 +17,8 @@ jizzcraft-core.workspace = true
 jizzcraft-media.workspace = true
 serde_json.workspace = true
 clap.workspace = true
+jizzcraft-fetch = { workspace = true, optional = true }
+
+[features]
+# Off by default: the default build links no network code.
+network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network"]

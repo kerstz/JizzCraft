@@ -11,6 +11,8 @@ pub mod secret;
 pub mod torznab;
 
 #[cfg(feature = "network")]
+pub mod commands;
+#[cfg(feature = "network")]
 pub mod service;
 
 pub use config::{FetchConfig, Indexer};

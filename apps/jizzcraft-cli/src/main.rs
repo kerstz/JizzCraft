@@ -1,10 +1,30 @@
 //! `jizzcraft-cli`: same command registry as the desktop app, scriptable.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use jizzcraft_core::{Db, Registry, paths, register_core};
+use jizzcraft_core::{Db, HasLibrary, Registry, paths, register_core};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+/// Command context: the library, plus the network host in the opt-in build.
+struct CliCtx {
+    db: Db,
+    #[cfg(feature = "network")]
+    fetch: jizzcraft_fetch::commands::FetchHost,
+}
+
+impl HasLibrary for CliCtx {
+    fn db(&mut self) -> &mut Db {
+        &mut self.db
+    }
+}
+
+#[cfg(feature = "network")]
+impl jizzcraft_fetch::commands::HasFetch for CliCtx {
+    fn fetch(&mut self) -> &mut jizzcraft_fetch::commands::FetchHost {
+        &mut self.fetch
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -195,9 +215,11 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<(), String> {
-    let mut reg: Registry<Db> = Registry::new();
+    let mut reg: Registry<CliCtx> = Registry::new();
     register_core(&mut reg);
     jizzcraft_media::integrity::register_media(&mut reg);
+    #[cfg(feature = "network")]
+    jizzcraft_fetch::commands::register_fetch(&mut reg);
     if cli.portable
         && let Some(h) = paths::portable_home()
     {
@@ -224,7 +246,13 @@ fn run(cli: &Cli) -> Result<(), String> {
     }
 
     let db_path = cli.db.clone().unwrap_or_else(paths::db_path);
-    let mut db = Db::open(&db_path).map_err(|e| e.to_string())?;
+    let mut db = CliCtx {
+        db: Db::open(&db_path).map_err(|e| e.to_string())?,
+        #[cfg(feature = "network")]
+        fetch: jizzcraft_fetch::commands::FetchHost::new(
+            jizzcraft_fetch::FetchConfig::default_path(),
+        ),
+    };
 
     let (name, args): (String, Value) = match &cli.cmd {
         Cmd::Scan { dir } => (

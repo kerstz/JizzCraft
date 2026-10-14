@@ -237,6 +237,18 @@ impl FetchService {
         .cloned()
     }
 
+    /// Open the session (restores persisted torrents). Idempotent.
+    pub fn start(&self) -> Receiver<Result<(), String>> {
+        let (tx, rx) = channel();
+        let cfg = self.cfg.clone();
+        let state = self.state_dir.clone();
+        let cell = self.session.clone();
+        self.rt().spawn(async move {
+            let _ = tx.send(Self::session(&cfg, &state, &cell).await.map(|_| ()));
+        });
+        rx
+    }
+
     /// Add a torrent. Returns its id.
     pub fn add(&self, source: Source) -> Receiver<Result<usize, String>> {
         self.add_with_peers(source, Vec::new())
