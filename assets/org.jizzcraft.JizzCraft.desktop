@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=JizzCraft
+GenericName=Media Viewer
+Comment=Private, offline media viewer and library manager
+Exec=jizzcraft
+Icon=org.jizzcraft.JizzCraft
+Terminal=false
+Categories=AudioVideo;Video;Viewer;
+Keywords=viewer;library;video;images;private;
+StartupWMClass=org.jizzcraft.JizzCraft
