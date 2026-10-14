@@ -9,7 +9,7 @@
 A fast native app for your own images and videos: browse, search, rate, tag and play, with your files left exactly where they are. Open source, offline by default, no account, no telemetry. Written in Rust for Linux, Windows and macOS.
 
 ![100% Rust](https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square)
-![Linux](https://img.shields.io/badge/platform-Linux-2f7bf5?style=flat-square)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-2f7bf5?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3a3a3a?style=flat-square)
 ![Status](https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square)
 
@@ -163,6 +163,25 @@ xtask          fixtures, icons, README screenshots
 - **No async runtime.** `std::thread` and channels.
 - **Performance, measured.** `jizzcraft --bench <file> --seconds 30 --bench-gst-play`. Results in [`docs/bench.md`](docs/bench.md): no dropped frames on 1080p30, 1080p60 and 4K30 H.264, **but 3 to 6 times the CPU of `gst-play-1.0`** because the MVP does RGBA conversion on the CPU. A YUV→RGB shader is on the [roadmap](ROADMAP.md).
 
+## Install
+
+| Platform | How | Status |
+| --- | --- | --- |
+| Arch / CachyOS / Manjaro | `cd packaging/arch && makepkg -si` | Built and packaged on CachyOS |
+| Debian / Ubuntu / Mint | `.deb` from the release page, or `cargo deb -p jizzcraft` | `.deb` built here; install not tested on Debian |
+| Fedora / openSUSE | `packaging/fedora/jizzcraft.spec` | Spec written, **not built** |
+| Any Linux | Flatpak manifest in `packaging/flatpak`, AppImage script in `packaging/appimage` | **Not built** (no `flatpak-builder` / `linuxdeploy` on the dev machine) |
+| Windows 10/11 | Portable zip built by `packaging/windows/build.ps1` (CI job *Release → windows*) | **Not built or run yet**: needs a Windows machine; the code no longer uses Unix-only APIs |
+| macOS 12+ | `.app` zip built by `packaging/macos/build-app.sh` (CI job *Release → macos*), uses the system GStreamer | **Not built or run yet** |
+
+The release workflow (`.github/workflows/release.yml`) builds all of the above on tags. Until the Windows and macOS jobs have run and been tried on real machines, treat those two platforms as experimental. See [docs/audit-untested.md](docs/audit-untested.md) for what is and is not covered by tests.
+
+## Languages and playful messages
+
+The interface is available in English, French, Spanish, German, Italian and Portuguese. It follows your system locale; change it any time from the *Library* menu, or start with `--lang fr`. Only the interface is translated: file names, your data and the CLI's JSON are left alone.
+
+A few playful one-liners show up in empty states, toasts and the player. They are on by default, can be switched off from the *Library* menu (*Playful messages*), and are **always off** in discreet mode, share-safe mode and the disguised launch, so nothing cheeky appears on a shared screen.
+
 ## Get started
 
 Rust 1.95 or newer (the minimum of egui 0.36; developed with 1.98), GStreamer with development headers, and a GPU driver: Vulkan is the tested backend (wgpu's OpenGL ES fallback is compiled in but untested).
@@ -246,14 +265,13 @@ cargo xtask screenshots       # render README images through the app itself
 >
 > **Only checked through commands and screenshots, not by hand**: mouse wheel zoom, drag-panning, timeline dragging, keyboard shortcuts, fullscreen, boss-key minimize behaviour under different compositors, the native folder dialog, the sidebar, triage, the player bar chips, autoplay-next, slideshow.
 >
-> **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only.
+> **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only (Windows and macOS builds exist but have not been run).
 
 ## Privacy guarantees
 
-*The boring section. Boring is the point.*
 
 - No accounts, telemetry, analytics, cloud sync or ads. The default build makes no network connections (the optional `network` build is described above). The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
-- No scraping, no downloaders, no external feeds.
+- No scraping and no external feeds. The optional network build has a BitTorrent client and user-configured Torznab indexers; the default build contains no network code at all.
 - Your media is never modified, moved or deleted. Thumbnails and previews are written to the XDG cache directory (or the portable home) only.
 - No shell commands are ever built from file names. Paths are passed as arguments to APIs.
 - Full paths and file names are not logged unless `JIZZCRAFT_DEBUG=1`.
