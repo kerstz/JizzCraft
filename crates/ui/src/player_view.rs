@@ -675,7 +675,7 @@ impl PlayerView {
                 let blur = mk(format!("pvb-{}", f.bucket), &f.blur);
                 self.preview_tex
                     .insert(f.bucket, (full, blur, Instant::now()));
-                // Keep the texture cache small.
+                // Keep the texture cache small. GPU memory is a rental, not a home.
                 while self.preview_tex.len() > 32 {
                     if let Some(k) = self
                         .preview_tex
@@ -693,7 +693,8 @@ impl PlayerView {
             egui::Id::new("scrub-preview"),
         ));
         let tex = self.preview_tex.get(&bucket).or_else(|| {
-            // Nearest cached bucket while the exact one is decoding.
+            // Nearest cached bucket while the exact one is decoding. Close enough
+            // is a valid strategy for horseshoes and scrub previews.
             self.preview_tex
                 .iter()
                 .min_by_key(|(k, _)| k.abs_diff(bucket))

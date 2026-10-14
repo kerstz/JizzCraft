@@ -81,6 +81,7 @@ pub fn describe_missing_plugin(msg: &gstreamer::Message) -> Option<String> {
     }
     let m = MissingPluginMessage::parse(msg).ok()?;
     // Manifest demuxers are disabled on purpose: installing plugins won't help.
+    // Neither will reinstalling the OS, but people will try.
     if guard::is_manifest_detail(&m.installer_detail()) {
         return Some(guard::REFUSED.into());
     }

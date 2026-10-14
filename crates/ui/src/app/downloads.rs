@@ -25,6 +25,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// Steps of "press Play": list, maybe ask which file, add, open.
+/// One button, four steps, zero opinions shown to the user.
 enum Flow {
     Listing(Receiver<Result<Listed, String>>),
     Files {
@@ -1120,6 +1121,7 @@ impl JizzApp {
                 }
 
                 // ---- advanced, folded ---------------------------------------
+                // Folded like a fitted sheet: technically, and with regret.
                 ui.add_space(8.0);
                 ui.collapsing(crate::i18n::tr("Advanced"), |ui| {
                     ui.label(

@@ -53,6 +53,8 @@ pub fn strip_verbatim(s: &str) -> std::borrow::Cow<'_, str> {
 /// The verbatim prefix is what lets Windows open long paths and names with a
 /// trailing dot or space or a device name. It may only be dropped when none of
 /// that applies.
+// A file called `CON` is still illegal on Windows. Some laws age like milk,
+// some like DOS.
 pub fn safe_without_verbatim(plain: &str) -> bool {
     if plain.chars().count() >= 240 {
         return false;

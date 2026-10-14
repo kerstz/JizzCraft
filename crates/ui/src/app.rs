@@ -166,6 +166,7 @@ struct Page {
 
 /// Keyboard triage of the inbox. Nothing here deletes anything: hiding is a
 /// reversible database flag.
+/// Spring cleaning, minus the bin.
 struct Triage {
     /// `(media id, list index, favorite, hidden, inbox)` before each action.
     undo: Vec<(i64, u64, bool, bool, bool)>,
@@ -711,6 +712,7 @@ impl JizzApp {
     }
 
     /// Boss key: pause, mute, discreet mode, leave fullscreen, minimize.
+    /// Also known as "I was reading the documentation".
     fn boss_key(&mut self) {
         self.cancel_pending_streams();
         self.cfg.discreet = true;
@@ -1985,6 +1987,7 @@ impl JizzApp {
     }
 
     /// 18+ gate, shown until confirmed (persisted in the config).
+    /// The only part of the app that asks for ID and accepts a click.
     fn age_gate(&mut self, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG))
@@ -2106,6 +2109,7 @@ impl eframe::App for JizzApp {
         let ctx = ui.ctx().clone();
         self.frame_no += 1;
         // Jokes never show on a shared screen, in discreet mode or disguised.
+        // Comedy, like this app, is best enjoyed alone.
         crate::fun::set_enabled(
             !self.cfg.no_jokes
                 && !self.cfg.discreet

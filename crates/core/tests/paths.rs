@@ -1,4 +1,5 @@
 //! Where things live. Its own process: the home is set once per process.
+//! No roommates.
 
 use jizzcraft_core::paths;
 use std::path::Path;

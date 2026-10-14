@@ -3,6 +3,8 @@
 //!
 //! Bit-rot rule: a stored checksum, an unchanged size and mtime, and a new
 //! hash that differs means the content changed under us (`damaged = 2`).
+//! Same size, same date, different bytes: the file has been living a double
+//! life.
 
 use crate::db::{Db, blob_to_path, now_secs};
 use crate::error::Result;

@@ -59,6 +59,7 @@ impl FetchHost {
     pub fn add_indexer(&mut self, name: String, url: String, api_key: String) -> Result<u32> {
         let id = self.cfg.next_indexer_id();
         // One field is enough: the name defaults to the host of the URL.
+        // Naming things is hard; we delegated it to DNS.
         let name = if name.trim().is_empty() {
             url.split("://")
                 .nth(1)

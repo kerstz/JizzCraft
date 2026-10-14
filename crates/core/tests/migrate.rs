@@ -107,7 +107,10 @@ fn newer_schema_is_refused_and_checks_hold() {
          VALUES (1, x'61', 'a', 'a', 0, 1, 0, 0, 6)",
         [],
     );
-    assert!(bad.is_err(), "rating 6 must violate the CHECK");
+    assert!(
+        bad.is_err(),
+        "rating 6 must violate the CHECK (five stars is a ceiling, not a mood)"
+    );
 
     c.pragma_update(None, "user_version", 99).unwrap();
     drop(c);

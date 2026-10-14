@@ -90,7 +90,10 @@ fn read_exact_patient(r: &mut impl Read, n: usize) -> Vec<u8> {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => panic!("{e}"),
         }
-        assert!(t0.elapsed() < Duration::from_secs(20), "stalled");
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "stalled (the spinner won this round)"
+        );
     }
     out
 }

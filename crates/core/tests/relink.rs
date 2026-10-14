@@ -125,6 +125,7 @@ fn unmounted_root_does_not_lend_its_rows() {
     fingerprint(&mut db);
 
     // The drive disappears, and an identical file shows up elsewhere.
+    // New address, same fingerprint: the file cannot hide from us.
     let bytes = fs::read(a.join("p.png")).unwrap();
     fs::remove_dir_all(&a).unwrap();
     fs::write(b.join("p.png"), bytes).unwrap();

@@ -3,6 +3,7 @@ use std::fmt;
 
 /// An API key. Never printed: `Debug` and `Display` show `***`. It is
 /// serialized only into the 0600 config file.
+/// Three asterisks: the universal symbol for "nice try".
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Secret(String);
 

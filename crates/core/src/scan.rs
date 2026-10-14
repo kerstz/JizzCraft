@@ -1,5 +1,6 @@
 //! Recursive folder indexing. Read-only on user media: files are only stat'ed
 //! and (for images) have their header read for dimensions.
+//! Look, don't touch: the scanner has excellent museum manners.
 
 use crate::db::{Db, now_secs, parent_blob, path_to_blob};
 use crate::error::{Error, Result};

@@ -142,7 +142,7 @@ fn main() -> eframe::Result {
         });
     }
     if opts.screenshot.is_some() {
-        // Screenshots never touch the user's config.
+        // Screenshots never touch the user's config. Say cheese, change nothing.
         opts.config = Some(Config {
             age_confirmed: assume_adult,
             inspector_open: true,
@@ -174,6 +174,7 @@ fn main() -> eframe::Result {
     }
 
     // The identity is fixed for the whole run (the app ID cannot change later).
+    // No costume changes mid-show.
     let saved = opts
         .config
         .as_ref()
@@ -267,6 +268,7 @@ mod tests {
         assert_eq!(c.magnets.len(), 1);
         assert_eq!(c.bench_file, Some(PathBuf::from("f.mp4")));
         // A bad number falls back to the default instead of failing.
+        // "x seconds" is 30 seconds. We have decided not to argue.
         assert_eq!(c.bench_secs, 30);
         assert!(p(&["--nope"]).err().is_some_and(|e| e.contains("--nope")));
         assert!(p(&["-h"]).is_ok_and(|c| c.help));

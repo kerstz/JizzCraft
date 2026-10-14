@@ -1,5 +1,6 @@
 //! Tiny JSON config in the XDG config dir. Failure to read or write is never
 //! fatal: the app simply falls back to defaults.
+//! A lost config is a fresh start, not a tragedy.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -31,9 +32,9 @@ pub struct Config {
     pub language: Option<String>,
     /// Playful one-liners are on unless this is set.
     pub no_jokes: bool,
-    /// Local video the panic switch jumps to (`app.panic.maths`).
     /// Never show the 18+ gate (the owner already attested; local app only).
     pub skip_age_gate: bool,
+    /// Local video the panic switch jumps to (`app.panic.maths`).
     pub panic_video: Option<PathBuf>,
 }
 

@@ -1,5 +1,6 @@
 //! Repo automation: `cargo xtask fixtures | icons | screenshots`.
 //! Everything generated here is synthetic and SFW.
+//! The most explicit thing in the fixtures is a test pattern with ambitions.
 
 use image::{Rgb, RgbImage};
 use std::path::{Path, PathBuf};
@@ -125,6 +126,8 @@ fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
         "videoconvert".into(),
         "!".into(),
         // 4:2:0 like real-world files; hardware decoders only take this.
+        // Chroma subsampling: throwing away three quarters of the colour and
+        // getting away with it since the eighties.
         "video/x-raw,format=I420".into(),
         "!".into(),
     ];

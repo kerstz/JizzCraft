@@ -1,4 +1,5 @@
 //! Own test binary: `set_home` is a process-wide, set-once value.
+//! You only move into your first home once.
 
 use jizzcraft_core::paths;
 

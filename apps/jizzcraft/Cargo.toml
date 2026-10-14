@@ -18,6 +18,7 @@ jizzcraft-fetch = { workspace = true, optional = true }
 
 [features]
 # Opt-in network build: Torznab indexers and a BitTorrent client.
+# Opt-in means opt-in: no default, no nudge, no "recommended" badge.
 network = ["jizzcraft-ui/network", "dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
 
 [package.metadata.deb]

@@ -81,6 +81,7 @@ fn default_apps_do_not_link_fetch() {
 }
 
 /// Positive control: proves the check above can actually see network crates.
+/// A smoke detector you never tested is a ceiling decoration.
 #[test]
 fn network_build_links_librqbit() {
     let names = tree(&["-p", "jizzcraft", "--features", "network"]);

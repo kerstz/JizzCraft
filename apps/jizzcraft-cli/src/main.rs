@@ -1,4 +1,7 @@
 //! `jizzcraft-cli`: same command registry as the desktop app, scriptable.
+//!
+//! Doc comments on the clap types below are `--help` text: keep jokes out of
+//! them, the terminal may be on a shared screen.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use jizzcraft_core::{Db, HasLibrary, Registry, paths, register_core};
@@ -7,6 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Command context: the library, plus the network host in the opt-in build.
+// No mouse, no thumbnails, no judgement: the CLI only ever sees ids.
 struct CliCtx {
     db: Db,
     #[cfg(feature = "network")]

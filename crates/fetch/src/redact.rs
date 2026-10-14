@@ -4,7 +4,8 @@
 pub fn redact_url(url: &str) -> String {
     let end = url.find(['?', '#']).unwrap_or(url.len());
     let base = &url[..end];
-    // Userinfo (`user:pass@host`) is a secret too.
+    // Userinfo (`user:pass@host`) is a secret too. Putting a password in a URL
+    // is a bold choice; we respect it by deleting it.
     match base.split_once("://") {
         Some((scheme, rest)) => {
             let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));

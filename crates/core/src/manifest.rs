@@ -4,6 +4,7 @@
 /// (HLS, DASH, Smooth Streaming, SDP, plain URL list) rather than media?
 /// Used on in-process streams before any pipeline exists, so a playlist
 /// pushed through the stream source is refused up front.
+/// A shopping list is not groceries, and an `.m3u8` is not a video.
 pub fn looks_like_manifest(head: &[u8]) -> bool {
     let text = String::from_utf8_lossy(&head[..head.len().min(1024)]);
     let t = text.trim_start_matches('\u{feff}').trim_start();

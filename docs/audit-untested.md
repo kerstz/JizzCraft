@@ -22,7 +22,7 @@ network crate separately: 62 % → see below). Numbers are lines, integration te
 | `crates/ui/src/app.rs`, `app/sidebar.rs`, `app/tools.rs`, `player_view.rs`, `widgets.rs`, `theme.rs` (egui drawing and event handling) | 0–7 % | Medium | Needs a headless egui harness. The `--screenshot` path renders the whole app once and is used by hand; a golden-image smoke test per tab/language would be the next step. Registered commands behind the UI are covered through the registry and CLI. |
 | `apps/jizzcraft/src/main.rs` | 0 % | Low | Flag parsing and the magnet hand-off. Extract the parser into a function and unit-test it. |
 | `crates/media/src/integrity.rs` | 47 % | Medium | Decode-integrity paths for truncated/corrupt containers need more synthetic broken clips. |
-| `crates/ui/src/bench.rs` | 0 % | Low | Developer benchmark. |
+| `crates/ui/src/bench.rs` | 0 % | Low | Developer benchmark. Nobody benchmarks the benchmark. |
 | `crates/fetch/src/service.rs` | ~74 % | Medium | Torrent paths are covered by the loopback swarm tests. Not covered: SOCKS5 proxy, listening for incoming peers, rate limits, disk-full handling, Prowlarr indexer listing over HTTP. |
 | `crates/ui/src/app/downloads.rs` | 0 % | Medium | The Play flow state machine (list → pick → add → open) is only exercised by hand. Extract it from egui and test the transitions with fake receivers. |
 | Windows / macOS code paths | — | High | `paths`, the single-instance lock and the external-player lookup have platform branches that no test here runs. CI on those platforms is required before a release. |
@@ -35,6 +35,9 @@ network crate separately: 62 % → see below). Numbers are lines, integration te
   missing-codec message, but the packaged plugin set has not been exercised.
 
 ## Reproduce
+
+Coverage goes up when you add tests; it has never once gone up from staring
+at the report.
 
 ```sh
 cargo install cargo-llvm-cov --locked

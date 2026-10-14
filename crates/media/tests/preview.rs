@@ -51,7 +51,7 @@ fn preview_frame_is_small_cached_and_drop_is_quick() {
         "drop must not block"
     );
 
-    // Cached on disk: a fresh service answers from the file.
+    // Cached on disk: a fresh service answers from the file. Déjà vu, on purpose.
     let previews = cache.path().join("previews");
     assert!(previews.is_dir());
     let svc2 = mk();

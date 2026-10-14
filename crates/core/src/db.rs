@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// Each entry migrates from version `index` to `index + 1`. SQL is append-only;
 /// Rust backfills are keyed by target version in `post_migrate`.
+// Like a diary: you may add pages, you may not tear any out.
 const MIGRATIONS: &[&str] = &[
     // v1
     "CREATE TABLE folders (

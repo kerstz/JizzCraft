@@ -1,5 +1,6 @@
 //! Craft visual language: flat surfaces, 0 px radius, hairlines drawn as
 //! translucent warm white, Archivo display, Inter body, mono labels.
+//! Corner radius is 0 px. Nobody here cuts corners, and nobody rounds them.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextFormat, text::LayoutJob};
 

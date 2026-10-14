@@ -5,6 +5,9 @@
 //! disguised identity is active: nothing cheeky may show up on a shared
 //! screen. Lines are mild and translated per language; the pick rotates with
 //! a counter so the same moment does not always say the same thing.
+//!
+//! This is the only module allowed to be funny at runtime. The others have to
+//! settle for comments.
 
 use crate::i18n::{self, Lang};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

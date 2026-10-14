@@ -72,7 +72,10 @@ fn backup_opens_and_refuses_overwrite_and_media_names() {
     let copy = Db::open(&dest).unwrap();
     assert_eq!(copy.stats().unwrap().total, 3);
 
-    assert!(backup(&db, &dest).is_err(), "no overwrite");
+    assert!(
+        backup(&db, &dest).is_err(),
+        "no overwrite: a backup never eats an older one"
+    );
     assert!(
         backup(&db, &work.path().join("oops.mp4")).is_err(),
         "media extension"
@@ -165,7 +168,8 @@ fn bit_rot_is_flagged_when_mtime_is_unchanged() {
     let first = checksum_pending(&mut db, Scope::All, None, &c, &mut |_, _| {}).unwrap();
     assert_eq!((first.checked, first.ok, first.damaged), (3, 3, 0));
 
-    // Flip a byte, keep size and mtime: silent corruption.
+    // Flip a byte, keep size and mtime: silent corruption. The perfect crime,
+    // foiled by a hash.
     let p = t.path().join("v.mp4");
     let before = fs::metadata(&p).unwrap().modified().unwrap();
     let mut bytes = fs::read(&p).unwrap();

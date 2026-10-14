@@ -326,7 +326,7 @@ fn tree_rows(
         Some(node.total),
         on,
     );
-    // Chevron, drawn with lines so it needs no font glyph.
+    // Chevron, drawn with lines so it needs no font glyph. Artisanal pixels.
     if has_kids {
         let c = pos2(
             r.rect.left() + 12.0 + depth as f32 * 12.0,

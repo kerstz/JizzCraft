@@ -48,7 +48,7 @@ pub fn save_cached(file: &Path, img: &RgbImage) -> Result<(), String> {
 }
 
 /// Tiny version for discreet / screen-share-safe mode; the UI upscales it with
-/// linear filtering, which reads as a heavy blur.
+/// linear filtering, which reads as a heavy blur. Impressionism, on demand.
 pub fn blurred(img: &RgbImage) -> RgbImage {
     let w = BLUR_W.min(img.width()).max(1);
     let h = ((img.height() as f32 * w as f32 / img.width() as f32).round() as u32).max(1);
@@ -179,6 +179,7 @@ pub fn video_thumb(src: &Path) -> Result<RgbImage, String> {
             .is_ok()
         {
             // Not fatal if it fails: the first frame is still a fine thumbnail.
+            // Usually a black screen or a logo, but a fine one.
             let _ = wait_async_done(&p.bus, 10);
         }
     }

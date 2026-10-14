@@ -64,7 +64,7 @@ fn thumbnails_arrive_for_good_files_and_errors_for_bad_ones() {
     assert_eq!(t.full.data.len(), (t.full.w * t.full.h * 4) as usize);
     assert!(done[1].thumb.is_err());
     assert!(done[2].thumb.is_err());
-    // Error text never carries the path.
+    // Error text never carries the path. It can say "no" without saying who.
     for d in &done[1..] {
         let e = d.thumb.as_ref().err().unwrap();
         assert!(!e.contains("bad.png") && !e.contains("missing.png"), "{e}");

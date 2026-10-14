@@ -12,6 +12,7 @@ rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/jizzcraft "$APP/Contents/MacOS/jizzcraft"
 cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
 # .icns from the 256 px PNG when `sips` and `iconutil` exist (macOS).
+# One more icon format; the collection is nearly complete.
 if command -v iconutil >/dev/null 2>&1; then
   I=$(mktemp -d)/JizzCraft.iconset; mkdir -p "$I"
   sips -z 256 256 assets/icons/hicolor/256x256/apps/org.jizzcraft.JizzCraft.png --out "$I/icon_256x256.png" >/dev/null

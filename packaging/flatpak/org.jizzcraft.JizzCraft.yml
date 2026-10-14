@@ -1,5 +1,6 @@
 # Flatpak manifest (untested here: no flatpak-builder on the development machine).
 # Offline by design: no --share=network. Add it only for a separate network build.
+# The sandbox has no Wi-Fi and has never asked for the password.
 app-id: org.jizzcraft.JizzCraft
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'

@@ -2,6 +2,7 @@ name: Release
 
 # Builds installable artifacts for Linux, Windows and macOS when a version tag
 # is pushed (or by hand). The default (offline) build is what is published.
+# Tag responsibly: a `v` prefix is a promise, not a vibe.
 
 on:
   push:

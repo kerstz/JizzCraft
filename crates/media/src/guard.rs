@@ -17,6 +17,9 @@
 //! (`Player::open_stream`) feeds bytes it read from a local reader through an
 //! `appsrc`. That is [`watch_with`] with `["appsrc"]`; the fetchers are still
 //! refused there, so a playlist streamed through it is caught like any other.
+//!
+//! A playlist dressed up as an `.mp4` is still a playlist. The bouncer has
+//! seen that costume before.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;

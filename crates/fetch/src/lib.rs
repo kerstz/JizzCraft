@@ -4,6 +4,7 @@
 //! building and XML parsing, redaction) is always compiled and unit-tested.
 //! The BitTorrent engine and the HTTP client live behind the `network`
 //! feature, which is off in the default build.
+//! The crate that knows about the internet, kept on a short leash.
 
 pub mod config;
 pub mod detect;

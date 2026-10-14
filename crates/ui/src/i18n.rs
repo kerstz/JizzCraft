@@ -3,7 +3,8 @@
 //! English text in the source is the key. [`tr`] returns the translation for
 //! the current language, or the English text when there is none, so a missing
 //! entry is never an error. Catalogs live in `crates/ui/src/lang/*.rs` as
-//! sorted-by-nothing `(english, translated)` slices.
+//! sorted-by-nothing `(english, translated)` slices. A missing translation
+//! falls back to English, the lingua franca of error messages.
 //!
 //! Only the interface is translated. Library file names, user data and the
 //! CLI's JSON are never touched.

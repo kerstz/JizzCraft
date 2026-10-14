@@ -1,6 +1,7 @@
 //! "Find on this computer": look for a local Jackett or Prowlarr on loopback
 //! and read the API key from its own config file. Runs only when the user
 //! clicks the button, only on 127.0.0.1, only on the two well-known ports.
+//! Knocking on your own front door, twice, politely.
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};

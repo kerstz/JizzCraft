@@ -2,6 +2,8 @@
 //! two cannot drift. Bindings are matched on exact modifiers (Ctrl+S is not S),
 //! and digits / left-hand letters match the *physical* key so they work on
 //! AZERTY and other layouts.
+//!
+//! If two bindings ever fight over one key, the test at the bottom referees.
 
 use egui::{Event, Key, Modifiers};
 
@@ -1106,10 +1108,10 @@ pub const KEYMAP: &[Binding] = &[
     )),
 ];
 
+// Triage reuses the open viewer/player but takes over the decision keys.
+// Left/right seeking in a video moves to Shift+arrow while triaging.
 use Ctx::Triage;
 
-/// Triage reuses the open viewer/player but takes over the decision keys.
-/// Left/right seeking in a video moves to Shift+arrow while triaging.
 /// Bindings that only exist in the network build; empty otherwise, so the
 /// default build never lists a command it does not have.
 #[cfg(feature = "network")]
@@ -1436,6 +1438,7 @@ mod tests {
     #[test]
     fn azerty_digit_four_matches_by_physical_key() {
         // On AZERTY the `4` key produces `'`, which egui reports as Quote.
+        // Keyboards: standardised, in the sense that each country has one.
         let b4 = find(
             "view.filter",
             r#"{"tab":"favorites"}"#,

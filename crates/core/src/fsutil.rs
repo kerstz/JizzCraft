@@ -9,6 +9,9 @@ use std::time::Duration;
 /// indexer can hold either file for a moment and the rename then fails with
 /// `PermissionDenied`: retry a few times before giving up. Elsewhere the first
 /// attempt is the only one that matters.
+///
+/// Five attempts: enough for an antivirus to finish reading, not enough for it
+/// to finish forming opinions.
 pub fn replace(tmp: &Path, dst: &Path) -> io::Result<()> {
     let mut last = None;
     for attempt in 0..5u64 {

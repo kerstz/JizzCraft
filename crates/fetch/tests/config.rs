@@ -91,7 +91,7 @@ fn a_proxy_switches_off_everything_it_cannot_carry() {
     let p = proxied.net_policy();
     assert!(!p.dht && !p.trackers && !p.listen, "{p:?}");
 
-    // An empty proxy string means "no proxy".
+    // An empty proxy string means "no proxy", not "a proxy named nothing".
     let empty = FetchConfig {
         proxy: Some(Secret::new("")),
         ..Default::default()

@@ -243,7 +243,8 @@ fn play_path_streams_before_the_download_is_complete() {
                     listen_addr: "127.0.0.1:0".parse().unwrap(),
                     ..Default::default()
                 }),
-                // Slow seeder: the stream has to wait for pieces.
+                // Slow seeder: the stream has to wait for pieces. Method acting
+                // as a real swarm.
                 ratelimits: librqbit::limits::LimitsConfig {
                     upload_bps: std::num::NonZeroU32::new(512 * 1024),
                     download_bps: None,
@@ -308,6 +309,7 @@ fn play_path_streams_before_the_download_is_complete() {
     assert_eq!(len, data.len() as u64);
 
     // Jump to the tail first, as a demuxer looking for its index would.
+    // Demuxers read the last page first, like some people with novels.
     reader.seek(SeekFrom::Start(len - 4096)).unwrap();
     let mut tail = vec![0u8; 4096];
     let mut got = 0;

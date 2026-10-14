@@ -386,6 +386,7 @@ impl Db {
     }
 
     /// Pick a random item matching `filter`. `entropy` decides which one.
+    /// Indecision, outsourced.
     pub fn random_index(&self, filter: &Filter, entropy: u64) -> Result<Option<(u64, i64)>> {
         let total = self.count(filter)?;
         if total == 0 {

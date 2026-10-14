@@ -1,5 +1,6 @@
 # Fedora / RHEL-like / openSUSE. Build from a source tarball of the repository:
 #   rpmbuild -ba packaging/fedora/jizzcraft.spec  (needs rust, cargo, gstreamer1-devel)
+# Written with care, never built: a recipe nobody has cooked yet.
 Name:           jizzcraft
 Version:        0.1.0
 Release:        1%{?dist}

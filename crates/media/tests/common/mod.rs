@@ -25,7 +25,8 @@ pub const CLIPS: &[&str] = &[
 
 /// `true` when GStreamer works and every element is installed. Otherwise the
 /// calling test should return early: headless CI runners without the plugins
-/// skip these tests instead of failing them.
+/// skip these tests instead of failing them. Absence is not failure; ask any
+/// cat.
 pub fn ready(elements: &[&str]) -> bool {
     if let Err(e) = jizzcraft_media::init() {
         eprintln!("skipped: {e}");

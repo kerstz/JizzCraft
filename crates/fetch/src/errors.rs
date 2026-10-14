@@ -31,6 +31,7 @@ pub const ALL: &[&str] = &[
 ];
 
 /// Map any internal error text to one fixed sentence.
+/// The stack trace stays in the kitchen; the customer gets the polite version.
 pub fn classify(raw: &str) -> &'static str {
     let r = raw.to_ascii_lowercase();
     if r.contains("cancelled") {

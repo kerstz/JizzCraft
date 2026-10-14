@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 pub enum CheckMode {
     /// Probe plus a few seeks (cheap).
     Quick,
-    /// Decode everything (slow, thorough).
+    /// Decode everything (slow, thorough). Bring a snack.
     Full,
 }
 
