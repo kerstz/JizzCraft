@@ -1,0 +1,3 @@
+# id	group	arch	debian	fedora	suse   (tab separated; same columns as gst-packages.tsv; read by install.sh)
+webkit	browser	webkitgtk-6.0	libwebkitgtk-6.0-4	webkitgtk6.0	libwebkitgtk-6_0-4
+bubblewrap	browser	bubblewrap	bubblewrap	bubblewrap	bubblewrap

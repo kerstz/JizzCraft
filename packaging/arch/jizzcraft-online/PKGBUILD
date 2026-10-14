@@ -1,0 +1,52 @@
+# Maintainer: JizzCraft contributors <noreply@example.invalid>
+#
+# Online edition: indexers, torrents and streaming from your own sources.
+# Same code base as `jizzcraft`, built with the `online` feature. Replaces it.
+
+pkgname=jizzcraft-online
+_pkgbase=jizzcraft
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Private media library and player with indexers, torrents and streaming (Online edition)'
+arch=(x86_64 aarch64)
+url='https://github.com/kerstz/JizzCraft'
+license=('MIT OR Apache-2.0')
+depends=(gcc-libs glibc gstreamer gst-plugins-base-libs gst-plugins-base
+  gst-plugins-good gst-libav vulkan-icd-loader libxkbcommon wayland libx11
+  libxcursor libxrandr libxi)
+makedepends=(cargo pkgconf gstreamer gst-plugins-base-libs)
+optdepends=('gst-plugins-bad: AV1 decoding'
+  'gst-plugin-va: hardware decoding'
+  'xdg-desktop-portal: file chooser'
+  'vulkan-driver: GPU rendering'
+  'mpv: external playback'
+  'webkitgtk-6.0: built-in browser (jizzcraft-browser, separate process)'
+  'bubblewrap: sandbox for the built-in browser')
+provides=(jizzcraft)
+conflicts=(jizzcraft)
+replaces=()
+source=("$_pkgbase-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+options=(!lto)
+
+prepare() {
+  cd "JizzCraft-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "JizzCraft-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo xtask dist --edition online --destdir "$srcdir/stage" --prefix /usr
+}
+
+check() {
+  cd "JizzCraft-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen -p jizzcraft-core
+}
+
+package() {
+  cp -a "$srcdir/stage/." "$pkgdir/"
+}

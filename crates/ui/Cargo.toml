@@ -19,11 +19,16 @@ serde_json.workspace = true
 serde.workspace = true
 image.workspace = true
 jizzcraft-fetch = { workspace = true, optional = true }
+jizzcraft-bridge = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [features]
 # Off by default: the default build links no network code.
 # It does not even know the network's phone number.
-network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
+network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network", "dep:jizzcraft-bridge", "dep:libc"]
+online = ["network"]
 
 [dev-dependencies]
 tempfile.workspace = true

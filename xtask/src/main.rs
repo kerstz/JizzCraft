@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         Some("dist") => dist(args.collect()),
         Some("check-packaging") => check_packaging(),
         _ => Err(
-            "usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots | dist [--network] \
+            "usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots | dist [--edition offline|online] [--browser] \
              [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging"
                 .into(),
         ),
@@ -542,12 +542,24 @@ fn screenshots() -> Result<(), String> {
 /// The one staging tree every package is made from. Layout follows the FHS:
 /// `DESTDIR/PREFIX/{bin,share/...}`.
 fn dist(args: Vec<String>) -> Result<(), String> {
-    let (mut network, mut no_build, mut tarball) = (false, false, false);
+    let (mut network, mut no_build, mut tarball, mut browser) = (false, false, false, false);
     let (mut prefix, mut destdir) = ("/usr".to_owned(), PathBuf::from("target/stage"));
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--network" => network = true,
+            // Deprecated alias of `--edition online`.
+            "--network" => {
+                eprintln!("warning: --network is deprecated, use --edition online");
+                network = true;
+            }
+            "--edition" => {
+                network = match it.next().ok_or("--edition needs a value")?.as_str() {
+                    "offline" => false,
+                    "online" => true,
+                    other => return Err(format!("unknown edition {other} (offline|online)")),
+                };
+            }
+            "--browser" => browser = true,
             "--no-build" => no_build = true,
             "--tarball" => tarball = true,
             "--prefix" => prefix = it.next().ok_or("--prefix needs a value")?,
@@ -572,7 +584,7 @@ fn dist(args: Vec<String>) -> Result<(), String> {
             "jizzcraft-cli",
         ]);
         if network {
-            c.args(["--features", "jizzcraft/network,jizzcraft-cli/network"]);
+            c.args(["--features", "jizzcraft/online,jizzcraft-cli/network"]);
         }
         if !c.status().map_err(|e| e.to_string())?.success() {
             return Err("build failed".into());
@@ -592,6 +604,17 @@ fn dist(args: Vec<String>) -> Result<(), String> {
         let _ = mode;
         Ok(())
     };
+    if browser && !network {
+        return Err("--browser needs --edition online".into());
+    }
+    const BROWSER_BIN: &str = "target/release/jizzcraft-browser";
+    let have_browser = browser && Path::new(BROWSER_BIN).exists();
+    if browser && !have_browser {
+        println!("dist: {BROWSER_BIN} not built, skipping the browser package");
+    }
+    if have_browser {
+        put(BROWSER_BIN, "libexec/jizzcraft/jizzcraft-browser", 0o755)?;
+    }
     put("target/release/jizzcraft", "bin/jizzcraft", 0o755)?;
     put("target/release/jizzcraft-cli", "bin/jizzcraft-cli", 0o755)?;
     for d in ["io.github.kerstz.JizzCraft.desktop", "local.Viewer.desktop"] {
@@ -636,6 +659,11 @@ fn dist(args: Vec<String>) -> Result<(), String> {
         "share/jizzcraft/gst-packages.tsv",
         0o644,
     )?;
+    put(
+        "assets/browser-packages.tsv",
+        "share/jizzcraft/browser-packages.tsv",
+        0o644,
+    )?;
     put("README.md", "share/doc/jizzcraft/README.md", 0o644)?;
     for l in ["NOTICE", "LICENSE-MIT", "LICENSE-APACHE"] {
         put(l, &format!("share/licenses/jizzcraft/{l}"), 0o644)?;
@@ -677,7 +705,7 @@ fn dist(args: Vec<String>) -> Result<(), String> {
         let arch = std::env::consts::ARCH;
         let name = format!(
             "jizzcraft{}-{ver}-{arch}-linux",
-            if network { "-network" } else { "" }
+            if network { "-online" } else { "" }
         );
         std::fs::create_dir_all("dist").map_err(|e| e.to_string())?;
         let top = PathBuf::from("target/tarball").join(&name);
@@ -692,6 +720,8 @@ fn dist(args: Vec<String>) -> Result<(), String> {
         if !st.success() {
             return Err("cp failed".into());
         }
+        // The browser binary ships in its own tarball, never in the main one.
+        let _ = std::fs::remove_dir_all(top.join("libexec"));
         let st = Command::new("tar")
             .args(["-C", "target/tarball", "-cJf"])
             .arg(format!("dist/{name}.tar.xz"))
@@ -702,6 +732,24 @@ fn dist(args: Vec<String>) -> Result<(), String> {
             return Err("tar failed".into());
         }
         println!("dist: dist/{name}.tar.xz");
+        if have_browser {
+            let bname = format!("jizzcraft-browser-{ver}-{arch}-linux");
+            let btop = PathBuf::from("target/tarball").join(&bname);
+            let _ = std::fs::remove_dir_all(&btop);
+            let dst = btop.join("libexec/jizzcraft");
+            std::fs::create_dir_all(&dst).map_err(|e| e.to_string())?;
+            std::fs::copy(BROWSER_BIN, dst.join("jizzcraft-browser")).map_err(|e| e.to_string())?;
+            let st = Command::new("tar")
+                .args(["-C", "target/tarball", "-cJf"])
+                .arg(format!("dist/{bname}.tar.xz"))
+                .arg(&bname)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !st.success() {
+                return Err("tar failed".into());
+            }
+            println!("dist: dist/{bname}.tar.xz");
+        }
     }
     Ok(())
 }
@@ -762,7 +810,9 @@ fn check_packaging() -> Result<(), String> {
     }
     for f in [
         "packaging/arch/jizzcraft/PKGBUILD",
+        "packaging/arch/jizzcraft-online/PKGBUILD",
         "packaging/fedora/jizzcraft.spec",
+        "packaging/fedora/jizzcraft-online.spec",
     ] {
         if !read(f)?.contains("xtask") {
             missing.push(format!("{f} does not stage with `cargo xtask dist`"));
@@ -773,11 +823,22 @@ fn check_packaging() -> Result<(), String> {
         "about.hbs",
         "NOTICE",
         "assets/gst-packages.tsv",
+        "assets/browser-packages.tsv",
         "assets/jizzcraft.1",
         "assets/icons/hicolor/scalable/apps/local.Viewer.svg",
     ] {
         if !Path::new(a).exists() {
             missing.push(format!("missing {a}"));
+        }
+    }
+    for needle in [
+        "[package.metadata.deb.variants.online]",
+        "[package.metadata.deb.variants.browser]",
+        "jizzcraft-online",
+        "jizzcraft-browser",
+    ] {
+        if !deb.contains(needle) {
+            missing.push(format!("deb metadata lacks {needle}"));
         }
     }
     if missing.is_empty() {

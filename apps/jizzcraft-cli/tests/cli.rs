@@ -204,6 +204,39 @@ fn doctor_report_never_contains_user_strings() {
     assert!(text.contains("folders: 1"), "{text}");
     assert!(text.contains("config.age_confirmed: true"), "{text}");
     assert!(text.contains("schema_version: "), "{text}");
+    assert!(text.contains("edition: "), "{text}");
+}
+
+#[test]
+fn version_states_the_edition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let o = cli(tmp.path(), &["--version"]);
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    let want = if cfg!(feature = "online") || cfg!(feature = "network") {
+        "online edition"
+    } else {
+        "offline edition"
+    };
+    assert!(text.starts_with("jizzcraft-cli "), "{text}");
+    assert!(text.contains(want), "{text}");
+}
+
+#[test]
+fn doctor_starts_with_the_edition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let o = cli(tmp.path(), &["doctor"]);
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    let online = cfg!(feature = "online") || cfg!(feature = "network");
+    let first = if online {
+        "Edition: online"
+    } else {
+        "Edition: offline"
+    };
+    assert!(text.starts_with(first), "{text}");
+    assert_eq!(text.contains("Browser: "), online, "{text}");
+    let o = cli(tmp.path(), &["--json", "doctor"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["edition"], if online { "online" } else { "offline" });
 }
 
 // ---- organise: playlists, tags, categories ----

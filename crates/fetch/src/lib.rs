@@ -16,6 +16,7 @@ pub mod hls;
 pub mod inbox;
 pub mod pick;
 pub mod redact;
+pub mod resolver_setup;
 pub mod route;
 pub mod secret;
 pub mod sniff;

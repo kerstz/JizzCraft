@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest something JizzCraft should do. Vote with a thumbs-up on existing requests instead of adding "+1".
+title: "feature: "
+labels: ["type: feature", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks. Search the [open requests](https://github.com/kerstz/JizzCraft/issues?q=is%3Aissue+label%3A%22type%3A+feature%22) first and add a 👍 to an existing one if it matches.
+        **Hard rules** (see `AGENTS.md`): no accounts, no telemetry, no bundled sites/indexers/catalogs/presets, the Offline edition links no network code, and nothing bypasses age checks, sign-in or DRM of other sites.
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Edition
+      options: ["Both", "Offline only", "Online only"]
+    validations: {required: true}
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Library, Player, Streaming, Torrents, Browser, Install and packaging, Interface, CLI, Organise (playlists/tags), Privacy and security, Languages, Windows, macOS, Other]
+    validations: {required: true}
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem, not the solution. One concrete situation helps most.
+    validations: {required: true}
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations: {required: true}
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today, or what else did you consider?
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Fits the project rules
+      options:
+        - label: It needs no account, no telemetry and no preset site, indexer or catalog.
+          required: true
+        - label: It does not bypass another site's age check, sign-in, regional restriction or DRM.
+          required: true
+        - label: I would not attach real adult content; screenshots and examples are synthetic.
+          required: true

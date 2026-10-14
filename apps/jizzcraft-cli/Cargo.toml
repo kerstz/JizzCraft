@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 jizzcraft-core.workspace = true
 jizzcraft-media.workspace = true
+jizzcraft-ui.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
@@ -26,7 +27,8 @@ libc = "0.2"
 
 [features]
 # Off by default: the default build links no network code.
-network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
+network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network", "jizzcraft-ui/network"]
+online = ["network"]
 
 [dev-dependencies]
 tempfile.workspace = true

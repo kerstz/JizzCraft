@@ -30,10 +30,17 @@ impl jizzcraft_fetch::commands::HasFetch for CliCtx {
     }
 }
 
+/// `--version` text: the edition is stated next to the number.
+const VERSION: &str = if cfg!(feature = "network") {
+    concat!(env!("CARGO_PKG_VERSION"), " (online edition)")
+} else {
+    concat!(env!("CARGO_PKG_VERSION"), " (offline edition)")
+};
+
 #[derive(Parser)]
 #[command(
     name = "jizzcraft-cli",
-    version,
+    version = VERSION,
     about = "JizzCraft library from the command line"
 )]
 struct Cli {
@@ -87,7 +94,21 @@ fn support_report(db_path: &std::path::Path) -> String {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok()),
     };
-    jizzcraft_core::report::render(&input)
+    format!(
+        "edition: {}\n{}",
+        jizzcraft_ui::edition::label(),
+        jizzcraft_core::report::render(&input)
+    )
+}
+
+/// First doctor lines: `Edition: ...` and, online only, `Browser: ...`.
+fn edition_header() -> String {
+    use jizzcraft_ui::edition::{self, Edition};
+    let mut h = format!("Edition: {}\n", edition::label());
+    if edition::EDITION == Edition::Online {
+        h.push_str(&format!("Browser: {}\n", edition::browser_status().word()));
+    }
+    h
 }
 
 /// `doctor`: human report or JSON, exit 0 fine, 1 required missing, 2 codecs.
@@ -125,12 +146,19 @@ fn doctor(cli: &Cli, report: bool) -> ExitCode {
             .iter()
             .map(|n| json!({ "id": n.id, "warn": n.warn, "text": n.text }))
             .collect();
-        println!(
-            "{}",
-            json!({ "checks": checks, "dirs": dirs, "notes": notes, "fix": fix, "exit": r.exit_code() })
-        );
+        let st = jizzcraft_ui::edition::browser_status();
+        let mut v = json!({ "edition": jizzcraft_ui::edition::label() });
+        if jizzcraft_ui::edition::EDITION == jizzcraft_ui::edition::Edition::Online {
+            v["browser"] = json!(st.word());
+        }
+        v["checks"] = json!(checks);
+        v["dirs"] = json!(dirs);
+        v["notes"] = json!(notes);
+        v["fix"] = json!(fix);
+        v["exit"] = json!(r.exit_code());
+        println!("{v}");
     } else {
-        print!("{}", r.render_text());
+        print!("{}{}", edition_header(), r.render_text());
     }
     ExitCode::from(r.exit_code())
 }

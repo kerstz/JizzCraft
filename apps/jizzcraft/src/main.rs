@@ -24,6 +24,8 @@ OPTIONS:
   --bench-gst-play          also measure gst-play-1.0 on the same file
   --assume-adult            (screenshots only) skip the age gate without saving
   magnet:…                  play a magnet link (network build)
+  --send <URL>              hand an http(s) address to the running app, which asks before playing (online edition)
+  https://…                 same as --send URL
   --doctor                  check codecs and folders, print how to fix what is missing
   --lang <CODE>             interface language: en fr es de it pt (default: system)
   --renderer <NAME>         graphics backend: auto (default), vulkan or gl
@@ -49,6 +51,8 @@ struct Cli {
     bench_gst: bool,
     disguise: bool,
     magnets: Vec<String>,
+    /// Addresses for "Send to JizzCraft" (`--send URL` or a plain http(s) argument).
+    sends: Vec<String>,
     portable: bool,
     home: Option<PathBuf>,
     help: bool,
@@ -67,6 +71,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         match a.as_str() {
             // The desktop's magnet handler passes the link as a plain argument.
             s if s.starts_with("magnet:") => cli.magnets.push(s.to_owned()),
+            s if has_web_scheme(s) => cli.sends.push(s.to_owned()),
+            "--send" => match args.next() {
+                Some(u) => cli.sends.push(u),
+                None => return Err("--send: expected an address".to_owned()),
+            },
             "--screenshot" => cli.opts.screenshot = args.next().map(PathBuf::from),
             "--import" => cli.opts.import = args.next().map(PathBuf::from),
             "--db" => cli.opts.db_path = args.next().map(PathBuf::from),
@@ -107,6 +116,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         }
     }
     Ok(cli)
+}
+
+fn has_web_scheme(s: &str) -> bool {
+    let l = s.get(..8).unwrap_or(s).to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+/// Why `--send` cannot work in this build, if it cannot.
+fn send_refusal(sends: &[String]) -> Option<&'static str> {
+    (!cfg!(feature = "network") && !sends.is_empty())
+        .then_some("This edition has no network features.")
 }
 
 /// Backend set for a `--renderer` name. `None` (inside `Some`) means wgpu's
@@ -202,6 +222,10 @@ fn main() -> eframe::Result {
         print!("{HELP}");
         return Ok(());
     }
+    if let Some(m) = send_refusal(&cli.sends) {
+        eprintln!("{m}");
+        std::process::exit(2);
+    }
     if cli.doctor {
         jizzcraft_media::prepare_bundled_env();
         jizzcraft_media::doctor::set_renderer_probe(|| {
@@ -219,6 +243,7 @@ fn main() -> eframe::Result {
         bench_gst,
         disguise: disguise_flag,
         magnets,
+        sends,
         portable,
         home,
         help: _,
@@ -271,11 +296,22 @@ fn main() -> eframe::Result {
         });
     }
 
+    #[cfg(not(feature = "network"))]
+    let _ = &sends;
+    // Addresses: vetted, queued in the inbox; the running app (or this one,
+    // once started) asks before playing. A refused address is never queued.
+    #[cfg(feature = "network")]
+    for u in &sends {
+        if let Err(e) = jizzcraft_fetch::inbox::push_link(u) {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
     // Magnet links: hand them to the running app, or play them from this one.
     #[cfg(feature = "network")]
     let _instance_lock = {
         let lock = jizzcraft_fetch::inbox::try_primary_instance();
-        if lock.is_none() && !magnets.is_empty() {
+        if lock.is_none() && (!magnets.is_empty() || !sends.is_empty()) {
             for m in &magnets {
                 let _ = jizzcraft_fetch::inbox::push(m);
             }
@@ -430,6 +466,24 @@ mod tests {
         assert_eq!(c.opts.commands[0].0, "player.toggle");
         assert_eq!(c.opts.commands[1].1["by"], "name");
         assert!(p(&["--cmd", "x={bad"]).is_err());
+    }
+
+    #[test]
+    fn send_and_positional_urls() {
+        let c = p(&["--send", "https://example.com/a", "HTTP://example.com/b"]).unwrap();
+        assert_eq!(c.sends.len(), 2);
+        assert!(p(&["--send"]).is_err());
+        assert!(p(&["--nope"]).is_err());
+        // Offline builds refuse; online builds do not.
+        let refused = send_refusal(&c.sends).is_some();
+        assert_eq!(refused, !cfg!(feature = "network"));
+        assert!(send_refusal(&[]).is_none());
+        if refused {
+            assert_eq!(
+                send_refusal(&c.sends),
+                Some("This edition has no network features.")
+            );
+        }
     }
 
     #[test]

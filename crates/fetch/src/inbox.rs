@@ -1,4 +1,4 @@
-//! Hand-off of `magnet:` links between app launches, without a socket.
+//! Hand-off of `magnet:` links and `http(s)` addresses (`.link` files) between app launches, without a socket.
 //!
 //! A second launch (the desktop's magnet handler) writes the link into a
 //! private folder and exits; the running app picks it up. A lock file decides
@@ -40,6 +40,28 @@ pub fn push(link: &str) -> std::io::Result<()> {
             "not a magnet link",
         ));
     }
+    write_entry(link, "magnet")
+}
+
+/// Queue an `http(s)` address for the running app. It is vetted with the
+/// bridge's `check_play_url` (no credentials, no local hosts, <= 4096 bytes);
+/// a refused address is never written. The running app only ever shows it on
+/// a confirmation card.
+pub fn push_link(url: &str) -> std::io::Result<()> {
+    let ok = vet_link(url).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    write_entry(&ok, "link")
+}
+
+/// The normalized address, or a fixed sentence saying why it is refused.
+pub fn vet_link(url: &str) -> Result<String, &'static str> {
+    let url = url.trim();
+    if url.len() > MAX_LINK {
+        return Err("the address is too long");
+    }
+    jizzcraft_bridge::check_play_url(url)
+}
+
+fn write_entry(body: &str, ext: &str) -> std::io::Result<()> {
     let d = dir();
     std::fs::create_dir_all(&d)?;
     let nanos = std::time::SystemTime::now()
@@ -54,34 +76,51 @@ pub fn push(link: &str) -> std::io::Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts.open(&tmp)?;
-    f.write_all(link.as_bytes())?;
+    f.write_all(body.as_bytes())?;
     f.sync_all()?;
-    jizzcraft_core::fsutil::replace(&tmp, &d.join(format!("{nanos}.magnet")))
+    jizzcraft_core::fsutil::replace(&tmp, &d.join(format!("{nanos}.{ext}")))
 }
 
-/// Read and remove every queued link (oldest first). Only `.magnet` files
-/// this module wrote are touched.
-pub fn take_all() -> Vec<String> {
+fn take_ext(ext: &str) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir()) else {
         return Vec::new();
     };
     let mut files: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "magnet"))
+        .filter(|p| p.extension().is_some_and(|e| e == ext))
         .collect();
     files.sort();
     let mut out = Vec::new();
     for p in files {
         if let Ok(txt) = std::fs::read_to_string(&p)
-            && txt.trim().starts_with("magnet:")
             && txt.len() <= MAX_LINK
         {
-            out.push(txt.trim().to_owned());
+            let t = txt.trim();
+            if ext == "magnet" {
+                if t.starts_with("magnet:") {
+                    out.push(t.to_owned());
+                }
+            } else if let Ok(u) = vet_link(t) {
+                // Validated again on this end: the folder is not trusted.
+                out.push(u);
+            }
         }
         let _ = std::fs::remove_file(&p);
     }
     out
+}
+
+/// Read and remove every queued magnet (oldest first). Only `.magnet` files
+/// this module wrote are touched.
+pub fn take_all() -> Vec<String> {
+    take_ext("magnet")
+}
+
+/// Read and remove every queued address (oldest first), vetted again. Only
+/// `.link` files are touched.
+pub fn take_links() -> Vec<String> {
+    take_ext("link")
 }
 
 #[cfg(test)]
@@ -100,6 +139,26 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert!(got[0].starts_with("magnet:?xt="));
         assert!(take_all().is_empty());
+
+        // Addresses: round trip, normalized, junk refused and never queued.
+        push_link("HTTPS://Example.com/v.m3u8?a=1").unwrap();
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://user:pw@example.com/",
+            "http://localhost/x",
+            "http://192.168.1.2/x",
+            "https://exa mple.com/",
+            &format!("https://example.com/{}", "a".repeat(5000)),
+        ] {
+            assert!(push_link(bad).is_err(), "accepted {bad:?}");
+        }
+        // A hand-written bad file is dropped on the reading end too.
+        std::fs::write(dir().join("1.link"), "file:///etc/passwd").unwrap();
+        assert!(take_all().is_empty(), "links are not magnets");
+        assert_eq!(take_links(), vec!["https://example.com/v.m3u8?a=1"]);
+        assert!(take_links().is_empty());
+        assert!(std::fs::read_dir(dir()).unwrap().next().is_none());
 
         let first = try_primary_instance().expect("first launch takes the lock");
         assert!(try_primary_instance().is_none(), "second launch does not");

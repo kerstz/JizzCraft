@@ -1,0 +1,24 @@
+[package]
+name = "jizzcraft-browser"
+description = "Optional separate browser helper for JizzCraft. Started only by the app; never linked into it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "jizzcraft-browser"
+path = "src/main.rs"
+
+[dependencies]
+jizzcraft-bridge.workspace = true
+serde_json.workspace = true
+gtk4 = { version = "0.11", features = ["v4_10"], optional = true }
+webkit6 = { version = "0.6", optional = true }
+
+[features]
+# Off by default so the workspace builds and tests without WebKitGTK headers.
+# Without it the binary is a stub that answers Hello with engine_missing.
+engine = ["dep:gtk4", "dep:webkit6"]

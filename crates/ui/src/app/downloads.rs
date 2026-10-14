@@ -79,7 +79,7 @@ impl FlowBackend for FetchBackend<'_> {
 }
 
 pub(super) struct Downloads {
-    host: FetchHost,
+    pub(super) host: FetchHost,
     open: bool,
     input: String,
     results: Vec<SearchResult>,
@@ -862,6 +862,7 @@ impl JizzApp {
         let mut open = true;
         let mut cmds: Vec<(&'static str, Value)> = Vec::new();
         let mut choose: Option<usize> = None;
+        let mut web_open = self.web_pages.shown;
         egui::Window::new(crate::i18n::tr("DOWNLOADS"))
             .open(&mut open)
             .default_width(560.0)
@@ -1377,12 +1378,12 @@ impl JizzApp {
                             }
                         });
                     }
-                    ui.label(
-                        RichText::new(crate::i18n::tr(
-                            "Resolvers are programs you installed: add them with resolvers.add.",
-                        ))
-                        .color(FAINT),
-                    );
+                    if ui
+                        .button(crate::i18n::tr("Set up web pages…"))
+                        .clicked()
+                    {
+                        web_open = !web_open;
+                    }
                     ui.add_space(6.0);
                     let seed = d.host.config().seed_after_complete;
                     if widgets::toggle_chip(ui, crate::i18n::tr("Keep seeding when done"), seed)
@@ -1426,7 +1427,13 @@ impl JizzApp {
                         cmds.push(("fetch.indexers.detect", json!({})));
                     }
                 });
+                // The web-pages panel needs the whole app; `d` is done.
+                if web_open {
+                    ui.add_space(6.0);
+                    super::web_pages::panel(self, ui);
+                }
             });
+        self.web_pages.shown = web_open;
         self.downloads.open = open;
         if let Some(i) = choose {
             let d = &mut self.downloads;

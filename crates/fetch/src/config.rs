@@ -52,6 +52,41 @@ impl ResumeOnStart {
     }
 }
 
+/// Preferences of the optional browser helper (online edition only). Kept
+/// here so they live in `fetch.json` next to the proxy; the offline build
+/// never reads them. Nothing in it is a secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserPrefs {
+    /// The browser button and `Ctrl+Shift+B` are available.
+    pub enabled: bool,
+    /// Keep sign-ins (cookies, site data) between runs. Off by default.
+    pub remember: bool,
+    pub js: bool,
+    /// Video inside pages.
+    pub media: bool,
+    /// The user's own content-rule JSON file (path only).
+    pub rules_path: Option<String>,
+    /// Search address pattern with one `{}`. Empty: no search engine.
+    pub search_template: Option<String>,
+    /// Software rendering.
+    pub software: bool,
+}
+
+impl Default for BrowserPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            remember: false,
+            js: true,
+            media: true,
+            rules_path: None,
+            search_template: None,
+            software: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FetchConfig {
     #[serde(default)]
@@ -101,6 +136,9 @@ pub struct FetchConfig {
     /// connections are bound to. If it is missing the session does not start.
     #[serde(default)]
     pub bind_interface: Option<String>,
+    /// Browser helper preferences (online edition).
+    #[serde(default)]
+    pub browser: BrowserPrefs,
     /// Runtime only: the file on disk was unreadable and was set aside as
     /// `fetch.json.corrupt-<unixtime>`; defaults are in use. Never saved.
     #[serde(skip)]
@@ -130,6 +168,7 @@ impl Default for FetchConfig {
             seed_ratio: None,
             seed_minutes: None,
             bind_interface: None,
+            browser: BrowserPrefs::default(),
             load_error: false,
             disguised: false,
         }

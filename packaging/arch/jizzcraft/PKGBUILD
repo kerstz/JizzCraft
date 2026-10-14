@@ -1,10 +1,11 @@
 # Maintainer: JizzCraft contributors <noreply@example.invalid>
 #
 # Release build. `updpkgsums` fills the checksum after each tag.
-# jizzcraft-network is the opt-in build with indexers, torrents and streaming.
+# jizzcraft is the Offline edition (no network code at all).
+# The Online edition lives in ../jizzcraft-online.
 
 pkgbase=jizzcraft
-pkgname=(jizzcraft jizzcraft-network)
+pkgname=(jizzcraft)
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='Private, offline media viewer and library (images and videos)'
@@ -26,9 +27,6 @@ build() {
   cd "JizzCraft-$pkgver"
   export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
   cargo xtask dist --destdir "$srcdir/stage" --prefix /usr
-  # The network variant: same tree, different binaries and magnet handler.
-  mv target/release target/release-offline
-  cargo xtask dist --network --destdir "$srcdir/stage-net" --prefix /usr
 }
 
 check() {
@@ -50,13 +48,4 @@ package_jizzcraft() {
   optdepends=("${_common_optdepends[@]}")
   cp -a "$srcdir/stage/." "$pkgdir/"
   install -Dm644 /dev/null "$pkgdir/usr/share/doc/$pkgname/.keep" && rm "$pkgdir/usr/share/doc/$pkgname/.keep"
-}
-
-package_jizzcraft-network() {
-  pkgdesc+=' (with indexers, torrents and streaming)'
-  depends=("${_common_depends[@]}")
-  optdepends=("${_common_optdepends[@]}" 'mpv: external playback')
-  provides=(jizzcraft)
-  conflicts=(jizzcraft)
-  cp -a "$srcdir/stage-net/." "$pkgdir/"
 }

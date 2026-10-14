@@ -45,9 +45,41 @@ pub fn vetted_argv(path: &Path) -> Vec<String> {
         "-J".into(),
         "--no-playlist".into(),
         "--ignore-config".into(),
+        "--proxy".into(),
+        crate::resolver::PROXY_ARG.into(),
         "--".into(),
         crate::resolver::URL_ARG.into(),
     ]
+}
+
+/// A ready-to-register definition for a tool found here. Proxy-aware through
+/// the `--proxy {proxy}` pair; the id is assigned when it is registered.
+pub fn suggest(f: &Found) -> crate::resolver::ResolverDef {
+    crate::resolver::ResolverDef {
+        id: 0,
+        name: "Resolver".into(),
+        argv: vetted_argv(&f.path),
+        timeout_secs: 60,
+        enabled: true,
+        honours_proxy: false,
+    }
+}
+
+/// Is a resolver with this program already in the configuration?
+pub fn already_added(cfg: &crate::config::FetchConfig, path: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = canon(path);
+    cfg.resolvers
+        .iter()
+        .filter_map(|r| r.argv.first())
+        .any(|p| Path::new(p) == path || canon(Path::new(p)) == want)
+}
+
+/// Fixed advice for an old tool; never carries a path, host or version.
+pub fn age_sentence(days: Option<u32>) -> Option<&'static str> {
+    (days? > 60).then_some(
+        "This tool is older than two months; web pages change often, so update it with your package manager.",
+    )
 }
 
 /// Days since 1970-01-01 of a civil date (proleptic Gregorian).
@@ -249,9 +281,18 @@ mod tests {
                 "-J",
                 "--no-playlist",
                 "--ignore-config",
+                "--proxy",
+                "{proxy}",
                 "--",
                 "{url}"
             ]
         );
+    }
+
+    #[test]
+    fn age_thresholds() {
+        assert_eq!(age_sentence(None), None);
+        assert_eq!(age_sentence(Some(60)), None);
+        assert!(age_sentence(Some(61)).is_some());
     }
 }

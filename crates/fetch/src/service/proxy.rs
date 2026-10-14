@@ -155,8 +155,127 @@ impl FetchService {
     }
 }
 
+/// What the connection chip says. Pure: it reads the configuration only and
+/// never touches the network, so it proves nothing about the tunnel itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Connection {
+    /// An interface (a VPN, say) is bound for every connection.
+    Protected(String),
+    /// A proxy is configured; the interface is the system's.
+    ProxySet,
+    /// Nothing is configured: connections would go out directly.
+    NotProtected,
+    /// The kill switch is on and no proxy is set: nothing connects.
+    Blocked,
+}
+
+pub fn connection_state(cfg: &FetchConfig) -> Connection {
+    let proxied = cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
+    if cfg.require_proxy && !proxied {
+        return Connection::Blocked;
+    }
+    if let Some(i) = cfg.bind_interface.as_deref().map(str::trim)
+        && !i.is_empty()
+    {
+        return Connection::Protected(i.to_owned());
+    }
+    if proxied {
+        Connection::ProxySet
+    } else {
+        Connection::NotProtected
+    }
+}
+
+/// Outcome of [`probe_proxy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyProbe {
+    /// The endpoint answered a SOCKS5 greeting like a SOCKS5 proxy.
+    Answers,
+    Unreachable,
+    NotSocks5,
+    BadAddress,
+}
+
+/// `host:port` of a `socks5://[user:pass@]host:port` address.
+fn proxy_endpoint(p: &str) -> Option<String> {
+    let rest = p.strip_prefix("socks5://")?;
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
+    let rest = rest.trim_end_matches('/');
+    let (host, port) = rest.rsplit_once(':')?;
+    (!host.is_empty() && port.parse::<u16>().is_ok_and(|n| n > 0)).then(|| rest.to_owned())
+}
+
+/// Connects to the proxy itself (and only to it), sends the SOCKS5 greeting
+/// with "no authentication" and reads the two-byte answer. Nothing is relayed
+/// to any target. Blocking, 3 s per step: run it on a thread, on a click.
+pub fn probe_proxy(proxy: &str) -> ProxyProbe {
+    use std::io::{Read, Write};
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+    let Some(ep) = proxy_endpoint(proxy) else {
+        return ProxyProbe::BadAddress;
+    };
+    let Some(addr) = ep.to_socket_addrs().ok().and_then(|mut a| a.next()) else {
+        return ProxyProbe::Unreachable;
+    };
+    let t = Duration::from_secs(3);
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, t) else {
+        return ProxyProbe::Unreachable;
+    };
+    let _ = s.set_read_timeout(Some(t));
+    let _ = s.set_write_timeout(Some(t));
+    if s.write_all(&[5, 1, 0]).is_err() {
+        return ProxyProbe::Unreachable;
+    }
+    let mut r = [0u8; 2];
+    match s.read_exact(&mut r) {
+        Ok(()) if r[0] == 5 => ProxyProbe::Answers,
+        Ok(()) => ProxyProbe::NotSocks5,
+        Err(_) => ProxyProbe::NotSocks5,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn connection_state_table() {
+        use crate::secret::Secret;
+        let mut c = FetchConfig::default();
+        assert_eq!(connection_state(&c), Connection::NotProtected);
+        c.require_proxy = true;
+        assert_eq!(connection_state(&c), Connection::Blocked);
+        c.proxy = Some(Secret::new("socks5://127.0.0.1:9050".to_owned()));
+        assert_eq!(connection_state(&c), Connection::ProxySet);
+        c.bind_interface = Some("tun0".into());
+        assert_eq!(connection_state(&c), Connection::Protected("tun0".into()));
+        c.proxy = None;
+        c.require_proxy = false;
+        assert_eq!(connection_state(&c), Connection::Protected("tun0".into()));
+        c.bind_interface = Some("  ".into());
+        assert_eq!(connection_state(&c), Connection::NotProtected);
+    }
+
+    #[test]
+    fn probe_checks_only_the_greeting() {
+        assert_eq!(probe_proxy("http://x:1"), ProxyProbe::BadAddress);
+        assert_eq!(probe_proxy("socks5://nohostport"), ProxyProbe::BadAddress);
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            for reply in [[5u8, 0u8], *b"HT"] {
+                let (mut s, _) = l.accept().unwrap();
+                let mut g = [0u8; 3];
+                s.read_exact(&mut g).unwrap();
+                assert_eq!(g, [5, 1, 0]);
+                s.write_all(&reply).unwrap();
+            }
+        });
+        let addr = format!("socks5://u:p@127.0.0.1:{port}");
+        assert_eq!(probe_proxy(&addr), ProxyProbe::Answers);
+        assert_eq!(probe_proxy(&addr), ProxyProbe::NotSocks5);
+        t.join().unwrap();
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;

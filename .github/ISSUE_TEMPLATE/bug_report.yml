@@ -1,0 +1,39 @@
+name: Bug report
+description: Something broke or behaves unexpectedly.
+title: "bug: "
+labels: ["type: bug", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do **not** attach real media, file names, paths, URLs or keys. Use synthetic examples.
+        Run `jizzcraft-cli doctor --report` and paste its output: it is built from an allow-list and contains no names, paths, URLs or keys.
+  - type: input
+    id: version
+    attributes:
+      label: Version and edition
+      description: Output of `jizzcraft-cli --version`.
+      placeholder: "jizzcraft-cli 0.1.0 (online edition)"
+    validations: {required: true}
+  - type: textarea
+    id: report
+    attributes:
+      label: Doctor report
+      render: text
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations: {required: true}
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Linux (Wayland), Linux (X11), Windows (experimental), macOS (from source), Other]
+    validations: {required: true}
