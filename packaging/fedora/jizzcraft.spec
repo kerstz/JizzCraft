@@ -1,6 +1,8 @@
 # Fedora / RHEL-like / openSUSE. Build from a source tarball of the repository:
 #   rpmbuild -ba packaging/fedora/jizzcraft.spec
-# Needs rust, cargo and the GStreamer development packages. H.264 and HEVC need
+# Needs rust, cargo, a C compiler, make, perl (SQLCipher builds a vendored
+# OpenSSL; or set OPENSSL_NO_VENDOR=1 with openssl-devel to link the distro one,
+# see docs/vault.md) and the GStreamer development packages. H.264 and HEVC need
 # the RPM Fusion free repository on Fedora (gstreamer1-plugin-libav).
 Name:           jizzcraft
 Version:        0.1.0
@@ -9,7 +11,7 @@ Summary:        Private, local-first media library and player
 License:        MIT OR Apache-2.0
 URL:            https://github.com/kerstz/JizzCraft
 Source0:        %{url}/archive/v%{version}/JizzCraft-%{version}.tar.gz
-BuildRequires:  rust, cargo, pkgconfig(gstreamer-1.0), pkgconfig(gstreamer-plugins-base-1.0), pkgconfig(gstreamer-app-1.0), pkgconfig(gstreamer-video-1.0), pkgconfig(gstreamer-pbutils-1.0), desktop-file-utils, libappstream-glib
+BuildRequires:  rust, cargo, gcc, make, perl-interpreter, perl-core, pkgconfig(gstreamer-1.0), pkgconfig(gstreamer-plugins-base-1.0), pkgconfig(gstreamer-app-1.0), pkgconfig(gstreamer-video-1.0), pkgconfig(gstreamer-pbutils-1.0), desktop-file-utils, libappstream-glib
 Requires:       gstreamer1-plugins-base, gstreamer1-plugins-good, vulkan-loader
 Recommends:     gstreamer1-plugin-libav, gstreamer1-plugins-bad-free, xdg-desktop-portal
 

@@ -3,6 +3,9 @@
 #
 # Offline cargo build: generate the vendored sources once per release with
 #   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+# SQLCipher builds a vendored OpenSSL (openssl-src): the Freedesktop SDK
+# provides perl, make and a C compiler, so no extra module is needed. Do not
+# set OPENSSL_NO_VENDOR here; the runtime's libssl is not a dependency.
 # Codecs: H.264/HEVC come from the Freedesktop codecs extension, which the
 # runtime offers; `jizzcraft --doctor` tells the user when it is missing.
 app-id: io.github.kerstz.JizzCraft

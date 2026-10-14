@@ -225,6 +225,10 @@ jobs:
           "$gstRoot\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
           $env:PKG_CONFIG_PATH = $pc
           pkg-config --list-all | Select-String glib
+      # SQLCipher: openssl-src builds a vendored OpenSSL, which on MSVC needs
+      # Perl (Strawberry Perl ships on windows-latest) and NASM.
+      - name: NASM
+        uses: ilammy/setup-nasm@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
@@ -233,8 +237,6 @@ jobs:
         run: cargo test --workspace
       # The network build needs NASM for aws-lc; the first run settles whether
       # it builds without CMake.
-      - name: NASM
-        uses: ilammy/setup-nasm@v1
       - name: Network build compiles
         run: cargo check -p jizzcraft -p jizzcraft-cli --features jizzcraft/network,jizzcraft-cli/network
       - name: Smoke test (software renderer)

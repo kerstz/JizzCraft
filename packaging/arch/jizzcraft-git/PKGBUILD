@@ -11,7 +11,7 @@ license=('MIT OR Apache-2.0')
 depends=(gcc-libs glibc gstreamer gst-plugins-base-libs gst-plugins-base
   gst-plugins-good gst-libav vulkan-icd-loader libxkbcommon wayland libx11
   libxcursor libxrandr libxi)
-makedepends=(git cargo pkgconf)
+makedepends=(git cargo pkgconf perl make gcc)
 optdepends=('gst-plugins-bad: AV1 decoding' 'gst-plugin-va: hardware decoding'
   'xdg-desktop-portal: file chooser' 'vulkan-driver: GPU rendering')
 provides=(jizzcraft)
