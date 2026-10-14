@@ -142,7 +142,7 @@ fn worker(
             Msg::Stop => return,
             Msg::Want { bucket, ns } => (bucket, ns),
         };
-        // Drain: only the newest request matters.
+        // Drain: only the newest request matters. Scrubbing users are fickle.
         while let Ok(m) = rx.try_recv() {
             match m {
                 Msg::Stop => return,

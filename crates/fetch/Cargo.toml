@@ -9,6 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
+# Empty on purpose. The most secure dependency is the one you never compile.
 default = []
 network = ["dep:librqbit", "dep:tokio", "dep:reqwest", "dep:tempfile"]
 

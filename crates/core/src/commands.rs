@@ -2,6 +2,7 @@
 //! it. Arguments and results are JSON so every front end speaks the same
 //! language. The registry is generic over its context so the UI can register
 //! its own commands (`player.toggle`, `app.boss_key`…) next to the core ones.
+//! Every menu, key and script queues at the same front desk. No VIP entrance.
 
 use crate::db::{Db, Filter};
 use crate::error::{Error, Result};

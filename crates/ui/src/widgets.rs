@@ -231,7 +231,7 @@ pub fn star_icon(painter: &egui::Painter, center: Pos2, size: f32, filled: bool,
 }
 
 /// Five clickable stars. Returns the new rating when clicked (clicking the
-/// current value clears it).
+/// current value clears it). Five stars max: this is a library, not a hotel.
 pub fn rating_stars(ui: &mut Ui, rating: u8, size: f32) -> Option<u8> {
     let gap = 4.0;
     let (rect, resp) =

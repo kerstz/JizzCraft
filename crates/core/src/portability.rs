@@ -140,6 +140,7 @@ pub struct ImportReport {
     pub applied: u64,
     pub unmatched: u64,
     /// Fingerprint matched several rows: skipped rather than guessed.
+    /// Identical twins get no presents rather than the wrong ones.
     pub ambiguous: u64,
     pub views: u64,
 }

@@ -115,6 +115,7 @@ fn search_returns_magnets_but_never_download_links() {
     assert_eq!(r["count"], 2);
     let txt = r.to_string();
     // A link can carry the indexer key: only its presence is reported.
+    // "Yes, there is a key." "Which one?" "Yes."
     assert!(!txt.contains("secret-token") && !txt.contains("KEY123"));
     let items = r["items"].as_array().unwrap();
     let with_link = items.iter().find(|i| i["has_link"] == true).unwrap();

@@ -53,7 +53,7 @@ fn play_seek_eos_replay() {
         "duration {d:?}"
     );
 
-    // Pause holds: no new frames while paused.
+    // Pause holds: no new frames while paused. A pause is a promise.
     p.pause();
     wait_until("paused", 5, || p.state() == PlayState::Paused);
     std::thread::sleep(Duration::from_millis(150));
@@ -76,7 +76,8 @@ fn play_seek_eos_replay() {
         "position {pos:?}"
     );
 
-    // Burst of coalesced scrub seeks must not wedge the player.
+    // Burst of coalesced scrub seeks must not wedge the player. Simulates an
+    // impatient thumb.
     for ms in (0..2500).step_by(100) {
         p.seek(Duration::from_millis(ms), false);
     }

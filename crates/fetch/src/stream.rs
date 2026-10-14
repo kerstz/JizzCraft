@@ -27,6 +27,7 @@ const AHEAD: u64 = 3;
 const MAX_INFLIGHT: usize = AHEAD as usize + 2;
 /// Larger resources are refused (also keeps every offset sum in range).
 const MAX_LEN: u64 = 1 << 40;
+// Five tries, then we accept that the server and we want different things.
 const RETRIES: u32 = 5;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -239,6 +240,7 @@ async fn fetch_block(sh: Arc<Shared>, idx: u64) {
             let t = c.tick;
             c.blocks.insert(idx, (Arc::new(b), t));
             // Evict the least recently used blocks, never the window ahead.
+            // Seniority counts for nothing here; only recent attention does.
             while c.blocks.len() > CACHE_BLOCKS {
                 let victim = c
                     .blocks

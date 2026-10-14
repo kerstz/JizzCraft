@@ -25,8 +25,9 @@ client (librqbit) and user-configured Torznab indexers (Jackett, Prowlarr).
   channel over a Unix socket, never TCP.
 - **Assistance**: local, offline tagging (classification only; nothing is
   generated or altered).
-- **Extensibility**: plugins.
-- **Website**: project site and docs.
+- **Extensibility**: plugins. (Not plugins for the plugin system. We know where
+  that road goes.)
+- **Website**: project site and docs. Until then the README is doing its best.
 
 Not planned, ever: accounts, cloud sync, telemetry, bundled indexers or site
 scrapers, remote URLs in the player, media generation. The default build stays

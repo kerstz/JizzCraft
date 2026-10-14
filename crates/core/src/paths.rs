@@ -51,6 +51,7 @@ pub fn db_path() -> PathBuf {
         .map(|d| {
             let local = d.data_local_dir().join("library.db");
             // An existing library in the old (roaming) place stays where it is.
+            // It has roamed enough.
             let old = d.data_dir().join("library.db");
             if !local.exists() && old.exists() {
                 old

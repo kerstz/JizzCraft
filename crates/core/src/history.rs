@@ -3,6 +3,8 @@
 //!
 //! History is deliberately aggregate (last played, count, resume point), never
 //! an event log. Clearing it is one UPDATE followed by a WAL truncate.
+//! The app remembers *that* you watched, never *when exactly*. Like a good
+//! friend.
 
 use crate::db::{Db, now_secs};
 use crate::error::{Error, Result};

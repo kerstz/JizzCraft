@@ -129,6 +129,7 @@ pub fn run(d: &ResolverDef, page_url: &str) -> Result<Vec<Format>, String> {
         .map_err(|e| e.to_string())?;
     cmd.current_dir(dir.path());
     // Own process group: a timeout takes the whole tree down with it.
+    // Family plan, family billing.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -184,7 +185,8 @@ pub fn run(d: &ResolverDef, page_url: &str) -> Result<Vec<Format>, String> {
             }
         }
     };
-    // Leftover background children die with the group.
+    // Leftover background children die with the group. Nobody stays for the
+    // credits.
     #[cfg(unix)]
     // SAFETY: as above.
     unsafe {

@@ -38,7 +38,8 @@ A source is a JSON file you write and import with `sources.import {path}`:
   it in `fetch.json` (mode 0600). It is not shown, exported or logged.
 - A source with a key must use https; redirects never leave the host.
 - A public source cannot point the app at loopback or private addresses.
-- `per_minute` is a rate limit (default 30, 0 = none).
+- `per_minute` is a rate limit (default 30, 0 = none). Be gentle with APIs;
+  they remember.
 
 ## Resolvers
 
@@ -65,6 +66,8 @@ print `{"formats":[{"url": "...", "height": 720}]}`.
 - Discreet and disguised modes show "Video" instead of a title.
 
 ## Not done yet
+
+(Listed so nobody has to file an issue titled "HLS when?".)
 
 HLS/DASH (segmented reader), live streams, separate audio and video tracks,
 automatic quality switching. See the design notes in the project history.

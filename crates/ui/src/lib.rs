@@ -1,4 +1,6 @@
 //! egui front end: Craft theme, grid, viewer, player, inspector, dialogs.
+//! Immediate mode: the whole UI is redrawn from scratch, like a goldfish with
+//! excellent frame times.
 
 pub mod app;
 pub mod bench;

@@ -13,6 +13,7 @@ a small volunteer project, so there is no guaranteed response time.
 ## Supported versions
 
 JizzCraft is early alpha. Only the latest commit on `main` receives fixes.
+Older commits receive our thoughts.
 
 ## Scope
 

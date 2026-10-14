@@ -59,7 +59,7 @@ fn scan_query_favorite_rescan() {
         })
         .unwrap();
     assert_eq!(found.len(), 1);
-    // LIKE wildcards are literal.
+    // LIKE wildcards are literal. A file named `100%` is, regrettably, allowed.
     assert_eq!(
         db.count(&Filter {
             name: Some("%".into()),
@@ -112,6 +112,7 @@ fn unreadable_dir_does_not_mark_missing() {
     let rep = scan::rescan_all(&mut db).unwrap();
     fs::set_permissions(tmp.path().join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
     // Running as root bypasses permissions; only assert when the error fired.
+    // Root does not do "no".
     if rep.errors > 0 {
         assert_eq!(rep.marked_missing, 0);
         assert_eq!(db.stats().unwrap().missing, 0);

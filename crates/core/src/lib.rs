@@ -1,4 +1,5 @@
 //! JizzCraft engine. No UI, no GStreamer: everything here is testable headless.
+//! It has never seen a single pixel, and it is fine with that.
 
 pub mod commands;
 pub mod db;

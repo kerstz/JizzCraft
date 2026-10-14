@@ -18,6 +18,7 @@ struct Throttled {
     pos: u64,
     available: Arc<AtomicU64>,
     /// Highest offset ever served, to prove nothing came from the future.
+    /// Time travel is out of scope for this release.
     served_max: Arc<Mutex<u64>>,
     /// The last bytes are always there: players fetch the index (cues, moov)
     /// from the tail first, and a torrent client prioritises it too.
@@ -129,7 +130,10 @@ fn plays_while_the_data_arrives_and_never_errors() {
         got_frame |= r.player.take_frame().is_some();
         r.player.state() == PlayState::Ended
     });
-    assert!(got_frame, "no frame was ever delivered");
+    assert!(
+        got_frame,
+        "no frame was ever delivered: all buffering, no show"
+    );
     feeder.join().unwrap();
     assert!(*r.served_max.lock().unwrap() <= r.len);
 }

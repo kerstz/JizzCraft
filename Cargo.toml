@@ -38,5 +38,6 @@ clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 
 [profile.release]
+# Thin LTO: most of the speed, a fraction of the coffee breaks.
 lto = "thin"
 codegen-units = 4

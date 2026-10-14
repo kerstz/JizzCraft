@@ -1,5 +1,5 @@
 //! The CLI end to end, as a user runs it: real binary, private home, tiny
-//! synthetic images. No GStreamer needed.
+//! synthetic images. No GStreamer needed. Pixels this small have no secrets.
 
 use serde_json::Value;
 use std::path::Path;
@@ -102,7 +102,7 @@ fn registry_commands_are_listed_and_unknown_ones_fail_cleanly() {
         .collect();
     assert!(names.contains(&"library.import"));
     assert!(names.contains(&"media.query"));
-    // The default build has no network commands at all.
+    // The default build has no network commands at all. Not hidden, absent.
     assert!(!names.iter().any(|n| n.starts_with("fetch.")), "{names:?}");
 
     let bad = cli(home.path(), &["--json", "run", "no.such.command"]);

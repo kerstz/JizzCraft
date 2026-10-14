@@ -38,7 +38,7 @@ pub struct Done {
 
 #[derive(Default)]
 struct State {
-    /// Last element = most important.
+    /// Last element = most important. The last shall be first; it is a LIFO.
     pending: Vec<Request>,
     inflight: HashSet<i64>,
     shutdown: bool,

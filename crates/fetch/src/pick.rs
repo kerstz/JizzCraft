@@ -72,7 +72,7 @@ mod tests {
     fn sample_is_ignored() {
         let p = pick_video(&f(&[("Sample/sample.mkv", 50), ("movie.mp4", 800)]));
         assert_eq!(p, Pick::One(1));
-        // A sample is still better than nothing.
+        // A sample is still better than nothing. Ask any supermarket.
         assert_eq!(pick_video(&f(&[("sample.mp4", 50)])), Pick::One(0));
     }
 

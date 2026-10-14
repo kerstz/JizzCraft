@@ -42,7 +42,8 @@ plugins. Media tests need `gst-launch-1.0`, `vp8enc`, `webmmux` and the
 playback elements; when they are missing the tests print `skipped: …` and
 return, so check the output if you run them on a minimal system.
 
-Keep pull requests focused, describe what you checked by hand versus what is
-covered by tests, and update the README status block if you change what is
-verified. Unless you explicitly state otherwise, any contribution you submit is
+Keep pull requests focused (a PR titled "misc fixes" gets reviewed with misc
+enthusiasm), describe what you checked by hand versus what is covered by
+tests, and update the README status block if you change what is verified.
+Unless you explicitly state otherwise, any contribution you submit is
 dual-licensed under MIT OR Apache-2.0, without additional terms.

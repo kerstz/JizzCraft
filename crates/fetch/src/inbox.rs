@@ -3,6 +3,8 @@
 //! A second launch (the desktop's magnet handler) writes the link into a
 //! private folder and exits; the running app picks it up. A lock file decides
 //! which launch is the running app.
+//!
+//! Like a note slipped under a door: no socket, no small talk.
 
 use std::fs::File;
 use std::io::Write;

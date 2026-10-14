@@ -15,6 +15,7 @@ Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force "$out\gstreamer\lib\gstreamer-1.0" | Out-Null
 Copy-Item target\release\jizzcraft.exe, target\release\jizzcraft-cli.exe $out
 # Dependent DLLs sit next to the executable so the loader finds them.
+# Windows looks for DLLs the way one looks for keys: next to the door first.
 Copy-Item "$gst\bin\*.dll" $out
 # Plugins the player needs, scanned at start-up by jizzcraft-media.
 $plugins = 'gstcoreelements','gsttypefindfunctions','gstplayback','gstvideoconvertscale',

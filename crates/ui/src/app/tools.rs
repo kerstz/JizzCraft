@@ -2,6 +2,8 @@
 //! export/import, cache clearing) and the menu that starts them. Every job
 //! runs on its own thread with its own database connection and reports one
 //! toast with counts only, never file names.
+//!
+//! A toast says "412 checked", never which 412. Discretion is a number.
 
 use super::{JizzApp, JobMsg};
 use crate::theme::{self, MUTED};

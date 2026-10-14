@@ -44,6 +44,7 @@ impl Db {
     }
 
     /// Upsert on `(media_id, pos_ms)`: marking the same instant twice relabels it.
+    /// History can be rewritten, but only one millisecond at a time.
     pub fn add_marker(&self, media_id: i64, pos_ms: u64, label: &str) -> Result<Marker> {
         let label = clean_label(label)?;
         if self.get(media_id)?.is_none() {

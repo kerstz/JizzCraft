@@ -1,5 +1,6 @@
 # Maintainer: JizzCraft contributors
 # Builds from the repository checkout this file lives in (makepkg -si).
+# Packaged on Arch, which the maintainer will mention unprompted.
 pkgname=jizzcraft
 pkgver=0.1.0
 pkgrel=1

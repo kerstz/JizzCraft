@@ -12,6 +12,8 @@ Date: 2026-10-13. Release build. Window 30 s after 1.5 s warm-up.
 | 4K30 | 0 / 901 | 33.4 ms | 3.08 ms | 110.0 % | 37.7 % | 204 MB (gst-play 115 MB) |
 
 CPU is a percentage of one core, process-wide (decoder threads included).
+110 % means the 4K clip borrowed a little of a second core, and has not
+given it back.
 
 The baseline runs the external `gst-play-1.0` on a canonical `file://` URI. It
 is a separate program, so JizzCraft's network guard does not apply to it: only
@@ -30,3 +32,4 @@ benchmark files you created yourself (`cargo xtask fixtures`).
 - "Dropped" = GStreamer QoS drops + frames overwritten in the one-slot mailbox
   before the UI uploaded them. "Expected" is `fps × wall seconds`.
 - Only H.264 was benchmarked here. Other codecs and hardware were not tested.
+  Sample size: one machine. Statisticians, please look away.

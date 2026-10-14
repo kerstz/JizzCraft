@@ -1,5 +1,7 @@
 use std::fmt;
 
+/// Four ways for things to go wrong. Reality has found more; these are the
+/// ones we admit to.
 #[derive(Debug)]
 pub enum Error {
     Db(rusqlite::Error),

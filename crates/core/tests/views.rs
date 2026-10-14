@@ -258,7 +258,7 @@ fn saved_views_and_random_pick_through_registry() {
     assert_eq!(kids, ["a", "ab"]);
     assert_eq!(root["path"], json!(t.path().to_string_lossy()));
 
-    // Injection and unknown keys are refused.
+    // Injection and unknown keys are refused. The SQL stays the SQL we wrote.
     assert!(
         reg.run(
             &mut db,

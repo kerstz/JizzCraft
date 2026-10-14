@@ -12,7 +12,8 @@ pub fn probe(path: &Path) -> Result<MediaMeta, String> {
     let disc =
         pbutils::Discoverer::new(gst::ClockTime::from_seconds(10)).map_err(|e| e.to_string())?;
     // The discoverer owns its pipeline: watch it from the file source up,
-    // before anything downstream of the source exists.
+    // before anything downstream of the source exists. Trust, but verify
+    // from the very first pad.
     disc.connect_source_setup(|_, source| {
         if let Some(top) = crate::guard::top_bin(source) {
             let _ = crate::guard::watch(&top);

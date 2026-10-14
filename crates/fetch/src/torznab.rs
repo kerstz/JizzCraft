@@ -204,6 +204,7 @@ pub fn parse_results(xml: &str, indexer_id: u32) -> Result<Vec<SearchResult>, To
 }
 
 /// Capabilities check: success means the endpoint and key are accepted.
+/// A handshake, not a friendship.
 pub fn parse_caps(xml: &str) -> Result<(), TorznabError> {
     let mut r = Reader::from_str(xml);
     let mut ok = false;

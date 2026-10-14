@@ -177,7 +177,8 @@ fn name_is_portable(n: &str) -> bool {
     {
         return false;
     }
-    // Windows trims trailing spaces of the stem before comparing.
+    // Windows trims trailing spaces of the stem before comparing. It also
+    // reserves `COM¹`, because superscripts were apparently a threat vector.
     let stem = n
         .split('.')
         .next()
@@ -803,6 +804,7 @@ impl FetchService {
                     return Ok(StreamTicket::Done(path));
                 }
                 // A paused torrent never receives pieces: the user asked to play.
+                // "Play" is not a suggestion.
                 if h.is_paused() {
                     let _ = session.unpause(&h).await;
                 }
@@ -910,6 +912,7 @@ impl FetchService {
     }
 
     /// Stop tracking a torrent. Downloaded files are left on disk, always.
+    /// We forget; we do not shred.
     pub fn forget(&self, id: usize) {
         if let Some(s) = self.session.get().cloned() {
             self.rt().spawn(async move {
@@ -960,6 +963,7 @@ async fn open_stream_url(
 }
 
 /// Last request time per source id, for the per-minute rate limit.
+/// Patience, rendered as a `Vec`.
 static SOURCE_LAST: Mutex<Vec<(u32, std::time::Instant)>> = Mutex::new(Vec::new());
 
 async fn source_rate_wait(id: u32, per_minute: u32, cancel: Arc<AtomicBool>) -> Result<(), String> {
@@ -1066,6 +1070,7 @@ async fn wait_cancel(flag: Arc<AtomicBool>) {
 }
 
 /// First free `<stem> (n).<ext>` in `dir`; never an existing file or `.part`.
+/// Every download manager eventually invents `final (2) (final).mp4`.
 fn unique_name(dir: &Path, name: &str) -> PathBuf {
     let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
     for n in 0..1000 {

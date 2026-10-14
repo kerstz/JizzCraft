@@ -9,6 +9,8 @@
 //! here yet". It is never end of stream; EOS is sent only when `len` bytes
 //! have been delivered. While the reader would block the feeder reports
 //! `Buffering` so the player pauses instead of failing.
+//!
+//! `WouldBlock` is not a no. It is a "not yet", delivered with dignity.
 
 use gstreamer as gst;
 use gstreamer::prelude::*;

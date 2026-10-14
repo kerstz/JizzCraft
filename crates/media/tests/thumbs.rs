@@ -47,7 +47,7 @@ fn video_thumbnail_and_probe() {
         t.width(),
         t.height()
     );
-    // Not a black frame.
+    // Not a black frame. Every film student's first thumbnail.
     let sum: u64 = t
         .pixels()
         .map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64)

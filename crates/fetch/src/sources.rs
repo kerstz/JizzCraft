@@ -136,7 +136,8 @@ pub fn validate(d: &SourceDef) -> Result<(), &'static str> {
     if !is_http(&d.search_url) {
         return Err("the search address must be http or https");
     }
-    // Every `{...}` must be one of the three placeholders.
+    // Every `{...}` must be one of the three placeholders. A fourth would need
+    // a committee.
     let mut rest = d.search_url.as_str();
     while let Some(i) = rest.find(['{', '}']) {
         if !rest[i..].starts_with('{') {
@@ -222,6 +223,7 @@ pub fn parse_items(d: &SourceDef, body: &[u8], max: usize) -> Result<Vec<Item>, 
     };
     let arr = root.as_array().ok_or("items is not a list")?;
     // A public source cannot point the app at this machine or its network.
+    // Strangers do not get to give directions to your own living room.
     let source_is_local = is_local_host(host_of(&d.search_url));
     let mut out = Vec::new();
     for it in arr.iter().take(max) {

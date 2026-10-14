@@ -8,7 +8,7 @@ pub fn debug_enabled() -> bool {
 }
 
 /// Printable form of a path for logs/errors: the real path in debug mode,
-/// otherwise a stable opaque tag.
+/// otherwise a stable opaque tag. Logs get a hash; they do not need to know.
 pub fn redact(path: &Path) -> String {
     if debug_enabled() {
         return path.display().to_string();

@@ -67,7 +67,8 @@ fn history_respects_settings_and_clears() {
     db.record_progress(v, 595_000, ten_min, false).unwrap();
     assert_eq!(db.get(v).unwrap().unwrap().resume_ms, None);
 
-    // Paused history: nothing counted, last_played untouched.
+    // Paused history: nothing counted, last_played untouched. What happens in
+    // pause mode stays in pause mode.
     db.set_setting("history.enabled", "0").unwrap();
     let before = db.get(v).unwrap().unwrap();
     let p = db.record_progress(v, 200_000, ten_min, true).unwrap();

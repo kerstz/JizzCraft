@@ -847,6 +847,7 @@ fn control_thread(
             shared.state.store(PlayState::Error as u8, Relaxed);
             wake();
             // Stay alive until dropped so late commands don't panic anywhere.
+            // The pipeline is gone; the receptionist keeps answering the phone.
             while rx.recv().is_ok_and(|c| !matches!(c, Cmd::Stop)) {}
             return;
         }

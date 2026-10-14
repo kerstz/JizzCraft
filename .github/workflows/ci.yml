@@ -25,6 +25,7 @@ jobs:
 
       # Headers to build, plus the plugins the media tests use. Tests whose
       # GStreamer elements are missing print "skipped: …" instead of failing.
+      # Skipped is not passed. Read the log; the robot will not tell you twice.
       - name: Install GStreamer
         run: |
           sudo apt-get update
@@ -39,6 +40,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The cheapest check runs first: arguments about spaces end here.
       - name: Format
         run: cargo fmt --all --check
 

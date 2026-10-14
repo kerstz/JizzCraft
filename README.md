@@ -89,7 +89,7 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 - **Ratings and hiding.** 0–5 stars (`Alt+0`–`Alt+5` or the inspector), and a reversible *hide* that is only a database flag.
 - **Views.** Built-in views (Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers), saved views of any filter (*Save view*), and a folder tree with counts.
 - **Inbox triage.** Review new imports one at a time: keep, hide, favorite, undo. Nothing is ever deleted. Start it with `jizzcraft --cmd triage.start` (no button yet).
-- **Moves are recognised.** Once files are fingerprinted (*Library → Fingerprint files*, or `jizzcraft-cli fingerprint`), a renamed or moved file keeps its favorite, rating, history and markers at the next rescan. The fingerprint is the size plus the first and last 64 KiB.
+- **Moves are recognised.** Once files are fingerprinted (*Library → Fingerprint files*, or `jizzcraft-cli fingerprint`), a renamed or moved file keeps its favorite, rating, history and markers at the next rescan. The fingerprint is the size plus the first and last 64 KiB: it judges a file by its cover and its last page.
 - **Shuffle** (a stable order that never repeats or skips while paging), plus a **random pick** and a **slideshow** available as commands (`view.random`, `view.slideshow`).
 
 ![Inbox triage](docs/screenshots/triage.png)
@@ -99,7 +99,7 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 - **Resume and history**, with a pause switch, a clear button and a setting that hides history in the UI. History is aggregate (count, last played, resume point), never an event log.
 - **Speed** from the player bar (cycles 0.5×–2×; `player.speed` accepts 0.25×–4×), pitch preserved when `scaletempo` (gst-plugins-good) is installed. **A-B loop** from the player bar. **Markers** show as timeline ticks and in the inspector (click to seek, × to remove). Adding markers, jumping between them and **frame step** are commands for now (`markers.add`, `player.marker.jump`, `player.frame`).
 - **Scrub previews** on the timeline, decoded on demand into a cache and blurred in discreet and share-safe modes.
-- **Autoplay-next** with a three-second countdown that Esc cancels.
+- **Autoplay-next** with a three-second countdown that Esc cancels. Three seconds is enough time to reconsider your choices, or not.
 
 ![Ratings in the inspector](docs/screenshots/rating.png)
 
@@ -160,7 +160,7 @@ xtask          fixtures, icons, README screenshots
 - **Local by construction.** Pipelines only get `file://` URIs. At start-up, GStreamer's network-capable elements (HTTP/RTSP/UDP/… sources, HLS/DASH/Smooth Streaming/SDP demuxers) are taken out of the app's own plugin registry, and every pipeline is watched for anything that slips through (`crates/media/src/guard.rs`; the system registry is untouched). `crates/media/tests/network.rs` feeds HLS and DASH playlists disguised as videos to every decode path and asserts that a local listener receives zero connections.
 - **The UI thread never touches the pipeline.** A control thread builds, drives and tears down GStreamer; the UI reads atomics and takes the newest ref-counted `gst::Sample` from a one-slot mailbox.
 - **Pacing by the clock.** `appsink` runs with `max-buffers=1 drop=true sync=true`.
-- **No async runtime.** `std::thread` and channels.
+- **No async runtime.** `std::thread` and channels. Plumbing, not wizardry.
 - **Performance, measured.** `jizzcraft --bench <file> --seconds 30 --bench-gst-play`. Results in [`docs/bench.md`](docs/bench.md): no dropped frames on 1080p30, 1080p60 and 4K30 H.264, **but 3 to 6 times the CPU of `gst-play-1.0`** because the MVP does RGBA conversion on the CPU. A YUV→RGB shader is on the [roadmap](ROADMAP.md).
 
 ## Install
@@ -174,7 +174,7 @@ xtask          fixtures, icons, README screenshots
 | Windows 10/11 | Portable zip built by `packaging/windows/build.ps1` (CI job *Release → windows*) | **Not built or run yet**: needs a Windows machine; the code no longer uses Unix-only APIs |
 | macOS 12+ | `.app` zip built by `packaging/macos/build-app.sh` (CI job *Release → macos*), uses the system GStreamer | **Not built or run yet** |
 
-The release workflow (`.github/workflows/release.yml`) builds all of the above on tags. Until the Windows and macOS jobs have run and been tried on real machines, treat those two platforms as experimental. See [docs/audit-untested.md](docs/audit-untested.md) for what is and is not covered by tests.
+The release workflow (`.github/workflows/release.yml`) builds all of the above on tags. Until the Windows and macOS jobs have run and been tried on real machines, treat those two platforms as experimental (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md) for what is and is not covered by tests.
 
 ## Languages and playful messages
 

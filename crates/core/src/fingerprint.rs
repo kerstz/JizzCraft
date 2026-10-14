@@ -52,7 +52,8 @@ pub fn parse_fp(s: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-/// Rows holding data a user would be upset to lose.
+/// Rows holding data a user would be upset to lose. Five-star ratings are
+/// a lifetime of research.
 const USER_DATA: &str = "(favorite = 1 OR rating > 0 OR hidden = 1 OR play_count > 0
      OR resume_ms IS NOT NULL
      OR EXISTS (SELECT 1 FROM markers k WHERE k.media_id = media.id))";

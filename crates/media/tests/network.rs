@@ -16,8 +16,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-/// A listener nobody should ever call. Connections wait in the kernel backlog
-/// until `connections` drains it, so late attempts are counted too.
+/// A listener nobody should ever call (the saddest phone in the building).
+/// Connections wait in the kernel backlog until `connections` drains it, so
+/// late attempts are counted too.
 struct Trap {
     listener: TcpListener,
     port: u16,
@@ -86,7 +87,10 @@ impl Trap {
 
 fn assert_no_connections(trap: &Trap, what: &str) {
     let n = trap.connections();
-    assert_eq!(n, 0, "{what}: {n} connection(s) reached the network trap");
+    assert_eq!(
+        n, 0,
+        "{what}: {n} connection(s) reached the network trap (it was meant to stay lonely)"
+    );
 }
 
 #[test]

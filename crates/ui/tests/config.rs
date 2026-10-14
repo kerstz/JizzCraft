@@ -22,6 +22,7 @@ fn settings_roundtrip_and_survive_garbage() {
     assert_eq!(back, c);
 
     // A corrupt file falls back to defaults instead of crashing the app.
+    // Forgive, forget, re-default.
     std::fs::write(jizzcraft_ui::config::path(), b"\x00\x01 not json").unwrap();
     let broken = Config::load();
     assert!(!broken.age_confirmed);

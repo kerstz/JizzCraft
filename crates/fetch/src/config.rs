@@ -55,6 +55,7 @@ pub struct FetchConfig {
     /// Kill switch: nothing connects unless a proxy is set (use it with a
     /// VPN or Tor SOCKS endpoint so a dropped proxy never falls back to the
     /// direct connection).
+    // Fail closed: a door that sticks is better than one that swings open.
     #[serde(default)]
     pub require_proxy: bool,
     /// Speed caps in MiB/s (0 or absent = unlimited).

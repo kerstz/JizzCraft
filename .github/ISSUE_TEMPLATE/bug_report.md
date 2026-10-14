@@ -7,6 +7,7 @@ labels: bug
 <!--
 Do NOT attach adult media, screenshots of your library, or file names.
 Reproduce with synthetic files (`cargo xtask fixtures`) whenever possible.
+A test pattern reproduces most bugs and embarrasses nobody.
 Logs are redacted by default; if you used JIZZCRAFT_DEBUG=1, remove paths before pasting.
 Security problems: report them privately (see SECURITY.md), not here.
 -->

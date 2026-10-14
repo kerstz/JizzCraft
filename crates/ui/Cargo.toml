@@ -22,6 +22,7 @@ jizzcraft-fetch = { workspace = true, optional = true }
 
 [features]
 # Off by default: the default build links no network code.
+# It does not even know the network's phone number.
 network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network"]
 
 [dev-dependencies]
