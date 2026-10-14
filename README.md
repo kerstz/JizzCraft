@@ -19,10 +19,10 @@ JizzCraft ships as two editions of the same code base. Pick the one that fits ho
 | | **Offline edition** | **Online edition** |
 | --- | --- | --- |
 | Network code | **None.** Not linked, not compiled. A test fails if a network crate enters the dependency tree. | Opt-in, behind clear switches. Nothing connects before you act. |
-| What it is | A private library and player for the files already on your disk. | The same app plus tools to find and play things: indexers, torrents, streaming from your own sources, resolvers, and an optional built-in browser. |
-| Built from | the default build | `--features network` (browser: `--features online`, not yet shipped) |
+| What it is | A private library and player for the files already on your disk. | The same app plus tools to find and play things: indexers, torrents, streaming from your own sources, web-page resolvers, "Send to JizzCraft" and an optional built-in browser. |
+| Built from | the default build | `--features online` (alias of `network`) |
 | Branch | [`edition/offline`](../../tree/edition/offline) | [`edition/online`](../../tree/edition/online) |
-| Release files | `jizzcraft-<version>-…` | `jizzcraft-network-<version>-…` (`install.sh --with-network`) |
+| Release files | `jizzcraft-<version>-…` | `jizzcraft-online-<version>-…` (`install.sh --edition online`) |
 | Proxy / VPN kill switch | n/a | yes: nothing connects without your proxy when you ask for it |
 
 `main` is where both editions are developed; the two branches are the release channels for each edition.
@@ -79,7 +79,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh
 ```
 
-It checks the SHA-256 of what it downloads, installs under `~/.local`, runs `jizzcraft-cli doctor` at the end and tells you exactly what is missing and how to fix it. Re-run it to update; `install.sh --uninstall` removes what it installed and nothing else (your library, settings and thumbnails are never touched). Options: `--with-network`, `--prefix DIR`, `--version X.Y.Z`, `--from-source`, `--no-deps`, `--yes`, `--dry-run`, `--help`.
+Run with no flags in a terminal and it asks which edition you want (Offline is the default) and whether to add the optional browser. It checks the SHA-256 of what it downloads, installs under `~/.local`, runs `jizzcraft-cli doctor` at the end and tells you exactly what is missing and how to fix it. Re-run it to update; `install.sh --uninstall` removes what it installed and nothing else (your library, settings and thumbnails are never touched). Options: `--edition offline|online`, `--with-browser`, `--prefix DIR`, `--version X.Y.Z`, `--from-source`, `--no-deps`, `--yes`, `--dry-run`, `--help`.
 
 | Platform | Install | Update | Uninstall |
 | --- | --- | --- | --- |
@@ -355,12 +355,12 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 >
 > **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only (Windows and macOS builds exist but have not been run).
 >
-> **Streaming scope (network build only, experimental)**: direct video addresses, HLS and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Not supported: live streams, separate audio and video tracks, DRM, subtitles, saving a stream to disk as a feature.
+> **Streaming scope (Online edition only, experimental)**: direct video addresses, HLS and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Not supported: live streams, separate audio and video tracks, DRM, subtitles, saving a stream to disk as a feature.
 
 ## Privacy guarantees
 
 - No accounts, telemetry, analytics, cloud sync or ads. The default build makes no network connections (the optional `network` build is described below). The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
-- No scraping and no external feeds. The optional network build has a BitTorrent client and user-configured Torznab indexers; the default build contains no network code at all.
+- No scraping and no external feeds. The Online edition has a BitTorrent client, user-configured Torznab indexers and sources, resolvers you install and an optional browser; the Offline edition contains no network code at all.
 - Your media is never modified, moved or deleted. Thumbnails and previews are written to the XDG cache directory (or the portable home) only.
 - No shell commands are ever built from file names. Paths are passed as arguments to APIs.
 - Full paths and file names are not logged unless `JIZZCRAFT_DEBUG=1`.
@@ -369,14 +369,32 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
 - The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are not encrypted (an encrypted vault is on the roadmap).
 
-## Optional network build
+## The Online edition
 
-The default build never touches the network. If you want to search and watch torrents from inside the app, build the opt-in variant:
+The Offline edition never touches the network. The Online edition adds the tools below, each one opt-in, none preset: **JizzCraft ships no site, indexer, tracker or catalog.** You bring them. Nothing connects before you act, and a **kill switch** (Settings → Connection) makes everything refuse to connect unless your proxy or VPN interface is set.
 
 ```sh
-cargo build --release -p jizzcraft --features network
-cargo build --release -p jizzcraft-cli --features network
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh -s -- --edition online
+# add the optional browser (needs your system's WebKitGTK 6.0):
+install.sh --edition online --with-browser
+# from source:
+cargo build --release -p jizzcraft -p jizzcraft-cli --features online
 ```
+
+| Tool | What it does |
+| --- | --- |
+| **One box** | `Ctrl+J`: paste a video link, a `.m3u8`/`.mpd`, a page address, a magnet, a `.torrent`, a `.json` source, or search words. It picks the right path. |
+| **Streaming** | Seekable HTTP (Range), HLS and DASH on demand (AES-128, quality chip, buffered band), nothing written to disk. Live streams and separate audio/video tracks are refused with a plain sentence. |
+| **Play videos from web pages** | Paste a page address; a tool **you** installed (a yt-dlp-class program) turns it into a video address. *Settings → Web pages* finds the tool and adds it in one click. Fixed sentences for the usual failures (age or sign-in required on the site, region, rate limit, tool out of date). It never bypasses a site's age check, sign-in, region block or DRM, and never reads another browser's cookies. |
+| **Send to JizzCraft** | `jizzcraft --send URL` hands an address to the running app, which shows a confirmation card; it never plays by itself. |
+| **Torrents** | Play while it downloads, magnet probe with a peer counter, resume policy, disk-space check, optional seeding rules, optional binding to a VPN interface. |
+| **Indexers and sources** | Your own Torznab endpoints (Jackett/Prowlarr) and your own JSON source definitions. Keys live only in `fetch.json` (mode 0600). |
+| **Optional browser** | A separate, optional process (WebKitGTK), chosen at install time and switchable in *Settings → Browser*: private session by default, no history, popups, downloads and permission prompts blocked, traffic forced through your proxy, **Play this page** hands the address to the app. It is never linked into the app and never bundled. See [docs/browser.md](docs/browser.md). |
+| **Connection chip** | Shows *Protected / Proxy set / Not protected / Blocked*; testing the proxy only checks that it answers a SOCKS5 greeting. |
+
+What it exposes: your IP is visible to the indexers you configure, to BitTorrent peers and to sites you open. What you search for and download is your responsibility. Details: [docs/editions.md](docs/editions.md), [docs/streaming.md](docs/streaming.md), [docs/browser.md](docs/browser.md).
+
+### Torrents in detail
 
 **How it works: one box, one click.** Press `Ctrl+J`, type a search or paste a magnet link (or a `.torrent` path), press **Play**. The torrent is added, the right video file is chosen (a picker appears only for packs), playback starts while it downloads, seeking works, and the file lands in your library folder when it is done. **Download** does the same without playing.
 
