@@ -2,7 +2,7 @@
 //! change while the app runs, and on Wayland the dock takes its name and icon
 //! from the installed `.desktop` file whose name matches the app ID.
 
-pub const APP_ID: &str = "org.jizzcraft.JizzCraft";
+pub const APP_ID: &str = "io.github.kerstz.JizzCraft";
 /// Neutral, and not under a domain anyone owns.
 /// The witness-protection name: nobody remembers a "Viewer".
 pub const DISGUISE_APP_ID: &str = "local.Viewer";

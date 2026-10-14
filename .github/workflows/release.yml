@@ -33,6 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-deb --locked
+      - run: cargo install cargo-about --locked --features cli
       - name: Tag matches the workspace version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -78,8 +79,34 @@ jobs:
             Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
           }
           choco install pkgconfiglite -y
+      # glib-sys could not find glib-2.0.pc: locate the real install dir
+      # instead of guessing the layout, and say so loudly if it is absent.
+      - name: Locate GStreamer pkg-config files
+        shell: pwsh
+        run: |
+          $hit = $null
+          foreach ($root in 'C:\gstreamer', 'C:\Program Files\gstreamer') {
+            if (Test-Path $root) {
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { break }
+            }
+          }
+          if (-not $hit) {
+            Get-ChildItem 'C:\gstreamer', 'C:\Program Files\gstreamer' -ErrorAction SilentlyContinue | Out-String | Write-Host
+            throw 'glib-2.0.pc not found under C:\gstreamer or C:\Program Files\gstreamer: the devel MSI did not install'
+          }
+          $pc = $hit.DirectoryName
+          # <root>\lib\pkgconfig -> <root>
+          $gstRoot = Split-Path (Split-Path $pc -Parent) -Parent
+          Write-Host "glib-2.0.pc in $pc (root $gstRoot)"
+          "PKG_CONFIG_PATH=$pc" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "$gstRoot\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
+          $env:PKG_CONFIG_PATH = $pc
+          pkg-config --list-all | Select-String glib
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-about --locked --features cli
       - name: Build the zip
         shell: pwsh
         run: ./packaging/windows/build.ps1
@@ -123,6 +150,7 @@ jobs:
           subject-path: 'artifacts/**/*'
       - uses: softprops/action-gh-release@v2
         with:
+          name: JizzCraft ${{ github.ref_name }} (alpha)
           files: artifacts/**/*
           generate_release_notes: true
           prerelease: false

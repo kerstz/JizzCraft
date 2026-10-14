@@ -35,7 +35,44 @@ Copy-Item assets\icons\viewer.ico $out
 $scanner = "$gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe"
 if (Test-Path $scanner) { Copy-Item $scanner $out }
 # Only the plugins the player needs: never gstsoup, gstgio or the adaptive demuxers.
-Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $out
+Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE, NOTICE $out
+# Third-party licences of the Rust crates (cargo-about; required in CI).
+$lic = "$out\licenses"
+New-Item -ItemType Directory -Force "$lic\gstreamer" | Out-Null
+$ci = ($env:CI -eq 'true')
+if (Get-Command cargo-about -ErrorAction SilentlyContinue) {
+  cargo about generate --locked -c about.toml about.hbs -o "$lic\THIRD-PARTY.html"
+  if ($LASTEXITCODE -ne 0) { throw 'cargo about failed' }
+} elseif ($ci) { throw 'cargo-about is required in CI' }
+else { Write-Warning 'cargo-about not installed: THIRD-PARTY.html not generated' }
+# GStreamer LGPL notices. The installer ships its licence texts under share\licenses.
+$gstVer = ((& pkg-config --modversion gstreamer-1.0) 2>$null | Out-String).Trim()
+if (-not $gstVer) { $gstVer = 'unknown' }
+$lgpl = $null
+foreach ($d in "$gst\share\licenses", "$gst\share\doc", "$gst\share\licenses\gstreamer") {
+  if (Test-Path $d) {
+    $lgpl = Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match 'LGPL|COPYING' } | Select-Object -First 1
+    if ($lgpl) { break }
+  }
+}
+if ($lgpl) { Copy-Item $lgpl.FullName "$lic\gstreamer\LGPL-2.1.txt" }
+elseif ($ci) { throw "LGPL text not found in the GStreamer install ($gst)" }
+else { Write-Warning 'LGPL text not found in the GStreamer install' }
+$src = @(
+  "GStreamer $gstVer, bundled in this package under the GNU LGPL-2.1 (see LGPL-2.1.txt).",
+  "Upstream source code: https://gstreamer.freedesktop.org/src/ (version $gstVer)",
+  "Official binaries: https://gstreamer.freedesktop.org/download/ (MSVC build, $gstVer)",
+  "",
+  "The DLLs are ordinary files next to the executable and in gstreamer\\lib\\gstreamer-1.0.",
+  "You may replace them with your own build of the same ABI.",
+  "",
+  "Bundled GStreamer plugin files (name, version):"
+)
+foreach ($f in Get-ChildItem "$out\gstreamer\lib\gstreamer-1.0" -Filter *.dll) {
+  $src += "  $($f.Name)  $($f.VersionInfo.ProductVersion)"
+}
+$src | Set-Content -Encoding utf8 "$lic\gstreamer\SOURCE.txt"
 Compress-Archive -Path $out -DestinationPath dist\JizzCraft-windows-x86_64.zip -Force
 Write-Host 'dist\JizzCraft-windows-x86_64.zip'
 

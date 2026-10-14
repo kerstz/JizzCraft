@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>JizzCraft third-party licences</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem}
+pre{white-space:pre-wrap;background:#f4f4f4;color:#111;padding:.8rem;border-radius:4px}
+@media(prefers-color-scheme:dark){body{background:#161616;color:#ddd}pre{background:#222;color:#ddd}}</style>
+</head><body>
+<h1>Third-party licences</h1>
+<p>JizzCraft is MIT OR Apache-2.0 (see LICENSE-MIT, LICENSE-APACHE). It includes the following Rust crates.</p>
+<h2>Overview</h2>
+<ul>{{#each overview}}<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>{{/each}}</ul>
+<h2>Licences</h2>
+{{#each licenses}}
+<section id="{{id}}"><h3>{{name}}</h3>
+<p>Used by:</p>
+<ul>{{#each used_by}}<li>{{crate.name}} {{crate.version}}{{#if crate.repository}} - {{crate.repository}}{{/if}}</li>{{/each}}</ul>
+<pre>{{text}}</pre></section>
+{{/each}}
+</body></html>

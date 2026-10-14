@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.jizzcraft.JizzCraft</id>
+  <id>io.github.kerstz.JizzCraft</id>
   <name>JizzCraft</name>
   <summary>Private, offline media viewer and library manager</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT OR Apache-2.0</project_license>
-  <developer id="org.jizzcraft"><name>JizzCraft contributors</name></developer>
+  <developer id="io.github.kerstz"><name>JizzCraft contributors</name></developer>
   <url type="homepage">https://github.com/kerstz/JizzCraft</url>
   <url type="bugtracker">https://github.com/kerstz/JizzCraft/issues</url>
   <description>
@@ -19,7 +19,7 @@
       Independent project, not affiliated with any other product.
     </p>
   </description>
-  <launchable type="desktop-id">org.jizzcraft.JizzCraft.desktop</launchable>
+  <launchable type="desktop-id">io.github.kerstz.JizzCraft.desktop</launchable>
   <provides><binary>jizzcraft</binary><binary>jizzcraft-cli</binary></provides>
   <requires><display_length compare="ge">768</display_length></requires>
   <supports><control>keyboard</control><control>pointing</control></supports>

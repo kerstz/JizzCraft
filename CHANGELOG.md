@@ -9,6 +9,8 @@ anything may change between minor versions.
 
 First public alpha.
 
+Application ID is io.github.kerstz.JizzCraft.
+
 ### Library and player
 - Local library of images and videos, indexed in place and never modified:
   search, ratings, hide, saved views, folder tree, inbox triage, markers,

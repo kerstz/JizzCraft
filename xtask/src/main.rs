@@ -338,7 +338,7 @@ fn icons() -> Result<(), String> {
     use resvg::{tiny_skia, usvg};
     const SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
     let jobs = [
-        ("assets/icons/jizzcraft.svg", "org.jizzcraft.JizzCraft"),
+        ("assets/icons/jizzcraft.svg", "io.github.kerstz.JizzCraft"),
         ("assets/icons/viewer.svg", "local.Viewer"),
     ];
     for (svg, name) in jobs {
@@ -367,7 +367,7 @@ fn icons() -> Result<(), String> {
     }
     // Windows .ico files: PNG-compressed entries, 16 to 256 px.
     for (name, out) in [
-        ("org.jizzcraft.JizzCraft", "assets/icons/jizzcraft.ico"),
+        ("io.github.kerstz.JizzCraft", "assets/icons/jizzcraft.ico"),
         ("local.Viewer", "assets/icons/viewer.ico"),
     ] {
         let sizes = [16u32, 32, 48, 64, 128, 256];
@@ -395,7 +395,7 @@ fn icons() -> Result<(), String> {
         std::fs::write(out, ico).map_err(|e| e.to_string())?;
     }
     // Embedded in the binary (window + empty state).
-    let peach = std::fs::read("assets/icons/hicolor/512x512/apps/org.jizzcraft.JizzCraft.png")
+    let peach = std::fs::read("assets/icons/hicolor/512x512/apps/io.github.kerstz.JizzCraft.png")
         .map_err(|e| e.to_string())?;
     std::fs::write("assets/icons/jizzcraft-512.png", peach).map_err(|e| e.to_string())?;
     let viewer = std::fs::read("assets/icons/hicolor/256x256/apps/local.Viewer.png")
@@ -594,7 +594,7 @@ fn dist(args: Vec<String>) -> Result<(), String> {
     };
     put("target/release/jizzcraft", "bin/jizzcraft", 0o755)?;
     put("target/release/jizzcraft-cli", "bin/jizzcraft-cli", 0o755)?;
-    for d in ["org.jizzcraft.JizzCraft.desktop", "local.Viewer.desktop"] {
+    for d in ["io.github.kerstz.JizzCraft.desktop", "local.Viewer.desktop"] {
         put(
             &format!("assets/{d}"),
             &format!("share/applications/{d}"),
@@ -603,20 +603,20 @@ fn dist(args: Vec<String>) -> Result<(), String> {
     }
     if network {
         put(
-            "assets/org.jizzcraft.JizzCraft-magnet.desktop",
-            "share/applications/org.jizzcraft.JizzCraft-magnet.desktop",
+            "assets/io.github.kerstz.JizzCraft-magnet.desktop",
+            "share/applications/io.github.kerstz.JizzCraft-magnet.desktop",
             0o644,
         )?;
     }
     put(
-        "assets/org.jizzcraft.JizzCraft.metainfo.xml",
-        "share/metainfo/org.jizzcraft.JizzCraft.metainfo.xml",
+        "assets/io.github.kerstz.JizzCraft.metainfo.xml",
+        "share/metainfo/io.github.kerstz.JizzCraft.metainfo.xml",
         0o644,
     )?;
     for size in [
         "16x16", "24x24", "32x32", "48x48", "64x64", "128x128", "256x256", "512x512",
     ] {
-        for n in ["org.jizzcraft.JizzCraft", "local.Viewer"] {
+        for n in ["io.github.kerstz.JizzCraft", "local.Viewer"] {
             put(
                 &format!("assets/icons/hicolor/{size}/apps/{n}.png"),
                 &format!("share/icons/hicolor/{size}/apps/{n}.png"),
@@ -624,7 +624,7 @@ fn dist(args: Vec<String>) -> Result<(), String> {
             )?;
         }
     }
-    for n in ["org.jizzcraft.JizzCraft", "local.Viewer"] {
+    for n in ["io.github.kerstz.JizzCraft", "local.Viewer"] {
         put(
             &format!("assets/icons/hicolor/scalable/apps/{n}.svg"),
             &format!("share/icons/hicolor/scalable/apps/{n}.svg"),
@@ -637,11 +637,13 @@ fn dist(args: Vec<String>) -> Result<(), String> {
         0o644,
     )?;
     put("README.md", "share/doc/jizzcraft/README.md", 0o644)?;
-    for l in ["LICENSE-MIT", "LICENSE-APACHE"] {
-        if Path::new(l).exists() {
-            put(l, &format!("share/licenses/jizzcraft/{l}"), 0o644)?;
-        }
+    for l in ["NOTICE", "LICENSE-MIT", "LICENSE-APACHE"] {
+        put(l, &format!("share/licenses/jizzcraft/{l}"), 0o644)?;
     }
+    third_party(
+        &root.join("share/licenses/jizzcraft/THIRD-PARTY.html"),
+        network,
+    )?;
     // Man page and completions come from the CLI itself.
     let cli = "target/release/jizzcraft-cli";
     let gen_out = |args: &[&str]| -> Result<Vec<u8>, String> {
@@ -704,6 +706,39 @@ fn dist(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Third-party licence texts of the Rust dependencies, via cargo-about.
+/// Missing tool: warn locally, fail in CI (a release must carry the texts).
+fn third_party(out: &Path, network: bool) -> Result<(), String> {
+    let ci = std::env::var("CI").is_ok_and(|v| v == "true");
+    let have = Command::new("cargo")
+        .args(["about", "--version"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !have {
+        if ci {
+            return Err(
+                "cargo-about is required in CI: cargo install cargo-about --locked --features cli"
+                    .into(),
+            );
+        }
+        eprintln!(
+            "warning: cargo-about not installed, THIRD-PARTY.html not generated (install: cargo install cargo-about --locked --features cli)"
+        );
+        return Ok(());
+    }
+    std::fs::create_dir_all(out.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
+    let mut c = Command::new("cargo");
+    c.args(["about", "generate", "--locked", "-c", "about.toml"]);
+    if network {
+        c.arg("--all-features");
+    }
+    c.arg("about.hbs").arg("-o").arg(out);
+    if !c.status().map_err(|e| e.to_string())?.success() {
+        return Err("cargo about generate failed".into());
+    }
+    Ok(())
+}
+
 /// Packaging files must agree with each other: every file `dist` stages is
 /// listed by the deb metadata, and the Arch and Fedora recipes call `dist`.
 fn check_packaging() -> Result<(), String> {
@@ -719,6 +754,7 @@ fn check_packaging() -> Result<(), String> {
         "zsh/site-functions/*",
         "fish/vendor_completions.d/*",
         "share/jizzcraft/*",
+        "share/licenses/jizzcraft/*",
     ] {
         if !deb.contains(needle) {
             missing.push(format!("deb metadata lacks {needle}"));
@@ -733,6 +769,9 @@ fn check_packaging() -> Result<(), String> {
         }
     }
     for a in [
+        "about.toml",
+        "about.hbs",
+        "NOTICE",
         "assets/gst-packages.tsv",
         "assets/jizzcraft.1",
         "assets/icons/hicolor/scalable/apps/local.Viewer.svg",

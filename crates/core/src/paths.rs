@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 fn dirs() -> Option<ProjectDirs> {
+    // Data dirs are frozen at "org","jizzcraft","JizzCraft" and do not follow APP_ID.
     ProjectDirs::from("org", "jizzcraft", "JizzCraft")
 }
 

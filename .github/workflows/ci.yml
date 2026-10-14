@@ -1,5 +1,10 @@
 name: CI
 
+# Required status checks (branch protection): check, network, packaging,
+# install-e2e, deny, msrv.
+# Not required: windows (experimental, continue-on-error), e2e (placeholder,
+# disabled until the WP7 harness exists).
+
 on:
   push:
     branches: [main]
@@ -15,6 +20,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Tests that need a GStreamer element fail instead of printing "skipped".
+  # Only Linux jobs install the full plugin set; the Windows job overrides it.
+  JIZZCRAFT_REQUIRE_PLUGINS: "1"
 
 jobs:
   check:
@@ -32,7 +40,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            gstreamer1.0-tools gstreamer1.0-libav \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -55,6 +65,49 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  deny:
+    name: cargo-deny · cargo-audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: cargo-deny (advisories, licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo-audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+  msrv:
+    name: msrv (rust 1.95)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install GStreamer headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      # Keep in step with rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --all-targets
+
+  # TODO(WP7): enable once `cargo xtask e2e` exists (harness lands in a later wave).
+  e2e:
+    name: e2e (placeholder)
+    if: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -q -p xtask -- e2e
+
   network:
     name: network build · clippy · test
     runs-on: ubuntu-24.04
@@ -66,7 +119,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            gstreamer1.0-tools gstreamer1.0-libav \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -90,7 +145,7 @@ jobs:
       - name: Desktop entries
         run: for f in assets/*.desktop; do desktop-file-validate "$f"; done
       - name: AppStream metadata
-        run: appstreamcli validate --no-net assets/org.jizzcraft.JizzCraft.metainfo.xml
+        run: appstreamcli validate --no-net assets/io.github.kerstz.JizzCraft.metainfo.xml
       - name: Packaging files agree
         run: cargo run -q -p xtask -- check-packaging
 
@@ -99,6 +154,8 @@ jobs:
     runs-on: windows-latest
     # Never run on real hardware yet: failures here are logged, not blocking.
     continue-on-error: true
+    env:
+      JIZZCRAFT_REQUIRE_PLUGINS: "0"
     steps:
       - uses: actions/checkout@v5
       - name: GStreamer (MSVC runtime + devel)
@@ -114,9 +171,32 @@ jobs:
             if ($want -ne $got) { throw "checksum mismatch for $k" }
             Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
           }
-          "C:\gstreamer\1.0\msvc_x86_64\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
-          "PKG_CONFIG_PATH=C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
           choco install pkgconfiglite -y
+      # glib-sys could not find glib-2.0.pc: locate the real install dir
+      # instead of guessing the layout, and say so loudly if it is absent.
+      - name: Locate GStreamer pkg-config files
+        shell: pwsh
+        run: |
+          $hit = $null
+          foreach ($root in 'C:\gstreamer', 'C:\Program Files\gstreamer') {
+            if (Test-Path $root) {
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { break }
+            }
+          }
+          if (-not $hit) {
+            Get-ChildItem 'C:\gstreamer', 'C:\Program Files\gstreamer' -ErrorAction SilentlyContinue | Out-String | Write-Host
+            throw 'glib-2.0.pc not found under C:\gstreamer or C:\Program Files\gstreamer: the devel MSI did not install'
+          }
+          $pc = $hit.DirectoryName
+          # <root>\lib\pkgconfig -> <root>
+          $gstRoot = Split-Path (Split-Path $pc -Parent) -Parent
+          Write-Host "glib-2.0.pc in $pc (root $gstRoot)"
+          "PKG_CONFIG_PATH=$pc" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "$gstRoot\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
+          $env:PKG_CONFIG_PATH = $pc
+          pkg-config --list-all | Select-String glib
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
@@ -145,8 +225,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-libav \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Stage and pack

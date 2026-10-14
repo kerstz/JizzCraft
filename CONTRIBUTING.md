@@ -5,16 +5,21 @@ book for humans and coding agents alike.
 
 ## The rules that matter
 
-- **No network.** No HTTP clients, no remote URLs in the player, no telemetry,
-  no update checks. Not even optional. GStreamer pipelines only get `file://`
-  URIs, start after `jizzcraft_media::init()` and are passed to `guard::watch`;
-  `crates/media/tests/network.rs` must keep reporting zero connections.
+- **The default build has no network code.** No HTTP clients, no remote URLs
+  in the player, no telemetry, no update checks. Networking exists only in the
+  opt-in `network` build (`--features network`), where every connection is
+  started by an explicit user action and nothing is bundled. The default
+  dependency tree is checked to contain no network crate. GStreamer pipelines
+  only get `file://` URIs, start after `jizzcraft_media::init()` and are passed
+  to `guard::watch`; `crates/media/tests/network.rs` must keep reporting zero
+  connections.
 - **No real adult content, anywhere in the repo.** Tests, fixtures and
   screenshots are 100 % SFW and synthetic (`cargo xtask fixtures` generates
   gradients, patterns and test-pattern videos). Do not attach real media,
   screenshots of your library or file names to issues or pull requests either.
-- **No site-specific code.** No scrapers, downloaders, site modules or links to
-  adult websites.
+- **No site-specific code.** No scrapers, site modules, indexer or source
+  presets, or links to adult websites. The network build ships the mechanism
+  only; users bring their own sources.
 - **Command registry first.** New behaviour is a named command in the registry
   (`library.*`, `media.*`, `view.*`, `player.*`, `app.*`) before it gets a
   button or a shortcut. Menus, shortcuts, the CLI and `--cmd` all go through it.
@@ -28,6 +33,13 @@ book for humans and coding agents alike.
   the GStreamer pipeline. Key bindings live in `crates/ui/src/keys.rs` only.
 - Do not copy code, assets, logos or wordmarks from ArtCraft / PhotoCraft or
   any other Crafting App.
+
+## Content policy
+
+No real adult content in the repository, in issues or in pull requests: fixtures
+and screenshots are synthetic (`cargo xtask fixtures`). Pull requests that add
+source, site or indexer presets, catalogs or scrapers will be closed. See
+[`LEGAL.md`](LEGAL.md) and the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Before you open a pull request
 
