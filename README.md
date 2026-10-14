@@ -368,7 +368,7 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 - Ratings, hidden flags, history and markers live only in the library database. No sidecar files are written, and exports leave out names and history unless you ask.
 - Watch history can be paused, cleared (and truncated out of the WAL file) or hidden in the UI; the boss key hides it too.
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
-- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are not encrypted (an encrypted vault is on the roadmap).
+- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are **not encrypted** today. An encrypted vault is in progress (issue #13, [`docs/vault.md`](docs/vault.md)) and is not delivered yet; until it ships, use full-disk encryption if the library must be protected.
 
 ## The Online edition
 
@@ -411,7 +411,7 @@ What it exposes: your IP is visible to the indexers you configure, to BitTorrent
 ## Roadmap
 
 - Reachability: buttons and shortcuts for what is only a command today (triage, random pick, slideshow, frame step, markers).
-- Player and library: YUV to RGB in a shader, subtitles and audio tracks, tags and full-text search, multi-select, encrypted vault, sandboxed decoding.
+- Player and library: YUV to RGB in a shader, subtitles and audio tracks, tags and full-text search, multi-select, encrypted vault (in progress, not delivered), sandboxed decoding.
 - Distribution and validation: Flatpak, AppImage, and real-hardware runs on Windows and macOS.
 
 The full list, including what is explicitly not planned, is in [`ROADMAP.md`](ROADMAP.md).
