@@ -6,6 +6,9 @@
 
 **A private, local-first media library and player for adult content.**
 
+> [!IMPORTANT]
+> **Alpha software (v0.1).** It works and it is tested, but expect rough edges and changes between versions. Linux is the tested platform; Windows and macOS compile but have not been run on real machines yet. Streaming from your own sources (HLS/DASH, resolvers) is new and experimental. Your media is never modified, and the library schema only ever grows through migrations, but keep a backup of anything you cannot replace (`jizzcraft-cli` has a backup command).
+
 A fast native app for your own images and videos: browse, search, rate, tag and play, with your files left exactly where they are. Open source, offline by default, no account, no telemetry. Written in Rust for Linux, Windows and macOS.
 
 ![100% Rust](https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square)
