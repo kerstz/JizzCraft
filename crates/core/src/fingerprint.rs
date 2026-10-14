@@ -147,6 +147,18 @@ impl Db {
              SELECT ?2, pos_ms, label, created_at FROM markers WHERE media_id = ?1",
             params![from, to],
         )?;
+        // Playlist and label memberships follow the item (before the delete
+        // cascades them away). `from` takes its position in each playlist.
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_items(playlist_id, media_id, pos, added_at)
+             SELECT playlist_id, ?2, pos, added_at FROM playlist_items WHERE media_id = ?1",
+            params![from, to],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO media_labels(label_id, media_id, added_at)
+             SELECT label_id, ?2, added_at FROM media_labels WHERE media_id = ?1",
+            params![from, to],
+        )?;
         tx.execute("DELETE FROM media WHERE id = ?1", [from])?;
         tx.commit()?;
         Ok(())

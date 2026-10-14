@@ -5,7 +5,7 @@ use crate::theme::{self, ACCENT, BG, DANGER, MUTED, S, TEXT};
 use crate::widgets;
 use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Rect, Sense, Ui, pos2, vec2};
 use egui_wgpu::{RenderState, wgpu};
-use jizzcraft_media::player::{Frame, PlayState, Player};
+use jizzcraft_media::player::{Frame, PlayState, Player, PlayerError};
 use jizzcraft_media::preview::{PREVIEW_W, PreviewService, bucket_for};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,6 +13,57 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const BAR_H: f32 = 56.0;
+
+/// Live numbers of a torrent-backed stream (copied from the fetch status).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StreamFacts {
+    pub paused: bool,
+    pub peers: u32,
+    pub down_bps: u64,
+    /// `"disk full"` or `"error"` once the torrent failed.
+    pub error: Option<String>,
+}
+
+/// What the overlay says while a stream waits for bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamNote {
+    DiskFull,
+    Failed,
+    Paused,
+    /// Nothing is arriving; the number is the peers connected right now.
+    WaitingForPeers(u32),
+}
+
+impl StreamNote {
+    /// The (English) text; goes through `i18n::tr_dyn`.
+    pub fn text(&self) -> String {
+        match self {
+            StreamNote::DiskFull => "Disk full. Downloads paused.".into(),
+            StreamNote::Failed => "Something went wrong.".into(),
+            StreamNote::Paused => "Download paused".into(),
+            StreamNote::WaitingForPeers(n) => format!("Waiting for peers ({n})"),
+        }
+    }
+}
+
+/// Pick the note for a stalled stream (`stalled`: loading or buffering).
+/// Pure so the priority is tested: failure, then pause, then no traffic.
+pub fn stream_note(f: &StreamFacts, stalled: bool) -> Option<StreamNote> {
+    if !stalled {
+        return None;
+    }
+    if let Some(e) = &f.error {
+        return Some(if e == "disk full" {
+            StreamNote::DiskFull
+        } else {
+            StreamNote::Failed
+        });
+    }
+    if f.paused {
+        return Some(StreamNote::Paused);
+    }
+    (f.down_bps == 0).then_some(StreamNote::WaitingForPeers(f.peers))
+}
 
 struct VideoTexture {
     texture: wgpu::Texture,
@@ -61,6 +112,8 @@ pub struct PlayerView {
     pub autoplay_on: bool,
     /// Commands queued by the bar's chips, drained by the app each frame.
     pub actions: Vec<(String, serde_json::Value)>,
+    /// Reads the live torrent numbers of a stream (None for files).
+    pub stream_probe: Option<Box<dyn Fn() -> StreamFacts + Send>>,
 }
 
 impl PlayerView {
@@ -93,6 +146,7 @@ impl PlayerView {
             autoplay_in: None,
             autoplay_on: false,
             actions: Vec::new(),
+            stream_probe: None,
         }
     }
 
@@ -250,6 +304,24 @@ impl PlayerView {
         }
 
         match state {
+            PlayState::Error if self.player.error_kind() == Some(PlayerError::NoData) => {
+                let job = theme::spaced(crate::i18n::tr("No data is arriving."), 12.0, 1.5, DANGER);
+                let size = painter.layout_job(job.clone()).size();
+                painter.galley(
+                    video_area.center() - vec2(0.0, 36.0) - vec2(size.x / 2.0, 0.0),
+                    painter.layout_job(job),
+                    DANGER,
+                );
+                let r = Rect::from_center_size(
+                    video_area.center() + vec2(0.0, 12.0),
+                    vec2(140.0, 36.0),
+                );
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+                if widgets::button_solid(&mut child, crate::i18n::tr("Retry")).clicked() {
+                    self.actions
+                        .push(("fetch.play.retry".into(), serde_json::json!({})));
+                }
+            }
             PlayState::Error => {
                 let msg = self
                     .player
@@ -274,6 +346,19 @@ impl PlayerView {
             }
             PlayState::Playing | PlayState::Paused | PlayState::Loading => {
                 let pct = self.player.buffering_percent();
+                let stalled = pct < 100 || state == PlayState::Loading;
+                if let Some(f) = &self.stream_probe
+                    && let Some(note) = stream_note(&f(), stalled)
+                {
+                    painter.text(
+                        video_area.center() - vec2(0.0, 28.0),
+                        Align2::CENTER_CENTER,
+                        crate::i18n::tr_dyn(&note.text()).into_owned(),
+                        FontId::new(12.0, FontFamily::Proportional),
+                        MUTED,
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(500));
+                }
                 if pct < 100 {
                     painter.text(
                         video_area.center(),
@@ -786,4 +871,53 @@ impl PlayerView {
 pub fn fmt_clock(d: Duration) -> String {
     let s = d.as_secs();
     format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+}
+
+#[cfg(test)]
+mod stream_note_tests {
+    use super::*;
+
+    fn f(paused: bool, peers: u32, bps: u64, error: Option<&str>) -> StreamFacts {
+        StreamFacts {
+            paused,
+            peers,
+            down_bps: bps,
+            error: error.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn nothing_while_data_flows_or_not_stalled() {
+        assert_eq!(stream_note(&f(false, 4, 1000, None), true), None);
+        assert_eq!(stream_note(&f(true, 0, 0, Some("error")), false), None);
+    }
+
+    #[test]
+    fn priority_error_then_pause_then_peers() {
+        assert_eq!(
+            stream_note(&f(true, 0, 0, Some("disk full")), true),
+            Some(StreamNote::DiskFull)
+        );
+        assert_eq!(
+            stream_note(&f(false, 0, 0, Some("error")), true),
+            Some(StreamNote::Failed)
+        );
+        assert_eq!(
+            stream_note(&f(true, 3, 0, None), true),
+            Some(StreamNote::Paused)
+        );
+        assert_eq!(
+            stream_note(&f(false, 2, 0, None), true),
+            Some(StreamNote::WaitingForPeers(2))
+        );
+    }
+
+    #[test]
+    fn texts() {
+        assert_eq!(StreamNote::Paused.text(), "Download paused");
+        assert_eq!(
+            StreamNote::WaitingForPeers(5).text(),
+            "Waiting for peers (5)"
+        );
+    }
 }

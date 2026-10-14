@@ -1106,6 +1106,267 @@ pub const KEYMAP: &[Binding] = &[
         r#"{"dir":"prev"}"#,
         "Previous marker",
     )),
+    // ---- organise: playlists, tags, categories ----------------------------
+    ctrl(b(
+        Global,
+        Both,
+        Key::Z,
+        false,
+        "Ctrl+Z",
+        "org.undo",
+        "{}",
+        "Undo the last playlist, tag or category change",
+    )),
+    b(
+        Library,
+        Def,
+        Key::P,
+        false,
+        "P",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    ),
+    shifted(b(
+        Library,
+        Lh,
+        Key::F,
+        true,
+        "Shift+F",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    )),
+    shifted(b(
+        Library,
+        Def,
+        Key::P,
+        false,
+        "Shift+P",
+        "org.assign.repeat",
+        "{}",
+        "Repeat the last assignment",
+    )),
+    shifted(b(
+        Library,
+        Lh,
+        Key::C,
+        true,
+        "Shift+C",
+        "org.assign.repeat",
+        "{}",
+        "Repeat the last assignment",
+    )),
+    b(
+        Library,
+        Both,
+        Key::Delete,
+        false,
+        "Delete",
+        "org.remove",
+        "{}",
+        "Remove from the current playlist",
+    ),
+    shifted(b(
+        Library,
+        Lh,
+        Key::X,
+        true,
+        "Shift+X",
+        "org.remove",
+        "{}",
+        "Remove from the current playlist",
+    )),
+    alt(b(
+        Library,
+        Both,
+        Key::ArrowUp,
+        false,
+        "Alt+↑",
+        "org.move",
+        r#"{"delta":-1}"#,
+        "Move up in the playlist",
+    )),
+    alt(b(
+        Library,
+        Both,
+        Key::ArrowDown,
+        false,
+        "Alt+↓",
+        "org.move",
+        r#"{"delta":1}"#,
+        "Move down in the playlist",
+    )),
+    alt(b(
+        Library,
+        Lh,
+        Key::W,
+        true,
+        "Alt+W",
+        "org.move",
+        r#"{"delta":-1}"#,
+        "Move up in the playlist",
+    )),
+    alt(b(
+        Library,
+        Lh,
+        Key::S,
+        true,
+        "Alt+S",
+        "org.move",
+        r#"{"delta":1}"#,
+        "Move down in the playlist",
+    )),
+    shifted(b(
+        Library,
+        Both,
+        Key::ArrowLeft,
+        false,
+        "Shift+←",
+        "org.select.extend",
+        r#"{"dx":-1,"dy":0}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Both,
+        Key::ArrowRight,
+        false,
+        "Shift+→",
+        "org.select.extend",
+        r#"{"dx":1,"dy":0}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Both,
+        Key::ArrowUp,
+        false,
+        "Shift+↑",
+        "org.select.extend",
+        r#"{"dx":0,"dy":-1}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Both,
+        Key::ArrowDown,
+        false,
+        "Shift+↓",
+        "org.select.extend",
+        r#"{"dx":0,"dy":1}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Lh,
+        Key::A,
+        true,
+        "Shift+A",
+        "org.select.extend",
+        r#"{"dx":-1,"dy":0}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Lh,
+        Key::D,
+        true,
+        "Shift+D",
+        "org.select.extend",
+        r#"{"dx":1,"dy":0}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Lh,
+        Key::W,
+        true,
+        "Shift+W",
+        "org.select.extend",
+        r#"{"dx":0,"dy":-1}"#,
+        "Extend the selection",
+    )),
+    shifted(b(
+        Library,
+        Lh,
+        Key::S,
+        true,
+        "Shift+S",
+        "org.select.extend",
+        r#"{"dx":0,"dy":1}"#,
+        "Extend the selection",
+    )),
+    ctrl(b(
+        Library,
+        Both,
+        Key::A,
+        false,
+        "Ctrl+A",
+        "org.select.all",
+        "{}",
+        "Select every item of the list",
+    )),
+    shifted(b(
+        Library,
+        Both,
+        Key::Enter,
+        false,
+        "Shift+Enter",
+        "org.play",
+        "{}",
+        "Play the list from the top",
+    )),
+    shifted(b(
+        Library,
+        Lh,
+        Key::E,
+        true,
+        "Shift+E",
+        "org.play",
+        "{}",
+        "Play the list from the top",
+    )),
+    b(
+        Viewer,
+        Def,
+        Key::P,
+        false,
+        "P",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    ),
+    shifted(b(
+        Viewer,
+        Lh,
+        Key::F,
+        true,
+        "Shift+F",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    )),
+    b(
+        Player,
+        Def,
+        Key::P,
+        false,
+        "P",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    ),
+    shifted(b(
+        Player,
+        Lh,
+        Key::F,
+        true,
+        "Shift+F",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    )),
 ];
 
 // Triage reuses the open viewer/player but takes over the decision keys.
@@ -1309,6 +1570,26 @@ pub const TRIAGE_KEYMAP: &[Binding] = &[
         "{}",
         "Fullscreen",
     ),
+    b(
+        Triage,
+        Def,
+        Key::P,
+        false,
+        "P",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    ),
+    shifted(b(
+        Triage,
+        Lh,
+        Key::F,
+        true,
+        "Shift+F",
+        "org.picker",
+        "{}",
+        "Add to a playlist, tag or category",
+    )),
 ];
 
 /// Does `ev` trigger `bind`?
@@ -1329,7 +1610,8 @@ pub fn hit(ev: &Event, bind: &Binding) -> bool {
         || bind.cmd == "viewer.step"
         || bind.cmd == "player.seek"
         || bind.cmd == "player.volume"
-        || bind.cmd == "viewer.zoom";
+        || bind.cmd == "viewer.zoom"
+        || bind.cmd == "org.select.extend";
     if *repeat && !repeatable {
         return false;
     }
@@ -1524,5 +1806,49 @@ mod tests {
         ] {
             assert!(KEYMAP.iter().any(|b| b.cmd == cmd), "no key for {cmd}");
         }
+    }
+
+    #[test]
+    fn organise_keys_exist_in_both_presets_without_clashes() {
+        // The picker: P, or Shift+F with the left-hand preset, in every
+        // context that can show an item.
+        for (ctx, lh, key, shift) in [
+            (Ctx::Library, false, Key::P, false),
+            (Ctx::Library, true, Key::F, true),
+            (Ctx::Viewer, false, Key::P, false),
+            (Ctx::Player, false, Key::P, false),
+            (Ctx::Triage, false, Key::P, false),
+            (Ctx::Triage, true, Key::F, true),
+        ] {
+            assert!(
+                active(ctx, lh).any(|b| b.cmd == "org.picker"
+                    && b.key == key
+                    && (b.shift == Shift::On) == shift),
+                "no picker key in {ctx:?} (left_hand={lh})"
+            );
+        }
+        for cmd in [
+            "org.assign.repeat",
+            "org.remove",
+            "org.move",
+            "org.select.extend",
+            "org.select.all",
+            "org.play",
+            "org.undo",
+        ] {
+            for lh in [false, true] {
+                assert!(
+                    active(Ctx::Library, lh).any(|b| b.cmd == cmd),
+                    "{cmd} unbound in Library (left_hand={lh})"
+                );
+            }
+        }
+        // Bound for the docs window too (the table is the docs).
+        let docs_rows: Vec<&str> = docs(false)
+            .into_iter()
+            .flat_map(|(_, r)| r)
+            .map(|b| b.keys)
+            .collect();
+        assert!(docs_rows.contains(&"P") && docs_rows.contains(&"Ctrl+Z"));
     }
 }

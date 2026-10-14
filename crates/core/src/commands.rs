@@ -124,6 +124,7 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     });
     register_userdata(reg);
     register_views(reg);
+    crate::organize::register(reg);
     reg.register(
         "library.fingerprint",
         "Fingerprint files for move detection: {all?, limit?}",
@@ -148,7 +149,7 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     });
     reg.register(
         "meta.export",
-        "Export favorites, ratings, markers: {dest, include_history?, include_names?}",
+        "Export favorites, ratings, markers, tags, categories, playlists: {dest, include_history?, include_names?, include_private?}",
         |c, a| {
             let dest = str_arg(&a, "dest")?;
             let o = crate::portability::ExportOpts {
@@ -161,7 +162,16 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             };
-            let rep = crate::portability::export_meta(c.db(), std::path::Path::new(&dest), &o)?;
+            let private = a
+                .get("include_private")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let rep = crate::portability::export_meta_ext(
+                c.db(),
+                std::path::Path::new(&dest),
+                &o,
+                private,
+            )?;
             Ok(serde_json::to_value(rep).expect("report"))
         },
     );

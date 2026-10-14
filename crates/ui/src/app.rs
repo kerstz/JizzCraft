@@ -21,6 +21,9 @@ use jizzcraft_media::service::{Request, Thumb, ThumbService};
 use serde_json::{Value, json};
 #[cfg(feature = "network")]
 mod downloads;
+mod organize;
+#[cfg(feature = "network")]
+mod play_flow;
 mod sidebar;
 #[cfg(feature = "network")]
 mod stream_open;
@@ -111,6 +114,10 @@ enum JobMsg {
     Meta(i64, jizzcraft_core::MediaMeta),
     /// The start-up check found something that will stop files from playing.
     Codecs,
+    /// The start-up integrity check failed.
+    DbProblem,
+    /// The export dialog of a playlist closed (None: cancelled).
+    OrgExport(i64, Option<PathBuf>),
     /// A maintenance job finished: one-line summary or error.
     Done {
         label: &'static str,
@@ -119,6 +126,13 @@ enum JobMsg {
 }
 
 const MAX_TEXTURES: usize = 256;
+/// Thumbnail and preview cache ceiling for the daily start-up prune.
+const CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// The cache prune runs at most once a day.
+fn cache_prune_due(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|t| now.saturating_sub(t) >= 24 * 3600)
+}
 /// Largest side uploaded to the GPU for the viewer (wgpu default limit is 8192+).
 const MAX_VIEW_SIDE: u32 = 8192;
 
@@ -189,6 +203,8 @@ struct Slideshow {
 pub struct JizzApp {
     ctx: egui::Context,
     db: Db,
+    /// The library is newer than this build: opened read-only, with a banner.
+    read_only: bool,
     db_path: PathBuf,
     registry: Rc<Registry<JizzApp>>,
     cfg: Config,
@@ -220,6 +236,8 @@ pub struct JizzApp {
     triage: Option<Triage>,
     save_view: Option<String>,
     sidebar: Option<sidebar::SidebarCache>,
+    /// Playlists, categories, tags: marks, picker, undo (in memory only).
+    org: organize::OrgState,
     tree_expanded: HashSet<PathBuf>,
     stats: Stats,
     total: u64,
@@ -285,7 +303,15 @@ impl JizzApp {
     pub fn new(cc: &eframe::CreationContext<'_>, opts: Options) -> Result<Self, String> {
         theme::apply(&cc.egui_ctx);
         let db_path = opts.db_path.clone().unwrap_or_else(paths::db_path);
-        let db = Db::open(&db_path).map_err(|e| format!("cannot open library: {e}"))?;
+        // A library written by a newer version opens read-only (banner).
+        let (db, read_only) = match Db::open(&db_path) {
+            Ok(db) => (db, false),
+            Err(jizzcraft_core::Error::FutureSchema { .. }) => (
+                Db::open_read_only(&db_path).map_err(|e| format!("cannot open library: {e}"))?,
+                true,
+            ),
+            Err(e) => return Err(format!("cannot open library: {e}")),
+        };
         let (tx, rx) = channel();
         let persist_cfg = opts.config.is_none();
         if persist_cfg && opts.bench.is_none() && opts.screenshot.is_none() {
@@ -300,6 +326,30 @@ impl JizzApp {
             });
         }
         let mut cfg = opts.config.clone().unwrap_or_else(Config::load);
+        if persist_cfg && opts.bench.is_none() && opts.screenshot.is_none() {
+            // Quiet start-up upkeep, off the UI thread: one integrity check,
+            // and the cache trimmed at most once a day.
+            let (tx, ctx, path) = (tx.clone(), cc.egui_ctx.clone(), db_path.clone());
+            std::thread::spawn(move || {
+                let bad = Db::open_read_only(&path)
+                    .map(|d| d.quick_check().is_err())
+                    .unwrap_or(false);
+                if bad {
+                    let _ = tx.send(JobMsg::DbProblem);
+                    ctx.request_repaint();
+                }
+            });
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if cache_prune_due(cfg.cache_pruned_at, now) {
+                cfg.cache_pruned_at = Some(now);
+                cfg.save();
+                std::thread::spawn(|| {
+                    jizzcraft_media::thumbs::prune_cache(CACHE_MAX_BYTES);
+                });
+            }
+        }
         // --lang, then the saved choice, then the system locale, then English.
         let lang = opts
             .lang
@@ -324,6 +374,7 @@ impl JizzApp {
         let mut app = JizzApp {
             ctx: cc.egui_ctx.clone(),
             db,
+            read_only,
             db_path,
             registry: Rc::new(registry),
             cfg,
@@ -358,6 +409,7 @@ impl JizzApp {
             triage: None,
             save_view: None,
             sidebar: None,
+            org: organize::OrgState::default(),
             tree_expanded: HashSet::new(),
             stats: Stats::default(),
             total: 0,
@@ -563,21 +615,31 @@ impl JizzApp {
     }
 
     /// Autoplay-next: when a video ends, count down three seconds, then step.
+    /// Missing items are skipped, and the list wraps when looping is on.
     fn tick_autoplay(&mut self, ctx: &egui::Context) {
-        let next_exists = match &self.view {
-            View::Player(pv) => pv.index.is_some_and(|i| i + 1 < self.total),
-            _ => false,
+        let (cur, ended, looping) = match &self.view {
+            View::Player(pv) => (
+                pv.index,
+                pv.player.state() == PlayState::Ended,
+                pv.player.loop_points() != (None, None),
+            ),
+            _ => {
+                self.autoplay_at = None;
+                return;
+            }
+        };
+        let want = ended && self.cfg.autoplay_next && !looping;
+        let next = match cur {
+            Some(c) if want => self.next_playable(c, 1),
+            _ => None,
         };
         let Some(pv) = (match &mut self.view {
             View::Player(pv) => Some(pv),
             _ => None,
         }) else {
-            self.autoplay_at = None;
             return;
         };
-        let looping = pv.player.loop_points() != (None, None);
-        let ended = pv.player.state() == PlayState::Ended;
-        if ended && self.cfg.autoplay_next && next_exists && !looping {
+        if let Some(next) = next {
             let at = *self
                 .autoplay_at
                 .get_or_insert_with(|| Instant::now() + Duration::from_secs(3));
@@ -585,7 +647,7 @@ impl JizzApp {
             pv.autoplay_in = Some(left.as_secs() as u32 + 1);
             if left.is_zero() {
                 self.autoplay_at = None;
-                self.step_view(1);
+                self.open_index(next);
             } else {
                 ctx.request_repaint_after(Duration::from_millis(250));
             }
@@ -734,6 +796,7 @@ impl JizzApp {
     /// Also known as "I was reading the documentation".
     fn boss_key(&mut self) {
         self.cancel_pending_streams();
+        self.org_panic();
         self.cfg.discreet = true;
         self.autoplay_at = None;
         self.slideshow.active = false;
@@ -895,6 +958,7 @@ impl JizzApp {
             match msg {
                 JobMsg::Folder(Some(dir)) => self.start_scan(Some(dir)),
                 JobMsg::Folder(None) => {}
+                JobMsg::OrgExport(id, dest) => self.org_export_to(id, dest),
                 JobMsg::Codecs => self.toast(
                     ToastKind::Info,
                     "Some codecs are missing: run `jizzcraft --doctor` for the fix.",
@@ -922,6 +986,10 @@ impl JizzApp {
                         }
                     }
                 }
+                JobMsg::DbProblem => self.toast(
+                    ToastKind::Error,
+                    "The library database reported a problem. A backup was kept.",
+                ),
                 JobMsg::Done { label, result } => {
                     self.busy = self.busy.saturating_sub(1);
                     match result {
@@ -1408,11 +1476,27 @@ impl JizzApp {
                                 };
                                 self.push("view.sort", json!({ "by": k.as_str(), "desc": desc }));
                             }
+                            if self.extra.is_some() {
+                                let on = self.org.loop_list;
+                                if widgets::toggle_chip(ui, crate::i18n::tr("Loop list"), on)
+                                    .clicked()
+                                {
+                                    self.push("view.loop_list", json!({}));
+                                }
+                            }
                             let mut text = format!("{} items", self.total);
                             if self.busy > 0 {
                                 text += &format!(" · {}", crate::i18n::tr("Scanning…"));
                             }
                             widgets::mono_label(ui, &crate::i18n::tr_dyn(&text), FAINT);
+                            if !self.org.marked.is_empty() {
+                                let n = self.org.marked.len().to_string();
+                                widgets::mono_label(
+                                    ui,
+                                    &crate::i18n::trf("{} selected", &[&n]),
+                                    APP,
+                                );
+                            }
                         }
                     });
                 });
@@ -1662,6 +1746,7 @@ impl JizzApp {
         let mut open: Option<usize> = None;
         let mut select: Option<(i64, u64)> = None;
         let mut fav_toggle: Option<i64> = None;
+        let mut add_to: Option<i64> = None;
         let mut wanted: Vec<Request> = Vec::new();
         let hide_all = discreet;
         let share_safe = self.cfg.screen_share_safe;
@@ -1724,6 +1809,24 @@ impl JizzApp {
                             frame_no,
                             (vec2(tile_w, tile_h), idx),
                         );
+                        let marked = self.org.marked.contains(&m.id);
+                        if marked {
+                            organize::paint_mark(ui.painter(), resp.rect);
+                        }
+                        if resp.drag_started() {
+                            let ids: Vec<i64> = if marked {
+                                self.org.marked.iter().copied().collect()
+                            } else {
+                                vec![m.id]
+                            };
+                            resp.dnd_set_drag_payload(organize::DragIds(ids));
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button(crate::i18n::tr("Add to…")).clicked() {
+                                add_to = Some(m.id);
+                                ui.close();
+                            }
+                        });
                         if star {
                             fav_toggle = Some(m.id);
                         } else if resp.clicked() {
@@ -1742,8 +1845,17 @@ impl JizzApp {
             self.push("media.favorite.toggle", json!({ "id": id }));
         }
         if let Some((id, idx)) = select {
-            self.selected = Some(id);
-            self.selected_index = Some(idx);
+            let mods = ui.input(|i| i.modifiers);
+            self.org_click(id, idx, mods);
+        }
+        if let Some(id) = add_to {
+            // A tile outside the marks is the only target of its own menu.
+            let ids = if self.org.marked.contains(&id) {
+                self.target_ids()
+            } else {
+                vec![id]
+            };
+            self.push("org.picker", json!({ "ids": ids }));
         }
         if let Some(idx) = open {
             self.push("media.open", json!({ "index": idx }));
@@ -2174,6 +2286,7 @@ impl eframe::App for JizzApp {
         self.poll_thumbs(&ctx);
         self.handle_shortcuts(&ctx);
         self.update_title(&ctx);
+        self.org_tick();
 
         if !self.cfg.age_confirmed && !self.cfg.skip_age_gate {
             self.age_gate(ui);
@@ -2211,12 +2324,25 @@ impl eframe::App for JizzApp {
         let chrome = !matches!(&self.view, View::Player(pv) if pv.fullscreen);
         if chrome {
             self.top_bar(ui);
+            if self.read_only {
+                egui::Panel::top("read-only-banner").show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(
+                            "This library was made by a newer version; it is open read-only.",
+                        ))
+                        .color(DANGER),
+                    );
+                });
+            }
             self.breadcrumb(ui);
             self.inspector(ui);
             self.sidebar(ui);
         }
         self.central(ui);
         self.save_view_dialog(&ctx);
+        self.picker_window(&ctx);
+        self.org_confirm_window(&ctx);
+        self.org_drag_ghost(&ctx);
         self.triage_strip(&ctx);
         self.toasts_ui(&ctx);
         self.docs_window(&ctx);
@@ -2999,6 +3125,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 return Ok(json!({ "opened": false }));
             };
             app.cancel_pending_streams();
+            app.org_panic();
             app.cfg.discreet = true;
             app.autoplay_at = None;
             app.slideshow.active = false;
@@ -3053,6 +3180,10 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         Ok(json!({}))
     });
     reg.register("view.search.clear", "Clear the search box", |app, _| {
+        // Esc first lets go of marked tiles.
+        if app.org_escape() {
+            return Ok(json!({}));
+        }
         app.search.clear();
         app.refresh();
         Ok(json!({}))
@@ -3127,6 +3258,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             Ok(json!({ "lang": lang.code() }))
         },
     );
+    organize::register(reg);
     reg.register("docs.toggle", "Show or hide the docs window", |app, _| {
         app.show_docs = !app.show_docs;
         Ok(json!({}))
@@ -3170,7 +3302,7 @@ fn draw_tile(
     frame_no: u64,
     (size, idx): (egui::Vec2, u64),
 ) -> (egui::Response, bool) {
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let star_rect =
         Rect::from_center_size(rect.right_bottom() + vec2(-20.0, -22.0), vec2(28.0, 28.0));
     let star_clicked = resp.clicked()
@@ -3423,6 +3555,14 @@ pub fn fmt_date(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_prune_runs_once_a_day() {
+        assert!(cache_prune_due(None, 1_000));
+        assert!(!cache_prune_due(Some(1_000), 1_000 + 3_600));
+        assert!(cache_prune_due(Some(1_000), 1_000 + 24 * 3_600));
+        assert!(!cache_prune_due(Some(5_000), 1_000));
+    }
 
     #[test]
     fn sizes_durations_and_dates_are_formatted_for_humans() {

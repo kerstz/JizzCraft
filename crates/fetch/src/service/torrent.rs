@@ -1,15 +1,17 @@
 //! Torrent session, add/list/pause/resume/forget and file readers.
 
 use super::{FetchService, StreamReader, StreamTicket};
-use crate::config::FetchConfig;
+use crate::config::{FetchConfig, ResumeOnStart};
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ConnectionOptions, DhtSessionConfig,
     ListenerOptions, Session, SessionOptions, SessionPersistenceConfig, api::TorrentIdOrHash,
 };
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +33,107 @@ pub struct TorrentStatus {
     pub down_bps: u64,
     pub up_bps: u64,
     pub eta_secs: Option<u64>,
+    /// `Some("disk full")` when the volume ran out of space (the torrent is
+    /// paused), `Some("error")` for any other failure. Never a raw message.
+    pub error: Option<String>,
+}
+
+/// How long a magnet may take to turn into a file list.
+pub const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
+
+type FreeFn = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
+
+#[derive(Default)]
+struct SharedInner {
+    finished_at: Mutex<HashMap<usize, Instant>>,
+    meta_timeout: Mutex<Option<Duration>>,
+    free_fn: Mutex<Option<FreeFn>>,
+    /// Restored torrents still to be put to sleep (see `session`).
+    settle: Mutex<HashSet<usize>>,
+}
+
+/// State shared between the service and its spawned tasks.
+#[derive(Clone, Default)]
+pub(crate) struct TorrentShared(Arc<SharedInner>);
+
+impl TorrentShared {
+    fn settled(&self, id: usize) {
+        if let Ok(mut g) = self.0.settle.lock() {
+            g.remove(&id);
+        }
+    }
+    fn timeout(&self) -> Duration {
+        self.0
+            .meta_timeout
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .unwrap_or(METADATA_TIMEOUT)
+    }
+    fn free(&self, p: &Path) -> Option<u64> {
+        let f = self.0.free_fn.lock().ok().and_then(|g| g.clone());
+        match f {
+            Some(f) => f(p),
+            None => crate::diskspace::free_bytes(p),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeState {
+    /// Looking for peers and for the file list.
+    Resolving,
+    Ready,
+    Failed,
+}
+
+/// Live view of a magnet being resolved, for "Looking for peers (n)".
+#[derive(Debug, Default)]
+pub struct TorrentProbe {
+    peers: AtomicU32,
+    seen: AtomicU32,
+    state: AtomicU8,
+}
+
+impl TorrentProbe {
+    /// Peers connected right now (session wide: one resolve runs at a time).
+    pub fn peers(&self) -> u32 {
+        self.peers.load(Ordering::Relaxed)
+    }
+    pub fn state(&self) -> ProbeState {
+        match self.state.load(Ordering::Relaxed) {
+            1 => ProbeState::Ready,
+            2 => ProbeState::Failed,
+            _ => ProbeState::Resolving,
+        }
+    }
+    fn set(&self, s: ProbeState) {
+        self.state.store(s as u8, Ordering::Relaxed);
+    }
+}
+
+/// Numbers the player can show while it waits on a torrent, so a pause or a
+/// full disk never looks like endless buffering. Updated every half second
+/// until the last holder drops it.
+#[derive(Debug, Default)]
+pub struct StreamStatus {
+    pub peers: AtomicU32,
+    pub down_bps: AtomicU64,
+    /// The torrent is paused: nothing will arrive until it is resumed.
+    pub paused: AtomicBool,
+    /// `"disk full"` or `"error"` once the torrent failed.
+    pub error: Mutex<Option<String>>,
+}
+
+impl StreamStatus {
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+fn is_enospc(raw: &str) -> bool {
+    let r = raw.to_ascii_lowercase();
+    r.contains("no space left") || r.contains("os error 28") || r.contains("disk quota")
 }
 
 impl TorrentStatus {
@@ -159,6 +262,7 @@ impl FetchService {
         cfg: &FetchConfig,
         state_dir: &Path,
         cell: &OnceCell<Arc<Session>>,
+        shared: &TorrentShared,
     ) -> Result<Arc<Session>, String> {
         let dir = cfg.effective_download_dir();
         cell.get_or_try_init(|| async {
@@ -177,7 +281,12 @@ impl FetchService {
                     folder: Some(state_dir.to_path_buf()),
                 }),
                 fastresume: true,
-                listen: policy.listen.then(ListenerOptions::default),
+                // UPnP is explicit: off, and not configurable.
+                listen: policy.listen.then(|| ListenerOptions {
+                    enable_upnp_port_forwarding: policy.upnp,
+                    ..Default::default()
+                }),
+                bind_device_name: cfg.bind_interface.clone().filter(|n| !n.is_empty()),
                 connect: Some(ConnectionOptions {
                     proxy_url: cfg.proxy.as_ref().map(|p| p.expose().to_owned()),
                     ..Default::default()
@@ -189,9 +298,51 @@ impl FetchService {
                 },
                 ..Default::default()
             };
-            Session::new_with_opts(dir, opts)
+            let session = Session::new_with_opts(dir, opts)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            // Persisted torrents come back running. Unless the user asked for
+            // that, put them to sleep before they move a byte more.
+            if cfg.resume_on_start != ResumeOnStart::Always {
+                let ids: HashSet<usize> =
+                    session.with_torrents(|it| it.map(|(id, _)| id).collect());
+                if let Ok(mut g) = shared.0.settle.lock() {
+                    g.extend(ids);
+                }
+                // A torrent that is still checking its files may start live
+                // right after the check: keep watching for a while.
+                let (s, sh) = (session.clone(), shared.clone());
+                tokio::spawn(async move {
+                    for _ in 0..300 {
+                        let pending: Vec<usize> =
+                            sh.0.settle
+                                .lock()
+                                .map(|g| g.iter().copied().collect())
+                                .unwrap_or_default();
+                        if pending.is_empty() {
+                            return;
+                        }
+                        for id in pending {
+                            let Some(h) = s.get(TorrentIdOrHash::Id(id)) else {
+                                sh.settled(id);
+                                continue;
+                            };
+                            match h.stats().state {
+                                librqbit::TorrentStatsState::Live => {
+                                    let _ = s.pause(&h).await;
+                                    sh.settled(id);
+                                }
+                                librqbit::TorrentStatsState::Initializing { .. } => {
+                                    let _ = s.pause(&h).await;
+                                }
+                                _ => sh.settled(id),
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                });
+            }
+            Ok(session)
         })
         .await
         .cloned()
@@ -219,14 +370,52 @@ impl FetchService {
         rx
     }
 
+    /// How long a magnet may take to resolve (default 120 s).
+    pub fn set_metadata_timeout(&self, d: Duration) {
+        if let Ok(mut g) = self.tor.0.meta_timeout.lock() {
+            *g = Some(d);
+        }
+    }
+
+    /// Replace the free-space query used by the disk preflight (tests, or a
+    /// platform without `statvfs`).
+    pub fn set_free_space_fn(&self, f: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) {
+        if let Ok(mut g) = self.tor.0.free_fn.lock() {
+            *g = Some(Arc::new(f));
+        }
+    }
+
+    /// Push the speed limits of the current config into a running session.
+    pub(super) fn apply_limits(&self) {
+        if let Some(s) = self.session.get() {
+            s.ratelimits
+                .set_download_bps(mibps(self.cfg.down_limit_mibps));
+            s.ratelimits.set_upload_bps(mibps(self.cfg.up_limit_mibps));
+        }
+    }
+
+    /// Same token the HTTP openers use: `cancel_streams` ends a magnet that
+    /// is still looking for its metadata.
+    fn torrent_cancel(&self) -> Arc<AtomicBool> {
+        self.stream_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Open the session (restores persisted torrents). Idempotent.
     pub fn start(&self) -> Receiver<Result<(), String>> {
         let (tx, rx) = channel();
         let cfg = self.cfg.clone();
         let state = self.state_dir.clone();
         let cell = self.session.clone();
+        let shared = self.tor.clone();
         self.rt().spawn(async move {
-            let _ = tx.send(Self::session(&cfg, &state, &cell).await.map(|_| ()));
+            let _ = tx.send(
+                Self::session(&cfg, &state, &cell, &shared)
+                    .await
+                    .map(|_| ()),
+            );
         });
         rx
     }
@@ -246,10 +435,15 @@ impl FetchService {
         let cfg = self.cfg.clone();
         let state = self.state_dir.clone();
         let cell = self.session.clone();
+        let (shared, tok) = (self.tor.clone(), self.torrent_cancel());
         self.rt().spawn(async move {
             let r = async {
                 let prepared = Self::prepare(source).await?;
-                Self::add_prepared(&cfg, &state, &cell, prepared, None, peers).await
+                let probe = Arc::new(TorrentProbe::default());
+                Self::add_prepared(
+                    &cfg, &state, &cell, prepared, None, peers, &shared, &probe, tok,
+                )
+                .await
             }
             .await;
             let _ = tx.send(r);
@@ -268,15 +462,32 @@ impl FetchService {
         source: Source,
         peers: Vec<std::net::SocketAddr>,
     ) -> Receiver<Result<Listed, String>> {
+        self.list_files_probed(source, peers).0
+    }
+
+    /// Like [`list_files_with_peers`](Self::list_files_with_peers), plus a
+    /// live probe. A magnet that finds no metadata within the timeout (120 s)
+    /// fails with `no peers` (nobody was ever connected) or `metadata
+    /// timeout`; `cancel_streams` ends it with `cancelled`.
+    pub fn list_files_probed(
+        &self,
+        source: Source,
+        peers: Vec<std::net::SocketAddr>,
+    ) -> (Receiver<Result<Listed, String>>, Arc<TorrentProbe>) {
         let (tx, rx) = channel();
         let cfg = self.cfg.clone();
         let state = self.state_dir.clone();
         let cell = self.session.clone();
+        let (shared, tok) = (self.tor.clone(), self.torrent_cancel());
+        let probe = Arc::new(TorrentProbe::default());
+        let p2 = probe.clone();
         self.rt().spawn(async move {
             let r = async {
                 let prepared = Self::prepare(source).await?;
-                let session = Self::session(&cfg, &state, &cell).await?;
-                let files = Self::list_prepared(&session, &prepared, &peers).await?;
+                let session = Self::session(&cfg, &state, &cell, &shared).await?;
+                let files =
+                    Self::list_prepared(&session, &prepared, &peers, &p2, shared.timeout(), tok)
+                        .await?;
                 Ok(Listed {
                     files,
                     prepared,
@@ -284,9 +495,14 @@ impl FetchService {
                 })
             }
             .await;
+            p2.set(if r.is_ok() {
+                ProbeState::Ready
+            } else {
+                ProbeState::Failed
+            });
             let _ = tx.send(r);
         });
-        rx
+        (rx, probe)
     }
 
     /// Add a listed torrent; `only` limits the download to those file
@@ -300,9 +516,21 @@ impl FetchService {
         let cfg = self.cfg.clone();
         let state = self.state_dir.clone();
         let cell = self.session.clone();
+        let (shared, tok) = (self.tor.clone(), self.torrent_cancel());
         self.rt().spawn(async move {
-            let r =
-                Self::add_prepared(&cfg, &state, &cell, listed.prepared, only, listed.peers).await;
+            let probe = Arc::new(TorrentProbe::default());
+            let r = Self::add_prepared(
+                &cfg,
+                &state,
+                &cell,
+                listed.prepared,
+                only,
+                listed.peers,
+                &shared,
+                &probe,
+                tok,
+            )
+            .await;
             let _ = tx.send(r);
         });
         rx
@@ -326,23 +554,62 @@ impl FetchService {
         }
     }
 
+    /// Samples the connected-peer count into `probe` until aborted.
+    fn sample_peers(
+        session: Arc<Session>,
+        probe: Arc<TorrentProbe>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                let p = session.stats_snapshot().peers;
+                let n = p
+                    .live_tcp
+                    .saturating_add(p.live_utp)
+                    .saturating_add(p.live_socks);
+                probe.peers.store(n, Ordering::Relaxed);
+                probe.seen.fetch_max(n, Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+    }
+
     async fn list_prepared(
         session: &Arc<Session>,
         p: &Prepared,
         peers: &[std::net::SocketAddr],
+        probe: &Arc<TorrentProbe>,
+        timeout: Duration,
+        tok: Arc<AtomicBool>,
     ) -> Result<Vec<(String, u64)>, String> {
-        let listed = session
-            .add_torrent(
-                Self::to_add(p),
-                Some(AddTorrentOptions {
-                    list_only: true,
-                    initial_peers: (!peers.is_empty()).then(|| peers.to_vec()),
-                    ..Default::default()
+        probe.set(ProbeState::Resolving);
+        let sampler = Self::sample_peers(session.clone(), probe.clone());
+        let fut = session.add_torrent(
+            Self::to_add(p),
+            Some(AddTorrentOptions {
+                list_only: true,
+                initial_peers: (!peers.is_empty()).then(|| peers.to_vec()),
+                ..Default::default()
+            }),
+        );
+        let res = tokio::select! {
+            r = tokio::time::timeout(timeout, fut) => match r {
+                Ok(r) => r.map_err(|e| {
+                    let e = e.to_string();
+                    if e.contains("no known way to resolve peers")
+                        || e.contains("stream exhausted")
+                    {
+                        "no peers".to_string()
+                    } else {
+                        e
+                    }
                 }),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        let AddTorrentResponse::ListOnly(l) = listed else {
+                Err(_) if probe.seen.load(Ordering::Relaxed) == 0 => Err("no peers".to_string()),
+                Err(_) => Err("metadata timeout".to_string()),
+            },
+            _ = super::open::wait_cancel(tok) => Err("cancelled".to_string()),
+        };
+        sampler.abort();
+        let AddTorrentResponse::ListOnly(l) = res? else {
             return Err("torrent is already being downloaded".into());
         };
         let mut out = Vec::new();
@@ -356,6 +623,7 @@ impl FetchService {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn add_prepared(
         cfg: &FetchConfig,
         state: &Path,
@@ -363,11 +631,25 @@ impl FetchService {
         prepared: Prepared,
         only: Option<Vec<usize>>,
         peers: Vec<std::net::SocketAddr>,
+        shared: &TorrentShared,
+        probe: &Arc<TorrentProbe>,
+        tok: Arc<AtomicBool>,
     ) -> Result<usize, String> {
-        let session = Self::session(cfg, state, cell).await?;
+        let session = Self::session(cfg, state, cell, shared).await?;
         // The metadata pass also validates every path before anything is written.
-        Self::list_prepared(&session, &prepared, &peers).await?;
+        let files =
+            Self::list_prepared(&session, &prepared, &peers, probe, shared.timeout(), tok).await?;
         let dir = cfg.effective_download_dir();
+        // Disk preflight: what will be written, plus room to breathe.
+        let needed: u64 = files
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| only.as_ref().is_none_or(|o| o.contains(i)))
+            .map(|(_, (_, l))| *l)
+            .fold(0u64, u64::saturating_add);
+        if crate::diskspace::is_full(shared.free(&dir), needed) {
+            return Err("disk full".into());
+        }
         let added = session
             .add_torrent(
                 Self::to_add(&prepared),
@@ -388,7 +670,9 @@ impl FetchService {
     }
 
     /// Something to play for file `file` of torrent `id`: the finished file
-    /// on disk, or a reader over the part that is still downloading.
+    /// on disk, or a reader over the part that is still downloading. A live
+    /// ticket carries a [`StreamStatus`] that shows peers, speed, `paused`
+    /// and `error`.
     pub fn open_reader(&self, id: usize, file: usize) -> Receiver<Result<StreamTicket, String>> {
         let (tx, rx) = channel();
         let session = self.session.clone();
@@ -437,6 +721,16 @@ impl FetchService {
                         Err(_) => return Err("could not start streaming".to_string()),
                     }
                 };
+                let status = Arc::new(StreamStatus::default());
+                refresh_status(&h, &status);
+                let (st, hh) = (status.clone(), h.clone());
+                tokio::spawn(async move {
+                    // Ends when the player drops its handle (we hold the other one).
+                    while Arc::strong_count(&st) > 1 {
+                        refresh_status(&hh, &st);
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                });
                 Ok(StreamTicket::Live {
                     reader: StreamReader(Box::new(TorrentReader {
                         handle,
@@ -447,6 +741,7 @@ impl FetchService {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default(),
+                    status: Some(status),
                 })
             }
             .await;
@@ -456,29 +751,49 @@ impl FetchService {
     }
 
     /// Snapshot of every torrent. Reading is cheap; the cache is refreshed
-    /// on the runtime so the UI thread never waits on the session.
+    /// on the runtime so the UI thread never waits on the session. The same
+    /// refresh enforces the seeding policy and the disk-full pause.
     pub fn list(&self) -> Vec<TorrentStatus> {
         if let Some(session) = self.session.get().cloned() {
             let cache = self.cache.clone();
-            let seed = self.cfg.seed_after_complete;
+            let cfg = self.cfg.clone();
+            let shared = self.tor.clone();
             self.rt().spawn(async move {
-                let mut done = Vec::new();
+                let mut stop = Vec::new();
                 let items: Vec<_> =
                     session.with_torrents(|it| it.map(|(id, h)| (id, h.clone())).collect());
                 let mut v = Vec::with_capacity(items.len());
                 for (id, h) in items {
                     let s = h.stats();
+                    let disk_full = s.error.as_deref().is_some_and(is_enospc);
                     let state = match (&s.state, s.error.is_some(), s.finished) {
                         (_, true, _) => TorrentState::Error,
                         (librqbit::TorrentStatsState::Paused, _, _) => TorrentState::Paused,
+                        (librqbit::TorrentStatsState::Initializing { paused: true }, _, _) => {
+                            TorrentState::Paused
+                        }
                         (librqbit::TorrentStatsState::Initializing { .. }, _, _) => {
                             TorrentState::Initializing
                         }
                         (_, _, true) => TorrentState::Seeding,
                         _ => TorrentState::Downloading,
                     };
-                    if s.finished && !seed && state != TorrentState::Paused {
-                        done.push(h.clone());
+                    if disk_full {
+                        // Stop the torrent so it does not retry in a loop.
+                        stop.push(h.clone());
+                    }
+                    if s.finished && state != TorrentState::Paused {
+                        let over = cfg.seed_after_complete
+                            && seed_goal_reached(
+                                &cfg,
+                                &shared,
+                                id,
+                                s.uploaded_bytes,
+                                s.total_bytes,
+                            );
+                        if !cfg.seed_after_complete || over {
+                            stop.push(h.clone());
+                        }
                     }
                     let (down, up) = s.live.as_ref().map_or((0, 0), |l| {
                         (
@@ -497,10 +812,13 @@ impl FetchService {
                         down_bps: down,
                         up_bps: up,
                         eta_secs: eta,
+                        error: s
+                            .error
+                            .as_ref()
+                            .map(|_| if disk_full { "disk full" } else { "error" }.to_string()),
                     });
                 }
-                // Finished and not seeding: pause so we stop uploading.
-                for h in done {
+                for h in stop {
                     let _ = session.pause(&h).await;
                 }
                 if let Ok(mut g) = cache.lock() {
@@ -523,12 +841,40 @@ impl FetchService {
 
     pub fn resume(&self, id: usize) {
         if let Some(s) = self.session.get().cloned() {
+            let shared = self.tor.clone();
             self.rt().spawn(async move {
                 if let Some(h) = s.get(TorrentIdOrHash::Id(id)) {
+                    // A manual resume restarts the seeding clock.
+                    if let Ok(mut g) = shared.0.finished_at.lock() {
+                        g.remove(&id);
+                    }
+                    shared.settled(id);
                     let _ = s.unpause(&h).await;
                 }
             });
         }
+    }
+
+    /// Resume every paused, unfinished torrent (the answer to "Resume
+    /// downloads from last time?"). Yields how many were resumed.
+    pub fn resume_all(&self) -> Receiver<usize> {
+        let (tx, rx) = channel();
+        let session = self.session.clone();
+        let shared = self.tor.clone();
+        self.rt().spawn(async move {
+            let mut n = 0;
+            if let Some(s) = session.get().cloned() {
+                let hs: Vec<_> = s.with_torrents(|it| it.map(|(id, h)| (id, h.clone())).collect());
+                for (id, h) in hs {
+                    shared.settled(id);
+                    if h.is_paused() && !h.stats().finished && s.unpause(&h).await.is_ok() {
+                        n += 1;
+                    }
+                }
+            }
+            let _ = tx.send(n);
+        });
+        rx
     }
 
     /// Stop tracking a torrent. Downloaded files are left on disk, always.
@@ -539,5 +885,56 @@ impl FetchService {
                 let _ = s.delete(TorrentIdOrHash::Id(id), false).await;
             });
         }
+    }
+}
+
+/// True once the ratio or the time limit of the seeding policy is met.
+fn seed_goal_reached(
+    cfg: &FetchConfig,
+    shared: &TorrentShared,
+    id: usize,
+    uploaded: u64,
+    total: u64,
+) -> bool {
+    if let Some(r) = cfg.seed_ratio
+        && r > 0.0
+        && total > 0
+        && uploaded as f64 / total as f64 >= f64::from(r)
+    {
+        return true;
+    }
+    if let Some(m) = cfg.seed_minutes.filter(|m| *m > 0)
+        && let Ok(mut g) = shared.0.finished_at.lock()
+    {
+        let t = *g.entry(id).or_insert_with(Instant::now);
+        return t.elapsed() >= Duration::from_secs(u64::from(m) * 60);
+    }
+    false
+}
+
+fn refresh_status(h: &Arc<librqbit::ManagedTorrent>, st: &StreamStatus) {
+    let s = h.stats();
+    let paused = h.is_paused() || matches!(s.state, librqbit::TorrentStatsState::Paused);
+    st.paused.store(paused, Ordering::Relaxed);
+    if let Some(l) = &s.live {
+        let p = &l.snapshot.peer_stats;
+        let n = p
+            .live_tcp
+            .saturating_add(p.live_utp)
+            .saturating_add(p.live_socks);
+        st.peers.store(n, Ordering::Relaxed);
+        st.down_bps.store(
+            (l.download_speed.mbps * 1_048_576.0) as u64,
+            Ordering::Relaxed,
+        );
+    } else {
+        st.peers.store(0, Ordering::Relaxed);
+        st.down_bps.store(0, Ordering::Relaxed);
+    }
+    if let Ok(mut g) = st.error.lock() {
+        *g = s
+            .error
+            .as_deref()
+            .map(|e| if is_enospc(e) { "disk full" } else { "error" }.to_string());
     }
 }

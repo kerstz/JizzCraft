@@ -21,6 +21,9 @@ clap_complete.workspace = true
 clap_mangen.workspace = true
 jizzcraft-fetch = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [features]
 # Off by default: the default build links no network code.
 network = ["dep:jizzcraft-fetch", "jizzcraft-fetch/network"]

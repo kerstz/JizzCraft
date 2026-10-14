@@ -2617,6 +2617,8 @@ dependencies = [
  "jizzcraft-fetch",
  "jizzcraft-media",
  "jizzcraft-ui",
+ "libc",
+ "rfd",
  "serde_json",
  "windows-sys 0.60.2",
 ]
@@ -2632,6 +2634,7 @@ dependencies = [
  "jizzcraft-core",
  "jizzcraft-fetch",
  "jizzcraft-media",
+ "libc",
  "serde_json",
  "tempfile",
 ]

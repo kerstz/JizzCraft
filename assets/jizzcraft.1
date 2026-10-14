@@ -29,6 +29,11 @@ Run a registry command after startup (repeatable).
 .BI \-\-lang " CODE"
 Interface language: en fr es de it pt.
 .TP
+.BI \-\-renderer " NAME"
+Graphics backend: auto (default), vulkan or gl. Also set by
+.BR JIZZCRAFT_RENDERER .
+If no adapter is available the program says so and exits with status 1.
+.TP
 .B \-\-disguise
 Launch as a neutral "Viewer" (window name, application ID, discreet mode).
 .TP

@@ -9,7 +9,9 @@
 pub mod config;
 pub mod dash;
 pub mod detect;
+pub mod diskspace;
 pub mod errors;
+pub mod fetch_error;
 pub mod hls;
 pub mod inbox;
 pub mod pick;
@@ -23,6 +25,8 @@ pub mod torznab;
 #[cfg(feature = "network")]
 pub mod commands;
 #[cfg(feature = "network")]
+pub mod detect_tools;
+#[cfg(feature = "network")]
 pub mod resolver;
 #[cfg(feature = "network")]
 pub mod segmented;
@@ -32,5 +36,6 @@ pub mod service;
 pub mod stream;
 
 pub use config::{FetchConfig, Indexer};
+pub use fetch_error::{FetchError, NeedsFullDownloadProgress, UnsupportedKind};
 pub use secret::Secret;
 pub use torznab::SearchResult;

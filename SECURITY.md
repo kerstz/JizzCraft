@@ -43,6 +43,22 @@ decoders themselves should be reported upstream.
   GStreamer without a sandbox like any other. What you download is your
   responsibility.
 
+- Threat-model pointers for the network build. Sources and resolvers are
+  user-supplied and untrusted in what they *return*: addresses are checked for
+  loopback and LAN targets (including DNS rebinding) in `crates/fetch/src/sources.rs`
+  and `crates/fetch/src/service/proxy.rs`; the `require_proxy` kill switch is
+  audited across every entry point by `crates/fetch/tests/security.rs` and
+  exercised against a mock SOCKS5 server in `crates/fetch/tests/socks5_mock.rs`;
+  secrets are scanned for in every error path by the same suite; resolver
+  programs that anyone could modify are refused (`crates/fetch/src/resolver.rs`,
+  see "Sandboxing a resolver" in `docs/streaming.md`). A resolver you install
+  still runs as you. Resolver output is classified into fixed keywords and
+  sentences and then dropped (stderr is read up to 64 KiB, never stored or
+  logged); a page's video is never written to disk by the resolver path (no
+  `.part` file); and the `--proxy {proxy}` placeholder hands the resolver the
+  `socks5h://` proxy, with the kill switch counting it as proxy-aware. Tests:
+  `crates/fetch/tests/resolver_faults.rs`.
+
 - Every imported video is parsed by the system GStreamer plugins to make its
   thumbnail, without a sandbox. Keep GStreamer up to date, and treat files from
   untrusted sources the way you would in any media player.

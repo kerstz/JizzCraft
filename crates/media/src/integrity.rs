@@ -341,4 +341,5 @@ pub fn register_media<C: HasLibrary>(reg: &mut Registry<C>) {
             Ok(json!({ "removed_bytes": bytes }))
         },
     );
+    crate::thumbs::register_cache_prune(reg);
 }

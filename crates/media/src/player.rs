@@ -5,7 +5,7 @@
 //! and tears it down. The UI only reads atomics and takes the latest
 //! `gst::Sample` from a one-slot mailbox (ref-counted: no pixel copy).
 
-use crate::stream::{Feeder, ReadSeek, TimedStats};
+use crate::stream::{Feeder, Health, ReadSeek, TimedStats};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -61,6 +61,35 @@ impl PlayState {
     }
 }
 
+/// What a buffering percentage should do to the pipeline: `Some(true)` =
+/// pause, `Some(false)` = resume, `None` = nothing. While `loading` (before
+/// the first preroll) it never pauses; a resume is still honoured so a pause
+/// from before a rebuild cannot stick.
+fn buffering_decision(loading: bool, live: bool, paused: bool, pct: u8) -> Option<bool> {
+    if live {
+        return None;
+    }
+    if pct < 100 && !paused && !loading {
+        Some(true)
+    } else if pct >= 100 && paused {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Why the player is in [`PlayState::Error`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayerError {
+    /// A stream produced no bytes and no frames for [`NO_DATA_LIMIT`] while
+    /// loading or buffering. Not a broken file: the source is stalled. The UI
+    /// should say so ("no data is arriving"), keep the source and its
+    /// progress, and offer Retry (re-open the same stream) instead of the
+    /// generic "cannot play this file" panel.
+    NoData,
+    Other,
+}
+
 /// Counters for `--bench` and debugging. All cumulative since open.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Counters {
@@ -77,7 +106,9 @@ struct Shared {
     duration_ns: AtomicU64,
     state: AtomicU8,
     buffering: AtomicU8,
-    delivered: AtomicU64,
+    health: Arc<Health>,
+    /// 1 = `PlayerError::NoData`; anything else is `Other`.
+    error_kind: AtomicU8,
     qos_dropped: AtomicU64,
     qos_processed: AtomicU64,
     seeking: AtomicBool,
@@ -414,9 +445,18 @@ impl Player {
         self.shared.error.lock().unwrap().clone()
     }
 
+    /// The typed reason behind [`Player::error`] (`None` while there is no error).
+    pub fn error_kind(&self) -> Option<PlayerError> {
+        self.shared.error.lock().unwrap().as_ref()?;
+        Some(match self.shared.error_kind.load(Relaxed) {
+            1 => PlayerError::NoData,
+            _ => PlayerError::Other,
+        })
+    }
+
     pub fn counters(&self) -> Counters {
         Counters {
-            delivered: self.shared.delivered.load(Relaxed),
+            delivered: self.shared.health.frames.load(Relaxed),
             qos_dropped: self.shared.qos_dropped.load(Relaxed),
             qos_processed: self.shared.qos_processed.load(Relaxed),
         }
@@ -465,11 +505,20 @@ struct Ctl {
 
 impl Ctl {
     fn set_state(&self, s: PlayState) {
+        self.shared
+            .health
+            .playing
+            .store(s == PlayState::Playing, Relaxed);
         self.shared.state.store(s as u8, Relaxed);
         (self.wake)();
     }
 
     fn fail(&self, msg: String) {
+        self.fail_kind(msg, 0);
+    }
+
+    fn fail_kind(&self, msg: String, kind: u8) {
+        self.shared.error_kind.store(kind, Relaxed);
         *self.shared.error.lock().unwrap() = Some(msg);
         self.set_state(PlayState::Error);
     }
@@ -771,16 +820,22 @@ impl Ctl {
             MessageView::Buffering(b) => {
                 let pct = b.percent().clamp(0, 100) as u8;
                 self.shared.buffering.store(pct, Relaxed);
-                if !self.is_live {
-                    if pct < 100 && !self.buffering_paused {
+                // Before the first preroll buffering is only a percentage:
+                // pausing a pipeline that is still prerolling gains nothing
+                // and, with a source that answers only once resumed, loses.
+                let loading = self.shared.state.load(Relaxed) == PlayState::Loading as u8;
+                match buffering_decision(loading, self.is_live, self.buffering_paused, pct) {
+                    Some(true) => {
                         self.buffering_paused = true;
                         let _ = self.pipeline.set_state(gst::State::Paused);
-                    } else if pct >= 100 && self.buffering_paused {
+                    }
+                    Some(false) => {
                         self.buffering_paused = false;
                         if self.want_playing {
                             let _ = self.pipeline.set_state(gst::State::Playing);
                         }
                     }
+                    None => {}
                 }
                 (self.wake)();
             }
@@ -842,6 +897,7 @@ impl Ctl {
         }
         if let Some(d) = self.pipeline.query_duration::<gst::ClockTime>() {
             self.shared.duration_ns.store(d.nseconds(), Relaxed);
+            self.shared.health.duration_ns.store(d.nseconds(), Relaxed);
         }
     }
 }
@@ -883,6 +939,7 @@ fn build_pipeline(
     };
     playbin.set_property("uri", &uri);
     let stats = Arc::clone(&shared.timed);
+    let health = Arc::clone(&shared.health);
     let feeder_slot = stream.map(|feed| {
         let slot: Arc<Mutex<Option<Feeder>>> = Arc::new(Mutex::new(None));
         let (s, feed) = (Arc::clone(&slot), Mutex::new(Some(feed)));
@@ -891,10 +948,14 @@ fn build_pipeline(
             let src = el.downcast::<gst_app::AppSrc>().ok()?;
             if let Some(f) = feed.lock().unwrap().take() {
                 *s.lock().unwrap() = Some(match f {
-                    Feed::Reader(r, len) => crate::stream::start(&src, r, len),
-                    Feed::Timed(t, first) => {
-                        crate::stream::start_timed(&src, t, first, Arc::clone(&stats))
-                    }
+                    Feed::Reader(r, len) => crate::stream::start(&src, r, len, Arc::clone(&health)),
+                    Feed::Timed(t, first) => crate::stream::start_timed(
+                        &src,
+                        t,
+                        first,
+                        Arc::clone(&stats),
+                        Arc::clone(&health),
+                    ),
                 });
             }
             None
@@ -922,7 +983,7 @@ fn build_pipeline(
         .new_sample(move |sink| {
             let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
             *s1.mailbox.lock().unwrap() = Some(sample);
-            s1.delivered.fetch_add(1, Relaxed);
+            s1.health.frames.fetch_add(1, Relaxed);
             w1();
             Ok(gst::FlowSuccess::Ok)
         })
@@ -968,8 +1029,10 @@ fn build_pipeline(
     Ok((playbin, refused, feeder_slot))
 }
 
-/// How long a stream may show nothing at all before it is called broken.
-const STREAM_LOAD_LIMIT: Duration = Duration::from_secs(20);
+/// How long a stream that is loading or buffering may make no progress at all
+/// (no byte pushed, no frame shown) before it fails with
+/// [`PlayerError::NoData`].
+pub const NO_DATA_LIMIT: Duration = Duration::from_secs(45);
 /// How long the first bytes of a stream may take to arrive.
 const SNIFF_LIMIT: Duration = Duration::from_secs(30);
 
@@ -1078,7 +1141,13 @@ fn control_thread(
     if let Input::Timed { src, first } = &mut input {
         timed = true;
         match src.duration() {
-            Some(d) => shared.duration_ns.store(d.as_nanos() as u64, Relaxed),
+            Some(d) => {
+                shared.duration_ns.store(d.as_nanos() as u64, Relaxed);
+                shared
+                    .health
+                    .duration_ns
+                    .store(d.as_nanos() as u64, Relaxed);
+            }
             None => shared.live.store(true, Relaxed),
         }
         *shared.variants.lock().unwrap() = src.variants();
@@ -1105,7 +1174,7 @@ fn control_thread(
             return;
         }
     }
-    let loading_since = Instant::now();
+    let mut progress = (0u64, Instant::now());
     let (pipeline, refused, feeder) = match build_pipeline(input, volume, &shared, &wake) {
         Ok(p) => p,
         Err(e) => {
@@ -1171,14 +1240,20 @@ fn control_thread(
         if ctl.timed && !ctl.dead && shared.timed.downgrade.swap(false, Relaxed) {
             ctl.downgrade();
         }
-        // A stream that never starts must not sit on "Loading" forever.
-        if is_stream
-            && !ctl.dead
-            && shared.state.load(Relaxed) == PlayState::Loading as u8
-            && shared.buffering.load(Relaxed) >= 100
-            && loading_since.elapsed() > STREAM_LOAD_LIMIT
-        {
-            ctl.fail("could not start this video".into());
+        // A stream that makes no progress while loading or buffering must
+        // not sit there forever, whatever percentage it shows.
+        if is_stream && !ctl.dead {
+            let token = shared.health.bytes.load(Relaxed) + shared.health.frames.load(Relaxed);
+            if token != progress.0 {
+                progress = (token, Instant::now());
+            }
+            let waiting =
+                shared.state.load(Relaxed) == PlayState::Loading as u8 || ctl.buffering_paused;
+            if waiting && progress.1.elapsed() > NO_DATA_LIMIT {
+                ctl.fail_kind("no data is arriving for this video".into(), 1);
+            } else if !waiting {
+                progress.1 = Instant::now();
+            }
         }
         if last_poll.elapsed() >= Duration::from_millis(100) {
             last_poll = Instant::now();
@@ -1198,5 +1273,24 @@ fn control_thread(
     let _ = ctl.pipeline.set_state(gst::State::Null);
     if let Some(slot) = ctl.feeder.take() {
         drop(slot.lock().unwrap().take());
+    }
+}
+
+#[cfg(test)]
+mod buffering_tests {
+    use super::buffering_decision;
+
+    #[test]
+    fn buffering_never_pauses_preroll() {
+        for pct in [0u8, 1, 50, 99] {
+            assert_eq!(buffering_decision(true, false, false, pct), None);
+        }
+        // After the first frame the same report pauses, and 100 resumes.
+        assert_eq!(buffering_decision(false, false, false, 0), Some(true));
+        assert_eq!(buffering_decision(false, false, true, 100), Some(false));
+        // Live pipelines are never paused by buffering.
+        assert_eq!(buffering_decision(false, true, false, 0), None);
+        // A pause already in force is released even if loading again.
+        assert_eq!(buffering_decision(true, false, true, 100), Some(false));
     }
 }

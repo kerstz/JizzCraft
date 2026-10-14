@@ -27,6 +27,31 @@ fn yes() -> bool {
     true
 }
 
+/// What to do with torrents left unfinished by the previous run.
+/// Nothing restarts silently: the default asks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResumeOnStart {
+    /// Restored torrents stay paused and the user is not asked.
+    Never,
+    /// Restored torrents stay paused; the UI offers "Resume all".
+    #[default]
+    Ask,
+    /// Restored torrents continue by themselves.
+    Always,
+}
+
+impl ResumeOnStart {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "never" => Some(Self::Never),
+            "ask" => Some(Self::Ask),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FetchConfig {
     #[serde(default)]
@@ -63,6 +88,23 @@ pub struct FetchConfig {
     pub down_limit_mibps: Option<u32>,
     #[serde(default)]
     pub up_limit_mibps: Option<u32>,
+    /// Restored torrents after a restart (default: ask).
+    #[serde(default)]
+    pub resume_on_start: ResumeOnStart,
+    /// With seeding on: stop at this upload/size ratio (absent = never).
+    #[serde(default)]
+    pub seed_ratio: Option<f32>,
+    /// With seeding on: stop this many minutes after completion (absent = never).
+    #[serde(default)]
+    pub seed_minutes: Option<u32>,
+    /// Network interface (e.g. a VPN's `tun0`) that DHT, trackers and peer
+    /// connections are bound to. If it is missing the session does not start.
+    #[serde(default)]
+    pub bind_interface: Option<String>,
+    /// Runtime only: the file on disk was unreadable and was set aside as
+    /// `fetch.json.corrupt-<unixtime>`; defaults are in use. Never saved.
+    #[serde(skip)]
+    pub load_error: bool,
     /// Runtime only: neutral names (folder `Viewer`) while the window is
     /// disguised. Set by the app, never saved.
     #[serde(skip)]
@@ -84,6 +126,11 @@ impl Default for FetchConfig {
             require_proxy: false,
             down_limit_mibps: None,
             up_limit_mibps: None,
+            resume_on_start: ResumeOnStart::Ask,
+            seed_ratio: None,
+            seed_minutes: None,
+            bind_interface: None,
+            load_error: false,
             disguised: false,
         }
     }
@@ -98,6 +145,9 @@ pub struct NetPolicy {
     pub dht: bool,
     pub trackers: bool,
     pub listen: bool,
+    /// UPnP / NAT-PMP port mapping. Always off: it would publish the machine
+    /// to the router, and there is no setting to turn it on.
+    pub upnp: bool,
 }
 
 impl FetchConfig {
@@ -107,6 +157,7 @@ impl FetchConfig {
             dht: self.dht && !proxied,
             trackers: !proxied,
             listen: self.listen_incoming && !proxied,
+            upnp: false,
         }
     }
 }
@@ -116,11 +167,60 @@ impl FetchConfig {
         jizzcraft_core::paths::config_dir().join("fetch.json")
     }
 
+    /// Read the file. Missing: defaults. Unreadable or corrupt: the file is
+    /// renamed to `fetch.json.corrupt-<unixtime>` (keys inside survive for
+    /// the user to recover), defaults are returned and `load_error` is set.
+    /// On Unix a file that is group/world accessible is fixed to 0600.
     pub fn load(path: &Path) -> Self {
-        std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(_) => {
+                return Self {
+                    load_error: true,
+                    ..Self::default()
+                };
+            }
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(m) = std::fs::metadata(path)
+                && m.permissions().mode() & 0o077 != 0
+            {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+        match serde_json::from_slice::<Self>(&bytes) {
+            Ok(c) => c,
+            Err(_) => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                // Never replace an earlier set-aside copy: it may hold keys too.
+                let mut dest = None;
+                for n in 0..100u32 {
+                    let mut name = path.as_os_str().to_owned();
+                    name.push(if n == 0 {
+                        format!(".corrupt-{ts}")
+                    } else {
+                        format!(".corrupt-{ts}-{n}")
+                    });
+                    let p = PathBuf::from(name);
+                    if !p.exists() {
+                        dest = Some(p);
+                        break;
+                    }
+                }
+                if let Some(d) = dest {
+                    let _ = std::fs::rename(path, d);
+                }
+                Self {
+                    load_error: true,
+                    ..Self::default()
+                }
+            }
+        }
     }
 
     /// Written to a temp file with mode 0600, then renamed over the target.

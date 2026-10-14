@@ -51,7 +51,10 @@ fn v1_library_upgrades_and_keeps_rows() {
     v1_db(&path);
 
     let db = Db::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 2);
+    assert_eq!(
+        db.schema_version().unwrap(),
+        jizzcraft_core::db::SCHEMA_VERSION
+    );
     let all = db
         .query(&jizzcraft_core::Filter {
             include_missing: true,
@@ -86,7 +89,10 @@ fn v1_library_upgrades_and_keeps_rows() {
     drop(db);
 
     // Reopening is a no-op.
-    assert_eq!(Db::open(&path).unwrap().schema_version().unwrap(), 2);
+    assert_eq!(
+        Db::open(&path).unwrap().schema_version().unwrap(),
+        jizzcraft_core::db::SCHEMA_VERSION
+    );
 }
 
 #[test]

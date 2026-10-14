@@ -26,6 +26,7 @@ OPTIONS:
   magnet:…                  play a magnet link (network build)
   --doctor                  check codecs and folders, print how to fix what is missing
   --lang <CODE>             interface language: en fr es de it pt (default: system)
+  --renderer <NAME>         graphics backend: auto (default), vulkan or gl
   --disguise                launch as a neutral \"Viewer\" (window name, app ID, discreet mode)
   --portable                keep database, config and cache in ./jizzcraft-data next to the executable
   --home <DIR>              keep database, config and cache under DIR
@@ -34,6 +35,7 @@ OPTIONS:
 ENV:
   JIZZCRAFT_DEBUG=1         log full paths (off by default)
   JIZZCRAFT_HOME=<DIR>      same as --home
+  JIZZCRAFT_RENDERER=<NAME> same as --renderer
 ";
 
 /// Everything the command line can ask for. Parsing has no side effects so it
@@ -51,6 +53,7 @@ struct Cli {
     home: Option<PathBuf>,
     help: bool,
     doctor: bool,
+    renderer: Option<String>,
 }
 
 /// `Err` carries the message for an option the parser refuses.
@@ -86,6 +89,15 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
             "--lang" => cli.opts.lang = args.next(),
             "--portable" => cli.portable = true,
             "--doctor" => cli.doctor = true,
+            "--renderer" => {
+                let v = args.next().unwrap_or_default();
+                if renderer_backends(&v).is_none() {
+                    return Err(format!(
+                        "--renderer: expected auto, vulkan or gl, got `{v}`"
+                    ));
+                }
+                cli.renderer = Some(v);
+            }
             "--home" => cli.home = args.next().map(PathBuf::from),
             "-h" | "--help" => {
                 cli.help = true;
@@ -96,6 +108,69 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
     }
     Ok(cli)
 }
+
+/// Backend set for a `--renderer` name. `None` (inside `Some`) means wgpu's
+/// own default; the outer `None` is an unknown name.
+fn renderer_backends(name: &str) -> Option<Option<eframe::wgpu::Backends>> {
+    use eframe::wgpu::Backends;
+    match name.to_ascii_lowercase().as_str() {
+        "" | "auto" => Some(None),
+        "vulkan" | "vk" => Some(Some(Backends::VULKAN)),
+        "gl" | "opengl" | "gles" => Some(Some(Backends::GL)),
+        _ => None,
+    }
+}
+
+/// Minimal executor: wgpu's adapter listing is async, nothing else here is.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+    struct Noop(std::thread::Thread);
+    impl Wake for Noop {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(Noop(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park_timeout(std::time::Duration::from_millis(20));
+    }
+}
+
+/// `Backend: adapter name` per adapter wgpu can see (device names, no paths).
+fn adapter_names(backends: eframe::wgpu::Backends) -> Vec<String> {
+    let inst = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor {
+        backends,
+        ..eframe::wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    block_on(inst.enumerate_adapters(backends))
+        .iter()
+        .map(|a| {
+            let i = a.get_info();
+            format!("{:?} {}", i.backend, jizzcraft_core::report::clean(&i.name))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn no_core_dumps() {
+    let lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: plain syscall with a valid pointer; failure is harmless.
+    unsafe {
+        libc::setrlimit(libc::RLIMIT_CORE, &lim);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn no_core_dumps() {}
 
 /// A GUI-subsystem exe has no stdout. When started from a terminal, borrow its
 /// console so the text options still print.
@@ -113,6 +188,9 @@ fn attach_console() {}
 
 fn main() -> eframe::Result {
     attach_console();
+    // A crash leaves a redacted note; no core dump with library data in it.
+    jizzcraft_core::report::install_crash_hook("jizzcraft", env!("CARGO_PKG_VERSION"));
+    no_core_dumps();
     let cli = match parse_args(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(e) => {
@@ -126,6 +204,9 @@ fn main() -> eframe::Result {
     }
     if cli.doctor {
         jizzcraft_media::prepare_bundled_env();
+        jizzcraft_media::doctor::set_renderer_probe(|| {
+            adapter_names(eframe::wgpu::Backends::PRIMARY | eframe::wgpu::Backends::GL)
+        });
         let r = jizzcraft_media::doctor::run();
         print!("{}", r.render_text());
         std::process::exit(i32::from(r.exit_code()));
@@ -142,6 +223,7 @@ fn main() -> eframe::Result {
         home,
         help: _,
         doctor: _,
+        renderer,
     } = cli;
     if portable && let Some(h) = jizzcraft_core::paths::portable_home() {
         jizzcraft_core::paths::set_home(h);
@@ -152,6 +234,14 @@ fn main() -> eframe::Result {
     // Flags win: the home is set once, so the environment only fills the gap.
     if let Some(h) = jizzcraft_core::paths::home_from_env() {
         jizzcraft_core::paths::set_home(h);
+    }
+    if let Some(name) = jizzcraft_core::paths::state_dir()
+        .exists()
+        .then(|| jizzcraft_core::report::take_unseen_crash(&jizzcraft_core::paths::state_dir()))
+        .flatten()
+    {
+        // UI wiring comes later; the note is stderr only and says no names.
+        eprintln!("jizzcraft: the last run ended in a crash ({name} in the state folder)");
     }
     // Packaged builds use their own GStreamer only. Still single-threaded here.
     jizzcraft_media::prepare_bundled_env();
@@ -214,19 +304,49 @@ fn main() -> eframe::Result {
     let identity = jizzcraft_ui::identity::launch_identity(saved, disguise_flag);
     opts.disguised = identity.disguised;
     set_taskbar_id(identity.app_id);
-    let native = eframe::NativeOptions {
+    // Flag wins over the environment; `auto` leaves wgpu's defaults alone.
+    let renderer_name = renderer
+        .or_else(|| std::env::var("JIZZCRAFT_RENDERER").ok())
+        .unwrap_or_default();
+    let backends = renderer_backends(&renderer_name).unwrap_or_else(|| {
+        eprintln!("JIZZCRAFT_RENDERER: expected auto, vulkan or gl; using auto");
+        None
+    });
+    let mut native = eframe::NativeOptions {
         viewport: egui_viewport(&identity),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native(
+    if let Some(b) = backends
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut native.wgpu_options.wgpu_setup
+    {
+        c.instance_descriptor.backends = b;
+    }
+    let res = eframe::run_native(
         identity.app_name,
         native,
         Box::new(move |cc| match JizzApp::new(cc, opts) {
             Ok(app) => Ok(Box::new(app)),
             Err(e) => Err(e.into()),
         }),
-    )
+    );
+    match res {
+        // The app itself refused (library cannot open, ...): its own message.
+        Err(eframe::Error::AppCreation(e)) => Err(eframe::Error::AppCreation(e)),
+        // No adapter or no window system: say it in plain words, exit 1.
+        Err(e) => {
+            // The error text can carry device names, never user paths.
+            let msg = "JizzCraft could not start its graphics.\n\nInstall your GPU's Vulkan driver, or try `jizzcraft --renderer gl`.\nRun `jizzcraft --doctor` for details.";
+            eprintln!("{msg}\n({e})");
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("JizzCraft")
+                .set_description(msg)
+                .show();
+            std::process::exit(1);
+        }
+        Ok(()) => Ok(()),
+    }
 }
 
 /// The taskbar groups windows by this ID: give it the identity's, so a

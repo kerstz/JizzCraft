@@ -27,10 +27,12 @@ pub const CLIPS: &[&str] = &[
 /// calling test should return early: headless CI runners without the plugins
 /// skip these tests instead of failing them. Absence is not failure; ask any
 /// cat.
+///
+/// With `JIZZCRAFT_REQUIRE_PLUGINS=1` (CI sets it) a missing piece panics
+/// instead: a green run that skipped everything proves nothing.
 pub fn ready(elements: &[&str]) -> bool {
     if let Err(e) = jizzcraft_media::init() {
-        eprintln!("skipped: {e}");
-        return false;
+        return skip(&e.to_string());
     }
     let missing: Vec<&str> = elements
         .iter()
@@ -38,10 +40,18 @@ pub fn ready(elements: &[&str]) -> bool {
         .filter(|e| gstreamer::ElementFactory::find(e).is_none())
         .collect();
     if !missing.is_empty() {
-        eprintln!("skipped: GStreamer elements not installed: {missing:?}");
-        return false;
+        return skip(&format!("GStreamer elements not installed: {missing:?}"));
     }
     true
+}
+
+/// `false` after printing "skipped", or a panic when plugins are required.
+fn skip(why: &str) -> bool {
+    if std::env::var("JIZZCRAFT_REQUIRE_PLUGINS").is_ok_and(|v| v == "1") {
+        panic!("JIZZCRAFT_REQUIRE_PLUGINS=1 and the test cannot run: {why}");
+    }
+    eprintln!("skipped: {why}");
+    false
 }
 
 /// Playback plus synthetic clips (needs `gst-launch-1.0` too).
@@ -51,8 +61,7 @@ pub fn clips_ready() -> bool {
         .output()
         .is_err()
     {
-        eprintln!("skipped: gst-launch-1.0 not found");
-        return false;
+        return skip("gst-launch-1.0 not found");
     }
     ready(PLAYBACK) && ready(CLIPS)
 }
@@ -60,14 +69,17 @@ pub fn clips_ready() -> bool {
 /// A moving-ball VP8/WebM clip at 30 fps. Fixed pipeline; only the
 /// temporary path is interpolated.
 pub fn make_video(path: &Path, frames: u32, width: u32, height: u32) {
+    make_video_pattern(path, frames, width, height, "ball");
+}
+
+/// Like [`make_video`] with another `videotestsrc` pattern. `snow` does not
+/// compress: the clip fills the encoder's bitrate budget instead of being
+/// a few tens of KB.
+pub fn make_video_pattern(path: &Path, frames: u32, width: u32, height: u32, pattern: &str) {
     let st = Command::new("gst-launch-1.0")
-        .args([
-            "-q",
-            "videotestsrc",
-            &format!("num-buffers={frames}"),
-            "pattern=ball",
-            "!",
-        ])
+        .args(["-q", "videotestsrc", &format!("num-buffers={frames}")])
+        .arg(format!("pattern={pattern}"))
+        .arg("!")
         .arg(format!(
             "video/x-raw,width={width},height={height},framerate=30/1"
         ))

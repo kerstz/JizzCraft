@@ -4,6 +4,7 @@
 use crate::db::{Db, Filter, HiddenMode, Orientation, SortKey, now_secs};
 use crate::error::{Error, Result};
 use crate::model::MediaKind;
+use crate::organize::OrgFilter;
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -37,6 +38,12 @@ const ALLOWED_KEYS: &[&str] = &[
     "seed",
     "limit",
     "offset",
+    "playlist",
+    "labels_all",
+    "labels_any",
+    "labels_none",
+    "untagged",
+    "uncategorized",
 ];
 
 fn invalid(m: impl Into<String>) -> Error {
@@ -111,7 +118,12 @@ impl Filter {
             Some(r) if r > 5 => return Err(invalid("`min_rating` must be 0..=5")),
             r => r.map(|r| r as u8),
         };
+        let org = OrgFilter::from_json(o)?;
+        if sort == SortKey::Position && org.playlist.is_none() {
+            return Err(invalid("sort `position` needs a `playlist`"));
+        }
         Ok(Filter {
+            org,
             kind,
             favorites: get_bool(o, "fav")?,
             name: get_str(o, "name")?.map(str::to_owned),
@@ -202,6 +214,7 @@ impl Filter {
         if let Some(dir) = &self.dir {
             o.insert("dir".into(), json!(dir.to_string_lossy()));
         }
+        self.org.to_json(&mut o);
         Value::Object(o)
     }
 }

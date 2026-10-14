@@ -478,7 +478,7 @@ pub fn parse(bytes: &[u8]) -> Result<Mpd, &'static str> {
         return Err("protected");
     }
     if root.attr("type").is_some_and(|t| t == "dynamic") {
-        return Err("unsupported stream");
+        return Err("live stream");
     }
     let periods: Vec<&Node> = root.kids("Period").collect();
     if periods.len() != 1 {
@@ -726,7 +726,7 @@ mediaPresentationDuration=\"PT20S\"><BaseURL>https://cdn.example.invalid/v/</Bas
         );
         assert_eq!(parse(drm.as_bytes()), Err("protected"));
         let live = "<MPD type=\"dynamic\"><Period/></MPD>";
-        assert_eq!(parse(live.as_bytes()), Err("unsupported stream"));
+        assert_eq!(parse(live.as_bytes()), Err("live stream"));
         let two = "<MPD type=\"static\"><Period/><Period/></MPD>";
         assert_eq!(parse(two.as_bytes()), Err("unsupported stream"));
         assert_eq!(parse(b"not xml at all"), Err("no media"));

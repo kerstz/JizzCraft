@@ -8,6 +8,11 @@ pub enum Error {
     Io(std::io::Error),
     Invalid(String),
     NotFound(String),
+    /// The library was written by a newer build; open it read-only instead.
+    FutureSchema {
+        found: i64,
+        supported: i64,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -19,6 +24,10 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::Invalid(s) => write!(f, "invalid input: {s}"),
             Error::NotFound(s) => write!(f, "not found: {s}"),
+            Error::FutureSchema { found, supported } => write!(
+                f,
+                "library schema v{found} is newer than this build (v{supported})"
+            ),
         }
     }
 }

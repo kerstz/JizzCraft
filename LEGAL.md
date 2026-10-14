@@ -17,3 +17,7 @@
 - **Adult content.** JizzCraft is for adults (18+) managing media they own or
   are entitled to keep. What you stream or download with the optional network
   build, and from which sources, is your responsibility.
+- **Sites and their rules.** JizzCraft does not bypass age verification,
+  sign-in, regional restrictions or DRM, and does not read browser cookies.
+  Sites' terms of use apply to you. Streaming only is a product choice, not a
+  legal guarantee.

@@ -30,12 +30,63 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 const QUEUE_BYTES: u64 = 4 * 1024 * 1024;
 /// Largest single read.
 const CHUNK: usize = 64 * 1024;
-/// How long the reader may have nothing to give before playback is paused.
+/// How long a read request may stay unanswered before it can count as
+/// starvation.
 const STALL_AFTER: Duration = Duration::from_millis(300);
-/// New data needed after a stall before playback resumes.
+/// How long no frame may have been delivered before starvation is believed.
+const FRAME_QUIET: Duration = Duration::from_millis(500);
+/// Upper bound on the new data needed after a stall before playback resumes.
 const RESUME_BYTES: u64 = 2 * 1024 * 1024;
+/// Playback time worth of new data that is enough to resume after a stall.
+const RESUME_SECS: f64 = 2.0;
 /// Poll interval while waiting for data or for the appsrc to want more.
 const TICK: Duration = Duration::from_millis(20);
+
+/// Shared between the control thread (which owns the pipeline state) and the
+/// feeder threads. Everything here is advisory: the feeders only read it to
+/// decide whether downstream is really starving.
+pub(crate) struct Health {
+    /// Frames the sink delivered to the mailbox.
+    pub frames: AtomicU64,
+    /// Bytes (or timed chunks' bytes) the feeders pushed into the appsrc.
+    pub bytes: AtomicU64,
+    /// Media duration in ns; 0 or `u64::MAX` when unknown.
+    pub duration_ns: AtomicU64,
+    /// The player is past its first preroll and the user wants playback.
+    pub playing: AtomicBool,
+}
+
+impl Default for Health {
+    fn default() -> Self {
+        Health {
+            frames: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            duration_ns: AtomicU64::new(u64::MAX),
+            playing: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Health {
+    fn duration(&self) -> Option<Duration> {
+        match self.duration_ns.load(Ordering::Relaxed) {
+            0 | u64::MAX => None,
+            n => Some(Duration::from_nanos(n)),
+        }
+    }
+}
+
+/// New bytes needed after a stall before playback resumes: about `secs` of
+/// media when the length and duration are known, never more than
+/// [`RESUME_BYTES`] and never less than one chunk (or the whole file, for a
+/// file smaller than that). Without a duration a quarter of the file stands in.
+pub(crate) fn resume_threshold(len: u64, duration: Option<Duration>, secs: f64) -> u64 {
+    let by_time = match duration {
+        Some(d) if d.as_secs_f64() > 0.0 => (len as f64 * secs / d.as_secs_f64()) as u64,
+        _ => len / 4,
+    };
+    by_time.min(RESUME_BYTES).max(CHUNK as u64).min(len.max(1))
+}
 
 #[derive(Default)]
 struct State {
@@ -88,7 +139,12 @@ impl Drop for Feeder {
 }
 
 /// Configure `src` for random access over `len` bytes and start feeding it.
-pub(crate) fn start(src: &gst_app::AppSrc, mut reader: Box<dyn ReadSeek>, len: u64) -> Feeder {
+pub(crate) fn start(
+    src: &gst_app::AppSrc,
+    mut reader: Box<dyn ReadSeek>,
+    len: u64,
+    health: Arc<Health>,
+) -> Feeder {
     src.set_stream_type(gst_app::AppStreamType::RandomAccess);
     src.set_format(gst::Format::Bytes);
     src.set_size(len as i64);
@@ -125,7 +181,7 @@ pub(crate) fn start(src: &gst_app::AppSrc, mut reader: Box<dyn ReadSeek>, len: u
     let c = Arc::clone(&ctl);
     let handle = std::thread::Builder::new()
         .name("jizzcraft-stream".into())
-        .spawn(move || feed(&app, &mut *reader, len, &c))
+        .spawn(move || feed(&app, &mut *reader, len, &c, &health))
         .expect("spawn stream feeder");
     Feeder {
         ctl,
@@ -160,6 +216,7 @@ pub(crate) fn start_timed(
     source: Box<dyn TimedSource>,
     first: Option<Chunk>,
     stats: Arc<TimedStats>,
+    health: Arc<Health>,
 ) -> Feeder {
     let duration = source.duration();
     src.set_format(gst::Format::Time);
@@ -202,7 +259,7 @@ pub(crate) fn start_timed(
         .name("jizzcraft-timed".into())
         .spawn(move || {
             let mut source = source;
-            feed_timed(&app, &mut *source, first, &stats, &c);
+            feed_timed(&app, &mut *source, first, &stats, &c, &health);
             *b.lock().unwrap() = Some(source);
         })
         .expect("spawn timed feeder");
@@ -219,6 +276,7 @@ fn feed_timed(
     mut first: Option<Chunk>,
     stats: &TimedStats,
     ctl: &Ctl,
+    health: &Health,
 ) {
     let mut stalled = false;
     let mut idle_since: Option<Instant> = None;
@@ -276,6 +334,7 @@ fn feed_timed(
                     );
                     return;
                 }
+                let n = chunk.bytes.len() as u64;
                 let mut b = gst::Buffer::from_slice(chunk.bytes);
                 {
                     let r = b.get_mut().expect("fresh buffer");
@@ -290,6 +349,7 @@ fn feed_timed(
                 if app.push_buffer(b).is_err() {
                     return;
                 }
+                health.bytes.fetch_add(n, Ordering::Relaxed);
                 idle_since = None;
                 if stalled {
                     stalled = false;
@@ -301,8 +361,10 @@ fn feed_timed(
                 ctl.state.lock().unwrap().want = false;
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                // Push mode: starving means a request is outstanding (`want`
+                // was true to get here) while the appsrc queue is empty.
                 let since = *idle_since.get_or_insert_with(Instant::now);
-                if !stalled && since.elapsed() >= STALL_AFTER {
+                if !stalled && since.elapsed() >= STALL_AFTER && app.current_level_bytes() == 0 {
                     stalled = true;
                     post_buffering(app, 0);
                 }
@@ -321,12 +383,15 @@ fn post_buffering(app: &gst_app::AppSrc, pct: i32) {
     let _ = app.post_message(gst::message::Buffering::new(pct));
 }
 
-fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl) {
+fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl, health: &Health) {
     let mut pos: u64 = 0;
     let mut stalled = false;
     let mut idle_since: Option<Instant> = None;
     let mut since_stall: u64 = 0;
     let mut buf = vec![0u8; CHUNK];
+    // When the sink last delivered a new frame, as seen from here.
+    let mut seen_frames = health.frames.load(Ordering::Relaxed);
+    let mut frame_at = Instant::now();
 
     while !ctl.stop.load(Ordering::SeqCst) {
         let (want, seek, gen_before) = {
@@ -345,6 +410,11 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl) {
             }
             pos = off;
             idle_since = None;
+        }
+        let frames = health.frames.load(Ordering::Relaxed);
+        if frames != seen_frames {
+            seen_frames = frames;
+            frame_at = Instant::now();
         }
         if !want {
             continue;
@@ -375,18 +445,31 @@ fn feed(app: &gst_app::AppSrc, reader: &mut dyn ReadSeek, len: u64, ctl: &Ctl) {
                     return; // flushing or torn down
                 }
                 pos += n as u64;
+                health.bytes.fetch_add(n as u64, Ordering::Relaxed);
                 idle_since = None;
                 if stalled {
                     since_stall += n as u64;
-                    if since_stall >= RESUME_BYTES || pos >= len {
+                    let dur = health.duration();
+                    // The blocked request was served; resume on ~2 s of new
+                    // data (capped at RESUME_BYTES, so small files resume at
+                    // once) or at the end of the file.
+                    if since_stall >= resume_threshold(len, dur, RESUME_SECS) || pos >= len {
                         stalled = false;
                         post_buffering(app, 100);
                     }
                 }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                // Pull mode: starving means this request has been blocked for
+                // STALL_AFTER while the player is playing and the sink has
+                // gone quiet. Before the first preroll (`playing` is false)
+                // a blocked read is only "loading": a percentage at most.
                 let since = *idle_since.get_or_insert_with(Instant::now);
-                if !stalled && since.elapsed() >= STALL_AFTER {
+                if !stalled
+                    && since.elapsed() >= STALL_AFTER
+                    && health.playing.load(Ordering::Relaxed)
+                    && frame_at.elapsed() >= FRAME_QUIET
+                {
                     stalled = true;
                     since_stall = 0;
                     post_buffering(app, 0);
@@ -411,4 +494,36 @@ fn fail(app: &gst_app::AppSrc) {
         )
         .build(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: u64 = 1024 * 1024;
+
+    #[test]
+    fn resume_threshold_scales_with_the_bitrate() {
+        // 100 MiB over 1000 s: 2 s = 205 KiB, well under the cap.
+        let t = resume_threshold(100 * MIB, Some(Duration::from_secs(1000)), 2.0);
+        assert_eq!(t, (100 * MIB) / 500);
+        // A heavy 4 GiB film over 1 h would want 2.3 MiB: capped.
+        let t = resume_threshold(4096 * MIB, Some(Duration::from_secs(3600)), 2.0);
+        assert_eq!(t, RESUME_BYTES);
+    }
+
+    #[test]
+    fn resume_threshold_small_and_unknown() {
+        // A 60 KB clip never asks for a full chunk it cannot have.
+        assert_eq!(
+            resume_threshold(60_239, Some(Duration::from_secs(6)), 2.0),
+            60_239
+        );
+        // Unknown duration: a quarter of the file, within [CHUNK, cap].
+        assert_eq!(resume_threshold(8 * MIB, None, 2.0), 2 * MIB);
+        assert_eq!(resume_threshold(100 * MIB, None, 2.0), RESUME_BYTES);
+        assert_eq!(resume_threshold(MIB, None, 2.0), CHUNK as u64 * 4);
+        // Zero duration and empty file do not panic or return zero.
+        assert!(resume_threshold(0, Some(Duration::ZERO), 2.0) >= 1);
+    }
 }

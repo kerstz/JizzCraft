@@ -36,6 +36,8 @@ pub struct Config {
     pub skip_age_gate: bool,
     /// Local video the panic switch jumps to (`app.panic.maths`).
     pub panic_video: Option<PathBuf>,
+    /// Unix seconds of the last start-up cache prune (at most once a day).
+    pub cache_pruned_at: Option<u64>,
 }
 
 pub fn path() -> PathBuf {

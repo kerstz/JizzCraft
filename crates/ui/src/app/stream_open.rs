@@ -13,6 +13,7 @@ impl JizzApp {
         name: String,
         reader: jizzcraft_fetch::service::StreamReader,
         len: u64,
+        status: Option<std::sync::Arc<jizzcraft_fetch::service::StreamStatus>>,
     ) {
         let shown = if self.discreet() || self.opts.disguised {
             "Video".to_owned()
@@ -28,6 +29,18 @@ impl JizzApp {
         pv.autoplay_on = false;
         // Scrub previews read the file from disk: not available while streaming.
         pv.previews_enabled = false;
+        if let Some(st) = status {
+            // Paused, no peers, full disk: said in the overlay, never silent.
+            pv.stream_probe = Some(Box::new(move || {
+                use std::sync::atomic::Ordering::Relaxed;
+                crate::player_view::StreamFacts {
+                    paused: st.paused.load(Relaxed),
+                    peers: st.peers.load(Relaxed),
+                    down_bps: st.down_bps.load(Relaxed),
+                    error: st.error(),
+                }
+            }));
+        }
         self.view = super::View::Player(Box::new(pv));
         self.autoplay_at = None;
     }
@@ -72,7 +85,12 @@ impl JizzApp {
                     .unwrap_or_default();
                 self.open_player(None, name, &path, None);
             }
-            StreamTicket::Live { reader, len, name } => self.open_stream_player(name, reader, len),
+            StreamTicket::Live {
+                reader,
+                len,
+                name,
+                status,
+            } => self.open_stream_player(name, reader, len, status),
             StreamTicket::Timed { source, name } => self.open_timed_player(name, source),
         }
     }

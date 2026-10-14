@@ -157,14 +157,100 @@ impl FetchHost {
 
     /// Edit the advanced settings in one go and save.
     pub fn update_settings(&mut self, f: impl FnOnce(&mut FetchConfig)) -> Result<()> {
-        let before = (self.cfg.require_proxy, self.cfg.proxy.clone());
+        let before = (
+            self.cfg.require_proxy,
+            self.cfg.proxy.clone(),
+            self.cfg.bind_interface.clone(),
+        );
         f(&mut self.cfg);
         // A running session keeps its network options, so a change to the
-        // proxy or the kill switch ends it: nothing keeps a direct connection.
-        if before != (self.cfg.require_proxy, self.cfg.proxy.clone()) {
+        // proxy, the kill switch or the bound interface ends it: nothing
+        // keeps a direct connection.
+        if before
+            != (
+                self.cfg.require_proxy,
+                self.cfg.proxy.clone(),
+                self.cfg.bind_interface.clone(),
+            )
+        {
             self.svc = None;
         }
         self.save()
+    }
+
+    /// Apply a `fetch.settings` argument object. Absent keys are untouched.
+    /// Keys: `dir`, `down_mibps`, `up_mibps` (0 = unlimited), `seed`, `dht`,
+    /// `proxy` (`socks5://...`, empty = none), `require_proxy`,
+    /// `resume_on_start` (`never|ask|always`), `seed_ratio`, `seed_minutes`
+    /// (0 = off), `bind_interface` (empty = none).
+    pub fn apply_settings(&mut self, a: &Value) -> Result<()> {
+        let num = |k: &str| a.get(k).and_then(Value::as_u64).map(|n| n as u32);
+        let text = |k: &str| a.get(k).and_then(Value::as_str).map(str::to_owned);
+        let flag = |k: &str| a.get(k).and_then(Value::as_bool);
+        let proxy = text("proxy");
+        if let Some(p) = &proxy
+            && !p.is_empty()
+            && !p.starts_with("socks5://")
+        {
+            return Err(Error::Invalid("the proxy must start with socks5://".into()));
+        }
+        let resume = match text("resume_on_start") {
+            Some(r) => Some(crate::config::ResumeOnStart::parse(&r).ok_or_else(|| {
+                Error::Invalid("resume_on_start must be never, ask or always".into())
+            })?),
+            None => None,
+        };
+        let ratio = a.get("seed_ratio").and_then(Value::as_f64);
+        if let Some(r) = ratio
+            && (!r.is_finite() || r < 0.0)
+        {
+            return Err(Error::Invalid("seed_ratio must be 0 or more".into()));
+        }
+        self.update_settings(|c| {
+            if let Some(p) = text("dir") {
+                c.download_dir = (!p.is_empty()).then(|| p.into());
+            }
+            if a.get("down_mibps").is_some() {
+                c.down_limit_mibps = num("down_mibps").filter(|n| *n > 0);
+            }
+            if a.get("up_mibps").is_some() {
+                c.up_limit_mibps = num("up_mibps").filter(|n| *n > 0);
+            }
+            if let Some(p) = proxy {
+                c.proxy = (!p.is_empty()).then(|| Secret::new(p));
+            }
+            if let Some(r) = flag("require_proxy") {
+                c.require_proxy = r;
+            }
+            if let Some(s) = flag("seed") {
+                c.seed_after_complete = s;
+            }
+            if let Some(d) = flag("dht") {
+                c.dht = d;
+            }
+            if let Some(r) = resume {
+                c.resume_on_start = r;
+            }
+            if a.get("seed_ratio").is_some() {
+                c.seed_ratio = ratio.filter(|r| *r > 0.0).map(|r| r as f32);
+            }
+            if a.get("seed_minutes").is_some() {
+                c.seed_minutes = num("seed_minutes").filter(|n| *n > 0);
+            }
+            if let Some(b) = text("bind_interface") {
+                let b = b.trim().to_owned();
+                c.bind_interface = (!b.is_empty()).then_some(b);
+            }
+        })
+    }
+
+    /// Resume every paused, unfinished torrent. Yields how many resumed.
+    pub fn resume_all(&mut self) -> Result<usize> {
+        let svc = self.service()?;
+        let _ = svc.start().recv_timeout(Duration::from_secs(30));
+        svc.resume_all()
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|_| Error::Invalid("resume timed out".into()))
     }
 
     pub fn set_download_dir(&mut self, dir: PathBuf) -> Result<()> {
@@ -446,12 +532,26 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
             .iter()
             .map(|t| {
                 json!({ "id": t.id, "progress": t.progress(), "state": format!("{:?}", t.state),
+                             "error": t.error,
                              "down_bps": t.down_bps, "up_bps": t.up_bps, "eta_secs": t.eta_secs,
                              "total_bytes": t.total_bytes })
             })
             .collect();
         Ok(json!({ "torrents": v }))
     });
+    reg.register(
+        "fetch.settings",
+        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…, require_proxy?, resume_on_start?: never|ask|always, seed_ratio?, seed_minutes?, bind_interface?}",
+        |c, a| {
+            c.fetch().apply_settings(&a)?;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "fetch.resume_all",
+        "Resume every paused, unfinished torrent (after a restart, with resume_on_start ask)",
+        |c, _| Ok(json!({ "resumed": c.fetch().resume_all()? })),
+    );
     reg.register("fetch.pause", "Pause a torrent: {id}", |c, a| {
         let id = u(&a, "id").ok_or_else(|| Error::Invalid("missing `id`".into()))?;
         c.fetch().service()?.pause(id as usize);

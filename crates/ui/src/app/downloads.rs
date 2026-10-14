@@ -14,7 +14,6 @@ use egui::{ProgressBar, RichText, TextEdit};
 use jizzcraft_core::Registry;
 use jizzcraft_fetch::commands::FetchHost;
 use jizzcraft_fetch::errors::classify;
-use jizzcraft_fetch::pick::{Pick, pick_video};
 use jizzcraft_fetch::service::{
     Listed, SearchOutcome, Source, StreamTicket, TorrentState, TorrentStatus,
 };
@@ -24,25 +23,59 @@ use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-/// Steps of "press Play": list, maybe ask which file, add, open.
-/// One button, four steps, zero opinions shown to the user.
-enum Flow {
-    Listing(Receiver<Result<Listed, String>>),
-    Files {
-        id: usize,
-        rx: Receiver<Result<Vec<(String, u64)>, String>>,
-    },
-    Choosing {
-        listed: Option<Listed>,
-        id: Option<usize>,
-        files: Vec<(String, u64)>,
-        picks: Vec<usize>,
-    },
-    Adding {
-        rx: Receiver<Result<usize, String>>,
-        file: usize,
-    },
-    Opening(Receiver<Result<StreamTicket, String>>),
+use super::play_flow::{
+    Banner, FileList, FlowBackend, FlowEvent, P_LISTING, PlayFlow, Rx, banners, is_retryable,
+    probe_line,
+};
+use jizzcraft_fetch::config::ResumeOnStart;
+use jizzcraft_fetch::service::{ProbeState, TorrentProbe};
+use std::sync::Arc;
+
+/// "Press Play": list, maybe ask which file, add, open (see `play_flow`).
+type Flow = PlayFlow<Listed, StreamTicket>;
+
+impl FileList for Listed {
+    fn files(&self) -> &[(String, u64)] {
+        &self.files
+    }
+}
+
+/// The real backend: the fetch service behind the host.
+struct FetchBackend<'a> {
+    host: &'a mut FetchHost,
+}
+
+/// A channel that already holds an error (the service could not start).
+fn failed<T>(e: impl ToString) -> Rx<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(Err(e.to_string()));
+    rx
+}
+
+impl FlowBackend for FetchBackend<'_> {
+    type Listed = Listed;
+    type Ticket = StreamTicket;
+    fn files(&mut self, id: usize) -> Rx<Vec<(String, u64)>> {
+        match self.host.service() {
+            Ok(s) => s.torrent_files(id),
+            Err(e) => failed(e),
+        }
+    }
+    fn add(&mut self, l: Listed, file: usize) -> Rx<usize> {
+        match self.host.service() {
+            Ok(s) => s.add_listed(l, Some(vec![file])),
+            Err(e) => failed(e),
+        }
+    }
+    fn open(&mut self, id: usize, file: usize) -> Rx<StreamTicket> {
+        match self.host.service() {
+            Ok(s) => s.open_reader(id, file),
+            Err(e) => failed(e),
+        }
+    }
+    fn cancel(&mut self) {
+        self.host.cancel_streams();
+    }
 }
 
 pub(super) struct Downloads {
@@ -52,7 +85,7 @@ pub(super) struct Downloads {
     results: Vec<SearchResult>,
     searching: Option<Receiver<SearchOutcome>>,
     adding: Vec<Receiver<Result<usize, String>>>,
-    flow: Option<Flow>,
+    flow: Flow,
     torrents: Vec<TorrentStatus>,
     done: HashSet<usize>,
     last_poll: Option<Instant>,
@@ -73,8 +106,19 @@ pub(super) struct Downloads {
     down_limit: String,
     up_limit: String,
     proxy: String,
+    seed_ratio: String,
+    seed_minutes: String,
+    bind: String,
     /// Key being typed per source (never stored, cleared after Set).
     src_key: std::collections::HashMap<u32, String>,
+    /// Live peer count of the magnet being resolved.
+    probe: Option<Arc<TorrentProbe>>,
+    /// The last Play command, in memory only, for `fetch.play.retry`.
+    pub(super) last_play: Option<(&'static str, Value)>,
+    /// A retryable failure (fixed sentence) shown with a Retry button.
+    retry_note: Option<String>,
+    load_error_dismissed: bool,
+    ask_dismissed: bool,
 }
 
 impl Downloads {
@@ -82,8 +126,10 @@ impl Downloads {
     /// another launch wait for the user instead of opening by themselves.
     pub(super) fn cancel_pending(&mut self) {
         // Requests still being made stop too, not only their result.
-        self.host.cancel_streams();
-        self.flow = None;
+        FlowBackend::cancel(&mut FetchBackend {
+            host: &mut self.host,
+        });
+        self.flow = Flow::default();
         self.ready = None;
         self.external = false;
         self.inbox_checked = Some(Instant::now() + Duration::from_secs(3600));
@@ -100,6 +146,9 @@ impl Downloads {
             .unwrap_or_default();
         let lim = |v: Option<u32>| v.map(|n| n.to_string()).unwrap_or_default();
         let (down_limit, up_limit) = (lim(c.down_limit_mibps), lim(c.up_limit_mibps));
+        let seed_ratio = c.seed_ratio.map(|r| r.to_string()).unwrap_or_default();
+        let seed_minutes = lim(c.seed_minutes);
+        let bind = c.bind_interface.clone().unwrap_or_default();
         Self {
             host,
             open: false,
@@ -107,7 +156,7 @@ impl Downloads {
             results: Vec::new(),
             searching: None,
             adding: Vec::new(),
-            flow: None,
+            flow: Flow::default(),
             torrents: Vec::new(),
             done: HashSet::new(),
             last_poll: None,
@@ -123,7 +172,15 @@ impl Downloads {
             down_limit,
             up_limit,
             proxy: String::new(),
+            seed_ratio,
+            seed_minutes,
+            bind,
             src_key: std::collections::HashMap::new(),
+            probe: None,
+            last_play: None,
+            retry_note: None,
+            load_error_dismissed: false,
+            ask_dismissed: false,
         }
     }
 
@@ -203,8 +260,12 @@ fn start_search(app: &mut JizzApp, q: String) -> Res {
 fn start_play(app: &mut JizzApp, src: Source) -> Res {
     let d = &mut app.downloads;
     d.open = true;
-    let rx = d.host.service()?.list_files(src);
-    d.flow = Some(Flow::Listing(rx));
+    d.retry_note = None;
+    // Listing goes through the probed variant so the window can show the
+    // number of peers while a magnet resolves.
+    let (rx, probe) = d.host.service()?.list_files_probed(src, Vec::new());
+    d.probe = Some(probe);
+    d.flow.begin_listing(rx);
     Ok(json!({}))
 }
 
@@ -243,6 +304,43 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         },
     );
     reg.register(
+        "fetch.play.cancel",
+        "Cancel the Play flow that is listing, adding or opening",
+        |app, _| {
+            let d = &mut app.downloads;
+            d.flow.cancel(&mut FetchBackend { host: &mut d.host });
+            d.ready = None;
+            d.external = false;
+            d.probe = None;
+            d.retry_note = None;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "fetch.resume_all",
+        "Resume every paused, unfinished torrent",
+        |app, _| {
+            // The session is up when the banner shows; the count is not needed.
+            drop(app.downloads.host.service()?.resume_all());
+            app.downloads.ask_dismissed = true;
+            Ok(json!({}))
+        },
+    );
+    reg.register(
+        "fetch.play.retry",
+        "Run the last Play again (the source is kept in memory only)",
+        |app, _| {
+            let (name, args) = app
+                .downloads
+                .last_play
+                .clone()
+                .ok_or_else(|| invalid("nothing to retry"))?;
+            app.downloads.retry_note = None;
+            app.push(name, args);
+            Ok(json!({}))
+        },
+    );
+    reg.register(
         "fetch.search.cancel",
         "Cancel the running search",
         |app, _| {
@@ -257,9 +355,12 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         "fetch.play",
         "Play while it downloads: {magnet | url | torrent_path | result: index of the last search | id: an added torrent}",
         |app, a| {
+            app.downloads.last_play = Some(("fetch.play", a.clone()));
             if let Some(id) = a.get("id").and_then(Value::as_u64) {
-                let rx = app.downloads.host.service()?.torrent_files(id as usize);
-                app.downloads.flow = Some(Flow::Files { id: id as usize, rx });
+                let d = &mut app.downloads;
+                d.host.service()?;
+                d.flow
+                    .start_files(id as usize, &mut FetchBackend { host: &mut d.host });
                 return Ok(json!({}));
             }
             if let Some(u) = a.get("url").and_then(Value::as_str)
@@ -269,7 +370,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                     .downloads
                     .host
                     .open_any(u.to_owned(), jizzcraft_fetch::service::StreamOpts::default())?;
-                app.downloads.flow = Some(Flow::Opening(rx));
+                app.downloads.flow.begin_opening(rx);
                 app.downloads.open = true;
                 return Ok(json!({}));
             }
@@ -286,7 +387,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                     jizzcraft_fetch::pick::Quality::default(),
                 );
                 let rx = app.downloads.host.open_any(u, opts)?;
-                app.downloads.flow = Some(Flow::Opening(rx));
+                app.downloads.flow.begin_opening(rx);
                 app.downloads.open = true;
                 return Ok(json!({}));
             }
@@ -425,7 +526,7 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 .host
                 .service()?
                 .stream_via_resolver(id as u32, u.to_owned());
-            app.downloads.flow = Some(Flow::Opening(rx));
+            app.downloads.flow.begin_opening(rx);
             app.downloads.open = true;
             Ok(json!({}))
         },
@@ -441,11 +542,12 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
             if is_torrent_url(u) {
                 return Err(invalid("a torrent is not a direct video"));
             }
+            app.downloads.last_play = Some(("stream.open", a.clone()));
             let rx = app
                 .downloads
                 .host
                 .open_any(u.to_owned(), jizzcraft_fetch::service::StreamOpts::default())?;
-            app.downloads.flow = Some(Flow::Opening(rx));
+            app.downloads.flow.begin_opening(rx);
             app.downloads.open = true;
             Ok(json!({}))
         },
@@ -548,9 +650,11 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
                 .get("id")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| invalid("missing `id`"))? as usize;
-            let rx = app.downloads.host.service()?.torrent_files(id);
-            app.downloads.external = true;
-            app.downloads.flow = Some(Flow::Files { id, rx });
+            let d = &mut app.downloads;
+            d.host.service()?;
+            d.external = true;
+            d.flow
+                .start_files(id, &mut FetchBackend { host: &mut d.host });
             Ok(json!({}))
         },
     );
@@ -585,132 +689,33 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "fetch.settings",
-        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…, require_proxy?}",
+        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…, require_proxy?, resume_on_start?: never|ask|always, seed_ratio?, seed_minutes?, bind_interface?}",
         |app, a| {
-            let d = &mut app.downloads;
-            let num = |k: &str| a.get(k).and_then(Value::as_u64).map(|n| n as u32);
-            let (dir, seed, dht) = (
-                a.get("dir").and_then(Value::as_str).map(str::to_owned),
-                a.get("seed").and_then(Value::as_bool),
-                a.get("dht").and_then(Value::as_bool),
-            );
-            let (down, up) = (num("down_mibps"), num("up_mibps"));
-            let proxy = a.get("proxy").and_then(Value::as_str).map(str::to_owned);
-            let require_proxy = a.get("require_proxy").and_then(Value::as_bool);
-            if let Some(p) = &proxy
-                && !p.is_empty()
-                && !p.starts_with("socks5://")
-            {
-                return Err(invalid("the proxy must start with socks5://"));
-            }
-            d.host.update_settings(|c| {
-                if let Some(p) = &dir {
-                    c.download_dir = (!p.is_empty()).then(|| p.into());
-                }
-                if a.get("down_mibps").is_some() {
-                    c.down_limit_mibps = down.filter(|n| *n > 0);
-                }
-                if a.get("up_mibps").is_some() {
-                    c.up_limit_mibps = up.filter(|n| *n > 0);
-                }
-                if let Some(p) = &proxy {
-                    c.proxy = (!p.is_empty()).then(|| jizzcraft_fetch::Secret::new(p.clone()));
-                }
-                if let Some(r) = require_proxy {
-                    c.require_proxy = r;
-                }
-                if let Some(s) = seed {
-                    c.seed_after_complete = s;
-                }
-                if let Some(h) = dht {
-                    c.dht = h;
-                }
-            })?;
+            app.downloads.host.apply_settings(&a)?;
             Ok(json!({}))
         },
     );
 }
 
 impl JizzApp {
-    fn fail_toast(&mut self, raw: &str) {
-        self.toast(ToastKind::Error, classify(raw));
-    }
-
     fn poll_flow(&mut self) {
-        let Some(flow) = self.downloads.flow.take() else {
-            return;
-        };
-        match flow {
-            Flow::Listing(rx) => match rx.try_recv() {
-                Err(TryRecvError::Empty) => self.downloads.flow = Some(Flow::Listing(rx)),
-                Err(_) => self.fail_toast("error"),
-                Ok(Err(e)) => self.fail_toast(&e),
-                Ok(Ok(listed)) => match pick_video(&listed.files) {
-                    Pick::None => self.toast(ToastKind::Error, "No video file in this torrent."),
-                    Pick::One(i) => self.add_for_play(listed, i),
-                    Pick::Ask(picks) => {
-                        let files = listed.files.clone();
-                        self.downloads.flow = Some(Flow::Choosing {
-                            listed: Some(listed),
-                            id: None,
-                            files,
-                            picks,
-                        });
-                    }
-                },
-            },
-            Flow::Files { id, rx } => match rx.try_recv() {
-                Err(TryRecvError::Empty) => self.downloads.flow = Some(Flow::Files { id, rx }),
-                Err(_) => self.fail_toast("error"),
-                Ok(Err(e)) => self.fail_toast(&e),
-                Ok(Ok(files)) => match pick_video(&files) {
-                    Pick::None => self.toast(ToastKind::Error, "No video file in this torrent."),
-                    Pick::One(i) => self.open_file(id, i),
-                    Pick::Ask(picks) => {
-                        self.downloads.flow = Some(Flow::Choosing {
-                            listed: None,
-                            id: Some(id),
-                            files,
-                            picks,
-                        });
-                    }
-                },
-            },
-            Flow::Adding { rx, file } => match rx.try_recv() {
-                Err(TryRecvError::Empty) => self.downloads.flow = Some(Flow::Adding { rx, file }),
-                Err(_) => self.fail_toast("error"),
-                Ok(Err(e)) => self.fail_toast(&e),
-                Ok(Ok(id)) => self.open_file(id, file),
-            },
-            Flow::Opening(rx) => match rx.try_recv() {
-                Err(TryRecvError::Empty) => self.downloads.flow = Some(Flow::Opening(rx)),
-                Err(_) => self.fail_toast("error"),
-                Ok(Err(e)) => self.fail_toast(&e),
-                Ok(Ok(ticket)) => self.downloads.ready = Some(ticket),
-            },
-            // Waiting for the user's click in the window.
-            c @ Flow::Choosing { .. } => self.downloads.flow = Some(c),
+        let d = &mut self.downloads;
+        let ev = d.flow.step(&mut FetchBackend { host: &mut d.host });
+        match ev {
+            FlowEvent::Error(m) => {
+                self.downloads.probe = None;
+                if is_retryable(&m) && self.downloads.last_play.is_some() {
+                    self.downloads.retry_note = Some(m);
+                } else {
+                    self.toast(ToastKind::Error, m);
+                }
+            }
+            FlowEvent::Open(t) => self.downloads.ready = Some(t),
+            FlowEvent::Idle | FlowEvent::Progress(_) | FlowEvent::Choose => {}
         }
         if let Some(t) = self.downloads.ready.take() {
             let external = std::mem::take(&mut self.downloads.external);
             self.open_ticket(t, external);
-        }
-    }
-
-    fn add_for_play(&mut self, listed: Listed, file: usize) {
-        match self.downloads.host.service() {
-            Ok(svc) => {
-                let rx = svc.add_listed(listed, Some(vec![file]));
-                self.downloads.flow = Some(Flow::Adding { rx, file });
-            }
-            Err(e) => self.fail_toast(&e.to_string()),
-        }
-    }
-
-    fn open_file(&mut self, id: usize, file: usize) {
-        match self.downloads.host.service() {
-            Ok(svc) => self.downloads.flow = Some(Flow::Opening(svc.open_reader(id, file))),
-            Err(e) => self.fail_toast(&e.to_string()),
         }
     }
 
@@ -795,7 +800,7 @@ impl JizzApp {
             }
             let active = d.torrents.iter().any(|t| t.progress() < 1.0)
                 || !d.adding.is_empty()
-                || d.flow.is_some();
+                || d.flow.busy();
             let due = d
                 .last_poll
                 .is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
@@ -862,8 +867,60 @@ impl JizzApp {
             .default_width(560.0)
             .show(ctx, |ui| {
                 let d = &mut self.downloads;
-                let busy = d.flow.is_some();
+                let busy = d.flow.busy();
+                let progress = d.flow.progress_key();
                 let has_ix = !d.host.config().indexers.is_empty();
+
+                // ---- banners ----------------------------------------------
+                let paused_unfinished = d
+                    .torrents
+                    .iter()
+                    .filter(|t| t.state == TorrentState::Paused && t.progress() < 1.0)
+                    .count();
+                for b in banners(
+                    d.host.config().load_error,
+                    d.load_error_dismissed,
+                    d.host.config().resume_on_start,
+                    paused_unfinished,
+                    d.ask_dismissed,
+                ) {
+                    ui.horizontal_wrapped(|ui| match b {
+                        Banner::ConfigUnreadable => {
+                            ui.label(RichText::new(crate::i18n::tr(
+                                "fetch.json could not be read; a copy was kept and your keys were not overwritten.",
+                            ))
+                            .color(MUTED));
+                            if ui.small_button(crate::i18n::tr("Dismiss")).clicked() {
+                                d.load_error_dismissed = true;
+                            }
+                        }
+                        Banner::ResumeAsk(n) => {
+                            ui.label(RichText::new(
+                                crate::i18n::tr_dyn(&format!("Resume {n} paused downloads?"))
+                                    .into_owned(),
+                            )
+                            .color(MUTED));
+                            if ui.small_button(crate::i18n::tr("Resume all")).clicked() {
+                                cmds.push(("fetch.resume_all", json!({})));
+                                d.ask_dismissed = true;
+                            }
+                            if ui.small_button(crate::i18n::tr("Not now")).clicked() {
+                                d.ask_dismissed = true;
+                            }
+                        }
+                    });
+                }
+                if let Some(m) = d.retry_note.clone() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(crate::i18n::tr_dyn(&m).into_owned()).color(MUTED));
+                        if ui.small_button(crate::i18n::tr("Retry")).clicked() {
+                            cmds.push(("fetch.play.retry", json!({})));
+                        }
+                        if ui.small_button(crate::i18n::tr("Dismiss")).clicked() {
+                            d.retry_note = None;
+                        }
+                    });
+                }
 
                 // ---- the one box ------------------------------------------
                 ui.horizontal(|ui| {
@@ -934,13 +991,29 @@ impl JizzApp {
                         cmds.push(("fetch.search.cancel", json!({})));
                     }
                 });
-                if busy {
-                    ui.label(RichText::new(crate::i18n::tr("Starting playback…")).color(MUTED));
+                if let Some(key) = progress {
+                    ui.horizontal(|ui| {
+                        let peers = d
+                            .probe
+                            .as_ref()
+                            .filter(|p| p.state() == ProbeState::Resolving)
+                            .map(|p| p.peers());
+                        let line = match probe_line(peers) {
+                            Some(l) if key == P_LISTING => {
+                                crate::i18n::tr_dyn(&l).into_owned()
+                            }
+                            _ => crate::i18n::tr(key).to_owned(),
+                        };
+                        ui.label(RichText::new(line).color(MUTED));
+                        if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                            cmds.push(("fetch.play.cancel", json!({})));
+                        }
+                    });
                     if let Some(q) = crate::fun::steady(crate::fun::Quip::Starting) {
                         ui.label(RichText::new(q).italics().color(FAINT));
                     }
                 }
-                if let Some(Flow::Choosing { files, picks, .. }) = &d.flow {
+                if let Some((files, picks)) = d.flow.choices() {
                     ui.add_space(4.0);
                     widgets::eyebrow(ui, "", crate::i18n::tr("Which one?"), "");
                     for &i in picks {
@@ -952,6 +1025,9 @@ impl JizzApp {
                         if ui.button(label).clicked() {
                             choose = Some(i);
                         }
+                    }
+                    if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                        cmds.push(("fetch.play.cancel", json!({})));
                     }
                 }
 
@@ -1068,6 +1144,10 @@ impl JizzApp {
                                 .show_percentage(),
                         );
                         let state = match t.state {
+                            _ if t.error.is_some() => crate::i18n::tr_dyn(classify(
+                                t.error.as_deref().unwrap_or("error"),
+                            ))
+                            .into_owned(),
                             TorrentState::Initializing => crate::i18n::tr("starting").to_owned(),
                             TorrentState::Downloading => format!("↓ {}/s", human(t.down_bps)),
                             TorrentState::Seeding => crate::i18n::tr("done").to_owned(),
@@ -1180,6 +1260,56 @@ impl JizzApp {
                     ui.label(
                         RichText::new(crate::i18n::tr(
                             "With a proxy, DHT and trackers are off: they cannot be proxied.",
+                        ))
+                        .color(FAINT),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr("Paused downloads on start"));
+                        let cur = d.host.config().resume_on_start;
+                        for (v, name, label) in [
+                            (ResumeOnStart::Never, "never", "Never"),
+                            (ResumeOnStart::Ask, "ask", "Ask"),
+                            (ResumeOnStart::Always, "always", "Always"),
+                        ] {
+                            if ui
+                                .selectable_label(cur == v, crate::i18n::tr(label))
+                                .clicked()
+                                && cur != v
+                            {
+                                cmds.push((
+                                    "fetch.settings",
+                                    json!({ "resume_on_start": name }),
+                                ));
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr("Seed ratio"));
+                        ui.add(TextEdit::singleline(&mut d.seed_ratio).desired_width(40.0));
+                        ui.label(crate::i18n::tr("Seed minutes"));
+                        ui.add(TextEdit::singleline(&mut d.seed_minutes).desired_width(50.0));
+                        if ui.button(crate::i18n::tr("Apply")).clicked() {
+                            let ratio = d.seed_ratio.trim().parse::<f64>().unwrap_or(0.0);
+                            let mins = d.seed_minutes.trim().parse::<u32>().unwrap_or(0);
+                            cmds.push((
+                                "fetch.settings",
+                                json!({ "seed_ratio": ratio.max(0.0), "seed_minutes": mins }),
+                            ));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr("Network interface"));
+                        ui.add(TextEdit::singleline(&mut d.bind).desired_width(120.0));
+                        if ui.button(crate::i18n::tr("Set")).clicked() {
+                            cmds.push((
+                                "fetch.settings",
+                                json!({ "bind_interface": d.bind.trim() }),
+                            ));
+                        }
+                    });
+                    ui.label(
+                        RichText::new(crate::i18n::tr(
+                            "Peers and trackers use only this interface, such as a VPN. Empty means any.",
                         ))
                         .color(FAINT),
                     );
@@ -1298,14 +1428,9 @@ impl JizzApp {
                 });
             });
         self.downloads.open = open;
-        if let Some(i) = choose
-            && let Some(Flow::Choosing { listed, id, .. }) = self.downloads.flow.take()
-        {
-            match (listed, id) {
-                (Some(l), _) => self.add_for_play(l, i),
-                (None, Some(id)) => self.open_file(id, i),
-                _ => {}
-            }
+        if let Some(i) = choose {
+            let d = &mut self.downloads;
+            d.flow.choose(i, &mut FetchBackend { host: &mut d.host });
         }
         for (n, a) in cmds {
             self.push(n, a);
