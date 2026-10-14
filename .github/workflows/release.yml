@@ -72,8 +72,8 @@ jobs:
           $v = '1.26.11'
           foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
             $u = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
-            Invoke-WebRequest $u -OutFile "$k.msi"
-            Invoke-WebRequest "$u.sha256sum" -OutFile "$k.msi.sha256sum"
+            Invoke-WebRequest $u -OutFile "$k.msi" -MaximumRetryCount 5 -RetryIntervalSec 5
+            Invoke-WebRequest "$u.sha256sum" -OutFile "$k.msi.sha256sum" -MaximumRetryCount 5 -RetryIntervalSec 5
             $want = ((Get-Content "$k.msi.sha256sum" -Raw).Trim() -split '\s+')[0].ToLower()
             if ((Get-FileHash "$k.msi" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "checksum mismatch for $k" }
             Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait

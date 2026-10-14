@@ -177,8 +177,8 @@ jobs:
           $v = '1.26.11'
           foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
             $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
-            Invoke-WebRequest $base -OutFile "$k.msi"
-            Invoke-WebRequest "$base.sha256sum" -OutFile "$k.msi.sha256sum"
+            Invoke-WebRequest $base -OutFile "$k.msi" -MaximumRetryCount 5 -RetryIntervalSec 5
+            Invoke-WebRequest "$base.sha256sum" -OutFile "$k.msi.sha256sum" -MaximumRetryCount 5 -RetryIntervalSec 5
             $want = ((Get-Content "$k.msi.sha256sum" -Raw).Trim() -split '\s+')[0].ToLower()
             $got = (Get-FileHash "$k.msi" -Algorithm SHA256).Hash.ToLower()
             if ($want -ne $got) { throw "checksum mismatch for $k" }
