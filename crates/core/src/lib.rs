@@ -27,7 +27,7 @@ pub mod view;
 pub use commands::{HasLibrary, Registry, register_core};
 pub use db::{Db, Filter, HiddenMode, Orientation, SortKey};
 pub use error::{Error, Result};
-pub use history::MediaPatch;
+pub use history::{MediaPatch, UserState};
 pub use markers::Marker;
 pub use model::{Media, MediaKind, MediaMeta, Stats};
 pub use organize::OrgFilter;

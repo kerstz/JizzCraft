@@ -23,6 +23,16 @@ pub struct MediaPatch {
     pub inbox: Option<bool>,
 }
 
+/// Per-item user data as it was before a bulk change, so it can be put back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserState {
+    pub id: i64,
+    pub favorite: bool,
+    pub rating: u8,
+    pub hidden: bool,
+    pub inbox: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct Progress {
     pub resume_ms: Option<u64>,
@@ -106,6 +116,82 @@ impl Db {
             .ok_or_else(|| Error::NotFound(format!("media id {id}")))?;
         self.set_hidden(id, !m.hidden)?;
         Ok(!m.hidden)
+    }
+
+    /// Apply `favorite` / `rating` / `hidden` to many items in one
+    /// transaction (all or nothing). Unknown ids are skipped. Returns the
+    /// previous user state of every item that exists, in the order given,
+    /// for undo. Hiding also takes items out of the inbox, like
+    /// [`Db::set_hidden`].
+    pub fn bulk_patch(&mut self, ids: &[i64], p: &MediaPatch) -> Result<Vec<UserState>> {
+        if p.rating.is_some_and(|r| r > 5) {
+            return Err(Error::Invalid("rating must be 0..=5".into()));
+        }
+        let tx = self.conn.transaction()?;
+        let mut before = Vec::with_capacity(ids.len());
+        {
+            let mut get =
+                tx.prepare("SELECT favorite, rating, hidden, inbox FROM media WHERE id = ?1")?;
+            let mut set = tx.prepare(
+                "UPDATE media SET
+                   favorite = COALESCE(?2, favorite),
+                   rating = COALESCE(?3, rating),
+                   hidden = COALESCE(?4, hidden),
+                   inbox = CASE WHEN ?4 = 1 THEN 0 ELSE inbox END
+                 WHERE id = ?1",
+            )?;
+            let mut seen = std::collections::HashSet::new();
+            for &id in ids {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let cur = get.query_row([id], |r| {
+                    Ok(UserState {
+                        id,
+                        favorite: r.get::<_, i64>(0)? != 0,
+                        rating: r.get::<_, i64>(1)? as u8,
+                        hidden: r.get::<_, i64>(2)? != 0,
+                        inbox: r.get::<_, i64>(3)? != 0,
+                    })
+                });
+                let cur = match cur {
+                    Ok(c) => c,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => return Err(e.into()),
+                };
+                set.execute(params![
+                    id,
+                    p.favorite.map(i64::from),
+                    p.rating.map(i64::from),
+                    p.hidden.map(i64::from)
+                ])?;
+                before.push(cur);
+            }
+        }
+        tx.commit()?;
+        Ok(before)
+    }
+
+    /// Put back states returned by [`Db::bulk_patch`], in one transaction.
+    pub fn bulk_restore(&mut self, rows: &[UserState]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut set = tx.prepare(
+                "UPDATE media SET favorite = ?2, rating = ?3, hidden = ?4, inbox = ?5
+                 WHERE id = ?1",
+            )?;
+            for r in rows {
+                set.execute(params![
+                    r.id,
+                    i64::from(r.favorite),
+                    i64::from(r.rating),
+                    i64::from(r.hidden),
+                    i64::from(r.inbox)
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn patch(&self, id: i64, p: &MediaPatch) -> Result<Media> {

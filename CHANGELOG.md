@@ -21,6 +21,16 @@ anything may change between minor versions.
   no sidecars.
 
 ### Library
+- Multi-select polish and bulk actions (issue #11). A bulk bar appears under
+  the grid while tiles are marked: rate 1 to 5 or clear the rating, favorite /
+  unfavorite, hide / unhide, "Add to…" (playlist, tag or category), select all,
+  clear. Ctrl+drag adds a rubber band to the marks and Shift+drag replaces
+  them (only tiles on screen are reached; the band does not auto-scroll). The
+  tile context menu gained Rate, Favorite and Hide, acting on the marks when
+  the tile is marked. Bulk changes run in one transaction, report one count in
+  one toast and are undone as a whole (`A` / `org.undo`). New core command
+  `media.bulk {ids, favorite?, rating?, hidden?}` and UI command `org.bulk`.
+  No schema change, nothing is written outside the database.
 - Full-text search over names and labels (issue #10). The search box now
   also matches tag names, category names and marker notes, ignoring case and
   accents, with every word matched as a prefix (`cafe sunr` finds

@@ -1785,6 +1785,7 @@ impl JizzApp {
     }
 
     fn central(&mut self, ui: &mut Ui) {
+        self.bulk_bar(ui);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG))
             .show(ui, |ui| {
@@ -1855,6 +1856,10 @@ impl JizzApp {
         let mut select: Option<(i64, u64)> = None;
         let mut fav_toggle: Option<i64> = None;
         let mut add_to: Option<i64> = None;
+        let mut bulk: Option<(i64, jizzcraft_core::MediaPatch)> = None;
+        let mut tile_rects: Vec<(i64, Rect)> = Vec::new();
+        let mut band_start: Option<(egui::Pos2, f32, bool)> = None;
+        let mods_now = ui.input(|i| i.modifiers);
         let mut wanted: Vec<Request> = Vec::new();
         let hide_all = discreet;
         let share_safe = self.cfg.screen_share_safe;
@@ -1921,7 +1926,13 @@ impl JizzApp {
                         if marked {
                             organize::paint_mark(ui.painter(), resp.rect);
                         }
-                        if resp.drag_started() {
+                        tile_rects.push((m.id, resp.rect));
+                        if resp.drag_started() && (mods_now.command || mods_now.shift) {
+                            // Ctrl/Shift + drag: rubber band, not a drag and drop.
+                            if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+                                band_start = Some((p, self.grid_scroll.0, mods_now.command));
+                            }
+                        } else if resp.drag_started() {
                             let ids: Vec<i64> = if marked {
                                 self.org.marked.iter().copied().collect()
                             } else {
@@ -1930,9 +1941,55 @@ impl JizzApp {
                             resp.dnd_set_drag_payload(organize::DragIds(ids));
                         }
                         resp.context_menu(|ui| {
+                            let mut patch = None;
                             if ui.button(crate::i18n::tr("Add to…")).clicked() {
                                 add_to = Some(m.id);
                                 ui.close();
+                            }
+                            ui.menu_button(crate::i18n::tr("Rate"), |ui| {
+                                for r in 1..=5u8 {
+                                    if ui.button(format!("{r}★")).clicked() {
+                                        patch = Some(jizzcraft_core::MediaPatch {
+                                            rating: Some(r),
+                                            ..Default::default()
+                                        });
+                                        ui.close();
+                                    }
+                                }
+                                if ui.button(crate::i18n::tr("Clear rating")).clicked() {
+                                    patch = Some(jizzcraft_core::MediaPatch {
+                                        rating: Some(0),
+                                        ..Default::default()
+                                    });
+                                    ui.close();
+                                }
+                            });
+                            let fav = if m.favorite {
+                                crate::i18n::tr("Unfavorite")
+                            } else {
+                                crate::i18n::tr("Favorite")
+                            };
+                            if ui.button(fav).clicked() {
+                                patch = Some(jizzcraft_core::MediaPatch {
+                                    favorite: Some(!m.favorite),
+                                    ..Default::default()
+                                });
+                                ui.close();
+                            }
+                            let hide = if m.hidden {
+                                crate::i18n::tr("Unhide")
+                            } else {
+                                crate::i18n::tr("Hide")
+                            };
+                            if ui.button(hide).clicked() {
+                                patch = Some(jizzcraft_core::MediaPatch {
+                                    hidden: Some(!m.hidden),
+                                    ..Default::default()
+                                });
+                                ui.close();
+                            }
+                            if let Some(p) = patch {
+                                bulk = Some((m.id, p));
                             }
                         });
                         if star {
@@ -1949,6 +2006,16 @@ impl JizzApp {
         });
         self.grid_scroll = (out.state.offset.y, out.inner_rect.height());
         self.thumbs.set_wanted(wanted);
+        self.grid_band(ui, band_start, &tile_rects);
+        if let Some((id, patch)) = bulk {
+            // A tile outside the marks is the only target of its own menu.
+            let ids = if self.org.marked.contains(&id) {
+                self.target_ids()
+            } else {
+                vec![id]
+            };
+            self.org_bulk(ids, patch);
+        }
         if let Some(id) = fav_toggle {
             self.push("media.favorite.toggle", json!({ "id": id }));
         }
@@ -1968,6 +2035,45 @@ impl JizzApp {
         if let Some(idx) = open {
             self.push("media.open", json!({ "index": idx }));
         }
+    }
+
+    /// Rubber-band selection over the tiles drawn this frame (Ctrl+drag adds
+    /// to the marks, Shift+drag replaces them). Tiles scrolled out of view are
+    /// not reached: the band does not auto-scroll.
+    fn grid_band(
+        &mut self,
+        ui: &mut Ui,
+        start: Option<(egui::Pos2, f32, bool)>,
+        tiles: &[(i64, Rect)],
+    ) {
+        if let Some((origin, offset, additive)) = start {
+            let base = if additive {
+                self.org.marked.clone()
+            } else {
+                Default::default()
+            };
+            self.org.begin_band(origin, offset, base);
+        }
+        let Some((origin, offset, base)) = self.org.band_state() else {
+            return;
+        };
+        let (down, pos) = ui.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos()));
+        let Some(pos) = pos.filter(|_| down) else {
+            self.org.end_band();
+            return;
+        };
+        let shift = vec2(0.0, offset - self.grid_scroll.0);
+        let band = Rect::from_two_pos(origin + shift, pos);
+        let hits = organize::band_hits(band, tiles);
+        self.org.marked = organize::band_marks(&base, &hits);
+        ui.painter().rect(
+            band,
+            CornerRadius::ZERO,
+            APP.gamma_multiply(0.12),
+            egui::Stroke::new(1.0, APP),
+            egui::StrokeKind::Inside,
+        );
+        ui.ctx().request_repaint();
     }
 
     fn image_view(&mut self, ui: &mut Ui) {

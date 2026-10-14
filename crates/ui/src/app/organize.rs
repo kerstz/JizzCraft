@@ -17,7 +17,9 @@ use crate::theme::{self, APP, BG, FAINT, LINE, LINE_STRONG, MUTED, S, TEXT};
 use crate::widgets;
 use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Key, Modifiers, Rect, Ui, vec2};
 use jizzcraft_core::organize::{LabelInfo, LabelKind, M3uOpts, MAX_FILTER_IDS, MAX_IDS, Playlist};
-use jizzcraft_core::{Db, Error, Filter, HiddenMode, OrgFilter, Registry, SortKey};
+use jizzcraft_core::{
+    Db, Error, Filter, HiddenMode, MediaPatch, OrgFilter, Registry, SortKey, UserState,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashSet};
 
@@ -147,6 +149,23 @@ pub fn click_marks(
         marks.clear();
         *anchor = Some(idx);
     }
+}
+
+/// Media ids whose tile rectangle meets the rubber band.
+pub fn band_hits(band: Rect, tiles: &[(i64, Rect)]) -> Vec<i64> {
+    tiles
+        .iter()
+        .filter(|(_, r)| band.intersects(*r))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// Marks after a rubber band: `base` (kept by Ctrl, empty otherwise) plus the
+/// tiles under the band.
+pub fn band_marks(base: &BTreeSet<i64>, hits: &[i64]) -> BTreeSet<i64> {
+    let mut m = base.clone();
+    m.extend(hits.iter().copied());
+    m
 }
 
 // ---- pure: privacy ----------------------------------------------------------
@@ -378,6 +397,8 @@ pub enum UndoOp {
         ids: Vec<i64>,
         on: bool,
     },
+    /// Put favorite, rating and hidden flags back (inverse of a bulk change).
+    UserData { rows: Vec<UserState> },
     /// Recreate a deleted playlist.
     PlaylistDeleted {
         old: i64,
@@ -431,6 +452,10 @@ impl UndoOp {
                 on,
             } => {
                 db.label_assign(*kind, &[*label], ids, !on)?;
+                Ok(Recreated::Nothing)
+            }
+            UndoOp::UserData { rows } => {
+                db.bulk_restore(rows)?;
                 Ok(Recreated::Nothing)
             }
             UndoOp::PlaylistDeleted {
@@ -641,6 +666,22 @@ pub fn do_assign(
     Ok((on, n, skipped, undo))
 }
 
+/// Favorite, rate or hide many items in one transaction.
+/// `(items changed, undo)`.
+pub fn do_bulk(
+    db: &mut Db,
+    ids: &[i64],
+    patch: &MediaPatch,
+) -> Result<(u64, Option<UndoOp>), Error> {
+    if ids.len() > MAX_IDS {
+        return Err(Error::Invalid(format!("at most {MAX_IDS} items per call")));
+    }
+    let before = db.bulk_patch(ids, patch)?;
+    let n = before.len() as u64;
+    let undo = (!before.is_empty()).then_some(UndoOp::UserData { rows: before });
+    Ok((n, undo))
+}
+
 /// Delete a playlist, keeping what undo needs. `(items it held, undo)`.
 pub fn do_delete_playlist(db: &mut Db, id: i64) -> Result<(u64, Option<UndoOp>), Error> {
     let pl: Option<Playlist> = db.playlists()?.into_iter().find(|p| p.id == id);
@@ -726,6 +767,9 @@ struct Picker {
 pub(super) struct OrgState {
     pub marked: BTreeSet<i64>,
     anchor: Option<u64>,
+    /// Rubber band in progress: screen origin, scroll offset at its start, and
+    /// the marks Ctrl+drag adds to.
+    band: Option<(egui::Pos2, f32, BTreeSet<i64>)>,
     sig: String,
     undo: UndoStack,
     cache: Option<OrgCache>,
@@ -737,6 +781,21 @@ pub(super) struct OrgState {
     last: Option<OrgRef>,
     tag_filter: String,
     collapsed: HashSet<i64>,
+}
+
+impl OrgState {
+    pub(super) fn begin_band(&mut self, origin: egui::Pos2, offset: f32, base: BTreeSet<i64>) {
+        self.band = Some((origin, offset, base));
+        self.anchor = None;
+    }
+
+    pub(super) fn band_state(&self) -> Option<(egui::Pos2, f32, BTreeSet<i64>)> {
+        self.band.clone()
+    }
+
+    pub(super) fn end_band(&mut self) {
+        self.band = None;
+    }
 }
 
 /// One drawable sidebar entry.
@@ -804,6 +863,7 @@ impl JizzApp {
         }
         self.org.marked.clear();
         self.org.anchor = None;
+        self.org.band = None;
         true
     }
 
@@ -811,6 +871,7 @@ impl JizzApp {
     pub(super) fn org_panic(&mut self) {
         self.org.marked.clear();
         self.org.anchor = None;
+        self.org.band = None;
         self.org.undo.clear();
         self.org.picker = None;
         self.org.adding = None;
@@ -977,6 +1038,111 @@ impl JizzApp {
                 self.refresh();
             }
             Err(e) => self.org_error(&e),
+        }
+    }
+
+    /// Favorite, rate or hide the marked (or open) items in one transaction,
+    /// with one undo entry and one toast that carries a count only.
+    pub(super) fn org_bulk(&mut self, ids: Vec<i64>, patch: MediaPatch) {
+        if self.read_only || ids.is_empty() {
+            return;
+        }
+        match do_bulk(&mut self.db, &ids, &patch) {
+            Ok((n, undo)) => {
+                self.remember(undo);
+                let t = trf("Updated {}", &[&n.to_string()]);
+                self.toast(ToastKind::Info, t);
+                self.refresh();
+            }
+            Err(e) => self.org_error(&e),
+        }
+    }
+
+    /// The bulk bar: visible while tiles are marked in the library.
+    pub(super) fn bulk_bar(&mut self, ui: &mut Ui) {
+        if !matches!(self.view, View::Library) || self.org.marked.is_empty() || self.read_only {
+            return;
+        }
+        let ids: Vec<i64> = self.org.marked.iter().copied().collect();
+        let n = ids.len().to_string();
+        let mut patch: Option<MediaPatch> = None;
+        let mut picker = false;
+        let mut clear = false;
+        let mut all = false;
+        egui::Panel::bottom("bulk_bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(BG)
+                    .stroke(egui::Stroke::new(1.0, LINE))
+                    .inner_margin(egui::Margin::symmetric(16, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    widgets::mono_label(ui, &trf("{} selected", &[&n]), APP);
+                    ui.add_space(S);
+                    widgets::mono_label(ui, tr("Rate"), FAINT);
+                    for r in 1..=5u8 {
+                        if widgets::button_outline(ui, &format!("{r}★")).clicked() {
+                            patch = Some(MediaPatch {
+                                rating: Some(r),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    if widgets::button_outline(ui, tr("Clear rating")).clicked() {
+                        patch = Some(MediaPatch {
+                            rating: Some(0),
+                            ..Default::default()
+                        });
+                    }
+                    ui.add_space(S);
+                    if widgets::button_outline(ui, tr("Favorite")).clicked() {
+                        patch = Some(MediaPatch {
+                            favorite: Some(true),
+                            ..Default::default()
+                        });
+                    }
+                    if widgets::button_outline(ui, tr("Unfavorite")).clicked() {
+                        patch = Some(MediaPatch {
+                            favorite: Some(false),
+                            ..Default::default()
+                        });
+                    }
+                    if widgets::button_outline(ui, tr("Hide")).clicked() {
+                        patch = Some(MediaPatch {
+                            hidden: Some(true),
+                            ..Default::default()
+                        });
+                    }
+                    if widgets::button_outline(ui, tr("Unhide")).clicked() {
+                        patch = Some(MediaPatch {
+                            hidden: Some(false),
+                            ..Default::default()
+                        });
+                    }
+                    ui.add_space(S);
+                    if widgets::button_solid_bar(ui, tr("Add to…")).clicked() {
+                        picker = true;
+                    }
+                    if widgets::button_outline(ui, tr("Select all")).clicked() {
+                        all = true;
+                    }
+                    if widgets::button_outline(ui, tr("Clear selection")).clicked() {
+                        clear = true;
+                    }
+                });
+            });
+        if let Some(p) = patch {
+            self.org_bulk(ids.clone(), p);
+        }
+        if picker {
+            self.open_picker(ids);
+        }
+        if all {
+            self.select_all();
+        }
+        if clear {
+            self.org_escape();
         }
     }
 
@@ -2180,6 +2346,31 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
         },
     );
     reg.register(
+        "org.bulk",
+        "Favorite, rate or hide the marked or open items in one transaction, undoable: {ids?, favorite?, rating?, hidden?}",
+        |app, args| {
+            let ids = ids_arg(&args).unwrap_or_else(|| app.target_ids());
+            let patch = MediaPatch {
+                favorite: args.get("favorite").and_then(Value::as_bool),
+                rating: args
+                    .get("rating")
+                    .and_then(Value::as_u64)
+                    .filter(|r| *r <= 5)
+                    .map(|r| r as u8),
+                hidden: args.get("hidden").and_then(Value::as_bool),
+                inbox: None,
+            };
+            if patch.favorite.is_none() && patch.rating.is_none() && patch.hidden.is_none() {
+                return Err(Error::Invalid(
+                    "give `favorite`, `rating` (0..=5) or `hidden`".into(),
+                ));
+            }
+            let n = ids.len();
+            app.org_bulk(ids, patch);
+            Ok(json!({ "items": n }))
+        },
+    );
+    reg.register(
         "org.assign.repeat",
         "Repeat the last assignment on the marked or open items",
         |app, _| {
@@ -2555,6 +2746,55 @@ mod tests {
         );
         undo.unwrap().apply(&mut db).unwrap();
         assert_eq!(db.playlist_item_ids(pl).unwrap(), start);
+    }
+
+    #[test]
+    fn band_selects_intersecting_tiles_and_ctrl_keeps_base() {
+        let t = |x: f32, y: f32| Rect::from_min_size(egui::pos2(x, y), vec2(10.0, 10.0));
+        let tiles = [(1, t(0.0, 0.0)), (2, t(10.0, 0.0)), (3, t(0.0, 10.0))];
+        let band = Rect::from_two_pos(egui::pos2(5.0, 5.0), egui::pos2(12.0, 8.0));
+        assert_eq!(band_hits(band, &tiles), vec![1, 2]);
+        // dragged the other way gives the same band
+        let band = Rect::from_two_pos(egui::pos2(12.0, 8.0), egui::pos2(5.0, 5.0));
+        assert_eq!(band_hits(band, &tiles), vec![1, 2]);
+        assert!(
+            band_hits(
+                Rect::from_min_size(egui::pos2(50.0, 50.0), vec2(1.0, 1.0)),
+                &tiles
+            )
+            .is_empty()
+        );
+        let base: BTreeSet<i64> = [9].into();
+        assert_eq!(band_marks(&base, &[1, 2]), [1, 2, 9].into());
+        assert_eq!(band_marks(&BTreeSet::new(), &[3]), [3].into());
+    }
+
+    #[test]
+    fn bulk_change_is_one_undo_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = library(dir.path(), 4);
+        let ids = all_ids(&db);
+        db.set_rating(ids[1], 3).unwrap();
+        let patch = MediaPatch {
+            rating: Some(5),
+            favorite: Some(true),
+            hidden: Some(true),
+            ..Default::default()
+        };
+        let (n, undo) = do_bulk(&mut db, &ids[..3], &patch).unwrap();
+        assert_eq!(n, 3);
+        for id in &ids[..3] {
+            let m = db.get(*id).unwrap().unwrap();
+            assert!(m.favorite && m.hidden && m.rating == 5);
+        }
+        assert!(!db.get(ids[3]).unwrap().unwrap().favorite);
+        undo.unwrap().apply(&mut db).unwrap();
+        let m = db.get(ids[1]).unwrap().unwrap();
+        assert!(!m.favorite && !m.hidden && m.rating == 3);
+        // nothing matched: no undo entry
+        let (n, undo) = do_bulk(&mut db, &[999_999], &patch).unwrap();
+        assert_eq!(n, 0);
+        assert!(undo.is_none());
     }
 
     #[test]

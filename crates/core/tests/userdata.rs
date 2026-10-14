@@ -174,3 +174,63 @@ fn commands_roundtrip_and_sort_by_user_data() {
     assert_eq!(SortKey::parse("plays"), Some(SortKey::PlayCount));
     assert!(SortKey::LastPlayed.is_history() && !SortKey::Name.is_history());
 }
+
+#[test]
+fn bulk_patch_is_one_transaction_and_restores() {
+    use jizzcraft_core::MediaPatch;
+    let (_t, mut db) = library();
+    let a = id_of(&db, "a.png");
+    let b = id_of(&db, "b.png");
+    let c = id_of(&db, "c.png");
+    db.set_rating(b, 2).unwrap();
+
+    let patch = MediaPatch {
+        rating: Some(5),
+        hidden: Some(true),
+        ..Default::default()
+    };
+    // Unknown and duplicate ids are skipped, order is kept.
+    let before = db.bulk_patch(&[a, b, 9999, a], &patch).unwrap();
+    assert_eq!(before.iter().map(|s| s.id).collect::<Vec<_>>(), [a, b]);
+    assert_eq!(before[1].rating, 2);
+    for id in [a, b] {
+        let m = db.get(id).unwrap().unwrap();
+        assert!(m.hidden && !m.inbox && m.rating == 5);
+    }
+    let m = db.get(c).unwrap().unwrap();
+    assert!(!m.hidden && m.inbox && m.rating == 0, "others untouched");
+
+    db.bulk_restore(&before).unwrap();
+    let m = db.get(b).unwrap().unwrap();
+    assert!(!m.hidden && m.inbox && m.rating == 2);
+    let m = db.get(a).unwrap().unwrap();
+    assert!(!m.hidden && m.inbox && m.rating == 0);
+
+    // A bad rating changes nothing.
+    let bad = MediaPatch {
+        rating: Some(6),
+        ..Default::default()
+    };
+    assert!(db.bulk_patch(&[a], &bad).is_err());
+}
+
+#[test]
+fn media_bulk_command() {
+    let (_t, mut db) = library();
+    let mut reg = Registry::new();
+    register_core(&mut reg);
+    let ids = [id_of(&db, "a.png"), id_of(&db, "b.png")];
+    let out = reg
+        .run(
+            &mut db,
+            "media.bulk",
+            json!({ "ids": ids, "favorite": true }),
+        )
+        .unwrap();
+    assert_eq!(out["changed"], 2);
+    assert!(db.get(ids[0]).unwrap().unwrap().favorite);
+    assert!(
+        reg.run(&mut db, "media.bulk", json!({ "favorite": true }))
+            .is_err()
+    );
+}
