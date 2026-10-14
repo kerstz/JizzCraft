@@ -4,9 +4,9 @@
 
 # JizzCraft
 
-**The porn viewer you already know how to use.**
+**A private, local-first media library and player for adult content.**
 
-Your library, in a native app written entirely in Rust. Open source, offline by default, and yours. Fully usable with one hand, which we are told is an accessibility feature, and we are sticking to that.
+A fast native app for your own images and videos: browse, search, rate, tag and play, with your files left exactly where they are. Open source, offline by default, no account, no telemetry. Written in Rust for Linux, Windows and macOS.
 
 ![100% Rust](https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square)
 ![Linux](https://img.shields.io/badge/platform-Linux-2f7bf5?style=flat-square)
@@ -15,16 +15,13 @@ Your library, in a native app written entirely in Rust. Open source, offline by 
 
 > "100% Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
 
-> [!NOTE]
-> JizzCraft is a **parody project**. It is not affiliated with, endorsed by or connected to the ArtCraft team or the Crafting Apps. See [Parody disclaimer](#parody-disclaimer).
-
 ![JizzCraft library grid](docs/screenshots/library.png)
 
-Yes, the name is exactly what you think it is. Everything else here tries hard to be more serious than the name: the code is tested, the claims below match it, and the only thing the app ever talks to is your own disk.
+The claims below are checked by tests: the default build links no network code, and your files are only ever read.
 
 ## Why JizzCraft
 
-- 🎛️ **Familiar by design.** If you know a file browser, you already know JizzCraft: a top bar, a grid, an inspector. Open a folder, see your files. If you can operate a file manager, you are overqualified.
+- 🎛️ **Simple by design.** A top bar, a grid, an inspector. Add a folder and see your files; everything is reachable with the mouse and with the keyboard.
 - ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs.
 - ✋ **One hand is enough.** A left-hand preset puts browsing, opening, playback, seeking, volume, favorites, ratings and the boss key around `WASD`. [Details and honest footnote below](#one-hand-is-enough).
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
@@ -33,7 +30,7 @@ Yes, the name is exactly what you think it is. Everything else here tries hard t
 
 ## One hand is enough
 
-*The left-hand preset keeps every routine action under the left hand. What the right hand does in the meantime is outside the scope of this README.*
+*The left-hand preset keeps every routine action under one hand, so the other stays free for a mouse, a remote or a coffee. It is also a motor-accessibility setting.*
 
 Turn it on once: press `?` in the library and click *Left-hand keys*, or start the app with `jizzcraft --cmd app.left_hand.toggle`. The choice is saved. Letters match the physical key, so on AZERTY the same keys sit under `ZQSD`.
 
@@ -236,7 +233,7 @@ cargo xtask screenshots       # render README images through the app itself
 
 **Wayland** — JizzCraft runs natively on Wayland. If your compositor misbehaves, try X11 (XWayland) with `WAYLAND_DISPLAY= jizzcraft`. The folder chooser uses the XDG desktop portal: make sure `xdg-desktop-portal` and a backend for your desktop are running.
 
-**Playback stutters on 4K** — your fans are not judging you; they are converting colours on the CPU, which is the bottleneck in this MVP. See the [benchmark notes](docs/bench.md).
+**Playback stutters on 4K** — the video is converted to RGB on the CPU, which is the bottleneck in this early version. See the [benchmark notes](docs/bench.md).
 
 **Need to see file names in logs** — they are redacted by default. Run with `JIZZCRAFT_DEBUG=1` to log full paths and the chosen decoder, and redact before sharing: an issue tracker is a very public place to find out what your files are called.
 
@@ -271,7 +268,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). Report v
 
 ## Inspiration
 
-The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. One-handed use was raised as an accessibility point and has been implemented as one, with a completely straight face. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
+The idea started in a discussion thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/). Its remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. No content from the thread is reproduced here.
 
 ## Optional network build
 
@@ -293,14 +290,6 @@ cargo build --release -p jizzcraft-cli --features network
 - **What it exposes.** Your IP is visible to the indexers you configure and to BitTorrent peers. What you search for and download is your responsibility.
 - **Verified by tests.** The default dependency tree is checked to contain no network crate. The network build is tested against a local mock indexer and a two-session swarm on 127.0.0.1, including reading the tail of a file before the download is complete. The stream player is tested with a throttled reader (buffering, seeks into missing regions, rapid seeks, junk bytes), and a playlist pushed through it is refused with zero connections.
 
-## Parody disclaimer
+## Independence
 
-JizzCraft started as a joke imitating the "Crafting Apps" family (PhotoCraft, FilmCraft, LightCraft…). It is a parody and is **not affiliated with, endorsed by or connected to the ArtCraft team**. The name, the README layout and the look of the interface imitate that family; the code, assets, icons, logos and wordmark are this project's own, and nothing was copied from those projects. App ID: `org.jizzcraft.JizzCraft`.
-
-The resemblance is intentional; the endorsement is not. If the name made you wince, the disclaimer is working as designed.
-
-## License and credits
-
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-
-Fonts (Archivo, Inter, JetBrains Mono, all OFL) and other credits, including the licences of third-party libraries, are listed in [`ATTRIBUTION.md`](ATTRIBUTION.md). The peach icon was drawn for this project.
+JizzCraft is an independent project. It is not affiliated with, endorsed by or connected to any other software product or company. The code, assets, icons, logos and wordmark are this project's own. App ID: `org.jizzcraft.JizzCraft`.

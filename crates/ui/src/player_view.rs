@@ -204,6 +204,16 @@ impl PlayerView {
         } else {
             full
         };
+        // The picture itself is a control: click = play/pause, double click =
+        // fullscreen. Interacted before the bar so the bar's widgets win.
+        let surface = ui.interact(video_area, ui.id().with("surface"), Sense::click());
+        if surface.double_clicked() {
+            self.actions
+                .push(("player.fullscreen".into(), serde_json::json!({})));
+        } else if surface.clicked() {
+            self.actions
+                .push(("player.toggle".into(), serde_json::json!({})));
+        }
 
         // Letterboxed video inside the area, honouring pixel aspect ratio.
         match &self.tex {
@@ -460,10 +470,51 @@ impl PlayerView {
                 MUTED
             },
         );
+        // Transport, right of the clock: back, play/pause, mute, fullscreen.
+        let transport = Rect::from_min_max(
+            pos2(rect.left() + margin + 156.0, rect.bottom() - 36.0),
+            pos2(rect.left() + margin + 156.0 + 330.0, rect.bottom() - 6.0),
+        );
+        {
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(transport)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            child.spacing_mut().item_spacing.x = 6.0;
+            let playing = state == PlayState::Playing;
+            if widgets::toggle_chip(&mut child, &format!("← {}", crate::i18n::tr("Back")), false)
+                .clicked()
+            {
+                self.actions
+                    .push(("viewer.close".into(), serde_json::json!({})));
+            }
+            let label = if playing {
+                crate::i18n::tr("Pause")
+            } else {
+                crate::i18n::tr("Play")
+            };
+            if widgets::toggle_chip(&mut child, label, false).clicked() {
+                self.actions
+                    .push(("player.toggle".into(), serde_json::json!({})));
+            }
+            if widgets::toggle_chip(&mut child, crate::i18n::tr("Mute"), self.player.muted())
+                .clicked()
+            {
+                self.actions
+                    .push(("player.mute".into(), serde_json::json!({})));
+            }
+            if widgets::toggle_chip(&mut child, crate::i18n::tr("Fullscreen"), self.fullscreen)
+                .clicked()
+            {
+                self.actions
+                    .push(("player.fullscreen".into(), serde_json::json!({})));
+            }
+        }
         // Right-hand chips: speed, A-B loop, autoplay.
         let chips = Rect::from_min_max(
-            pos2(rect.left() + 260.0, rect.bottom() - 36.0),
-            pos2(rect.right() - margin - 96.0, rect.bottom() - 6.0),
+            pos2(transport.right() + 8.0, rect.bottom() - 36.0),
+            pos2(rect.right() - margin - 130.0, rect.bottom() - 6.0),
         );
         if chips.width() > 150.0 {
             let mut child = ui.new_child(
@@ -512,8 +563,45 @@ impl PlayerView {
         } else {
             format!("VOL {:.0}%", self.player.volume() * 100.0)
         };
+        // Volume: the label is also a slider (click or drag sideways).
+        let vol_rect = Rect::from_min_max(
+            pos2(rect.right() - margin - 120.0, rect.bottom() - 36.0),
+            pos2(rect.right() - margin, rect.bottom() - 6.0),
+        );
+        let vr = ui.interact(vol_rect, ui.id().with("volume"), Sense::click_and_drag());
+        if (vr.clicked() || vr.dragged())
+            && let Some(p) = vr.interact_pointer_pos()
+        {
+            let v = ((p.x - vol_rect.left()) / vol_rect.width()).clamp(0.0, 1.0);
+            self.actions.push((
+                "player.volume".into(),
+                serde_json::json!({ "value": f64::from(v) }),
+            ));
+        }
+        let level = if self.player.muted() {
+            0.0
+        } else {
+            self.player.volume() as f32
+        };
+        let bar_y = rect.bottom() - 10.0;
+        let line = Rect::from_min_max(
+            pos2(vol_rect.left(), bar_y - 1.0),
+            pos2(vol_rect.right(), bar_y + 1.0),
+        );
+        painter.rect_filled(line, CornerRadius::ZERO, theme::LINE);
+        painter.rect_filled(
+            Rect::from_min_max(
+                line.min,
+                pos2(
+                    line.left() + line.width() * level.clamp(0.0, 1.0),
+                    line.max.y,
+                ),
+            ),
+            CornerRadius::ZERO,
+            MUTED,
+        );
         painter.text(
-            pos2(rect.right() - margin, rect.bottom() - 18.0),
+            pos2(vol_rect.right(), rect.bottom() - 24.0),
             Align2::RIGHT_CENTER,
             vol,
             FontId::new(11.0, FontFamily::Monospace),

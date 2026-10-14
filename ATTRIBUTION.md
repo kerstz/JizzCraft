@@ -30,7 +30,7 @@ conventions of PhotoCraft by storytold (https://github.com/storytold/photocraft)
 The interface imitates the visual style of that family of apps (flat surfaces,
 hairlines, typography, numbered labels) and is implemented from scratch: no
 code, assets, logos or wordmarks from ArtCraft / Crafting Apps are used.
-JizzCraft is a parody and is not affiliated with or endorsed by that team.
+JizzCraft is an independent project and is not affiliated with or endorsed by that team.
 
 ## Libraries
 

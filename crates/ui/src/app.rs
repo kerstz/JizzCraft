@@ -43,8 +43,6 @@ pub struct Options {
     pub screenshot: Option<PathBuf>,
     /// Import this folder at startup (dev and screenshots).
     pub import: Option<PathBuf>,
-    /// How many times the word "know" appears in the headline (easter egg).
-    pub know: u32,
     /// Ephemeral config (never written to disk) instead of the user's.
     pub config: Option<Config>,
     /// Pre-select this tab ("library", "images", "videos", "favorites").
@@ -632,7 +630,10 @@ impl JizzApp {
         let reg = Rc::clone(&self.registry);
         match reg.run(self, name, args) {
             Ok(_) => {}
-            Err(e) => self.toast(ToastKind::Error, format!("{name}: {e}")),
+            Err(e) => {
+                jizzcraft_core::debug_log!("command {name} failed: {e}");
+                self.toast(ToastKind::Error, e.to_string());
+            }
         }
     }
 
@@ -815,7 +816,7 @@ impl JizzApp {
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let folder = rfd::FileDialog::new()
-                .set_title(crate::i18n::tr("Import folder"))
+                .set_title(crate::i18n::tr("Add folder"))
                 .pick_folder();
             let _ = tx.send(JobMsg::Folder(folder));
             ctx.request_repaint();
@@ -1132,7 +1133,6 @@ impl JizzApp {
                                 .size(14.0),
                         );
                     } else {
-                        widgets::badge(ui, "01", 24.0);
                         ui.add_space(10.0);
                         widgets::wordmark(ui, 24.0);
                     }
@@ -1147,8 +1147,7 @@ impl JizzApp {
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::button_solid_bar(ui, crate::i18n::tr("Import folder")).clicked()
-                        {
+                        if widgets::button_solid_bar(ui, crate::i18n::tr("Add folder")).clicked() {
                             self.push("library.import", json!({}));
                         }
                         let x = ui.cursor().right();
@@ -1241,7 +1240,7 @@ impl JizzApp {
                     } else {
                         self.tab.label().to_owned()
                     };
-                    let mut crumb = format!("01 / {brand} / {place}");
+                    let mut crumb = format!("{brand} / {place}");
                     if let View::Player(pv) = &self.view {
                         let name = if self.cfg.discreet {
                             "…"
@@ -1260,6 +1259,17 @@ impl JizzApp {
                             iv.name.as_str()
                         };
                         crumb += &format!(" / {name}  [{}/{}]", iv.index + 1, self.total);
+                    }
+                    if !matches!(self.view, View::Library)
+                        && widgets::toggle_chip(
+                            ui,
+                            &format!("← {}", crate::i18n::tr("Back")),
+                            false,
+                        )
+                        .on_hover_text(crate::i18n::tr("Back to the library"))
+                        .clicked()
+                    {
+                        self.push("viewer.close", json!({}));
                     }
                     widgets::mono_label(ui, &crumb, MUTED);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1819,23 +1829,18 @@ impl JizzApp {
                         vec2(w, 32.0),
                         Layout::left_to_right(Align::Center),
                         |ui| {
-                            widgets::badge(ui, "01", 24.0);
-                            ui.add_space(12.0);
                             widgets::wordmark(ui, 24.0);
                         },
                     );
                 }
-                ui.label(headline(
-                    self.opts.know.max(1),
-                    discreet,
-                    head,
-                    col_w.min(900.0),
-                ));
+                ui.label(headline(head, col_w.min(900.0)));
                 let sub = if discreet {
                     crate::i18n::tr("Your library, in a native app. Offline, and yours.")
                 } else {
-                    "Point it at a folder. It indexes your images and videos in place, \
-                     never touches the files, and stays offline: no account, no ads, no network."
+                    crate::i18n::tr(
+                        "Add a folder. Your images and videos are indexed in place and \
+                         never modified. No account, no ads, no network.",
+                    )
                 };
                 ui.scope(|ui| {
                     ui.set_max_width(576.0);
@@ -1846,7 +1851,7 @@ impl JizzApp {
                 ui.horizontal(|ui| {
                     let w = 220.0 + 150.0 + 12.0;
                     ui.add_space(((col_w - w) * 0.5).max(0.0));
-                    if widgets::button_solid_hero(ui, crate::i18n::tr("Import folder")).clicked() {
+                    if widgets::button_solid_hero(ui, crate::i18n::tr("Add folder")).clicked() {
                         self.push("library.import", json!({}));
                     }
                     if widgets::button_outline_hero(ui, crate::i18n::tr("Shortcuts")).clicked() {
@@ -1855,23 +1860,23 @@ impl JizzApp {
                 });
                 if !discreet {
                     ui.label(theme::hud(
-                        crate::i18n::tr("Linux · Offline · No ads · Free and open source"),
+                        crate::i18n::tr("Offline · No ads · Free and open source"),
                         FAINT,
                     ));
                     ui.add_space(S);
                     let cells = [
                         (
-                            "01",
+                            "",
                             crate::i18n::tr("Point it at a folder"),
                             crate::i18n::tr("Indexed in place, never modified."),
                         ),
                         (
-                            "02",
+                            "",
                             crate::i18n::tr("Browse by keyboard"),
                             crate::i18n::tr("Filter, favorite and play without the mouse."),
                         ),
                         (
-                            "03",
+                            "",
                             crate::i18n::tr("Stays offline"),
                             crate::i18n::tr("No account, no ads, no network."),
                         ),
@@ -2261,6 +2266,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                     .to_owned();
                 (f, label)
             };
+            app.close_view();
             app.tab = Tab::Library;
             app.sort = spec.sort;
             app.sort_desc = spec.desc;
@@ -2477,6 +2483,7 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         let tab = args.get("tab").and_then(Value::as_str).and_then(Tab::parse);
         match tab {
             Some(t) => {
+                app.close_view();
                 app.tab = t;
                 app.extra = None;
                 app.view_label.clear();
@@ -2909,31 +2916,18 @@ fn move_index(cur: Option<u64>, dx: i64, dy: i64, cols: usize, total: u64) -> Op
     Some((cur as i64 + step).clamp(0, total as i64 - 1) as u64)
 }
 
-fn headline(know: u32, discreet: bool, size: f32, width: f32) -> egui::text::LayoutJob {
+fn headline(size: f32, width: f32) -> egui::text::LayoutJob {
     use egui::{TextFormat, text::LayoutJob};
-    let font = FontId::new(size, theme::title_family());
-    let fmt = |color| TextFormat {
-        font_id: font.clone(),
-        color,
+    let fmt = TextFormat {
+        font_id: FontId::new(size, theme::title_family()),
+        color: Color32::WHITE,
         extra_letter_spacing: size * -0.035,
         ..Default::default()
     };
-    let (plain, accent) = (fmt(Color32::WHITE), fmt(ACCENT_INK));
     let mut job = LayoutJob::default();
     job.wrap.max_width = width;
     job.halign = Align::Center;
-    if discreet {
-        job.append("Your library, offline.", 0.0, plain);
-        return job;
-    }
-    job.append("The porn viewer you already ", 0.0, plain.clone());
-    for i in 0..know {
-        if i > 0 {
-            job.append(" ", 0.0, plain.clone());
-        }
-        job.append("know", 0.0, accent.clone());
-    }
-    job.append(" how to use.", 0.0, plain);
+    job.append(crate::i18n::tr("Your private media library."), 0.0, fmt);
     job
 }
 

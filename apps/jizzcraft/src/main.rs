@@ -27,22 +27,12 @@ OPTIONS:
   -h, --help                show this help
 
 ENV:
-  JIZZCRAFT_KNOW=2          double the word \"know\" in the headline
   JIZZCRAFT_DEBUG=1         log full paths (off by default)
   JIZZCRAFT_HOME=<DIR>      same as --home
 ";
 
 fn main() -> eframe::Result {
-    let mut opts = Options {
-        know: 1,
-        ..Default::default()
-    };
-    if let Some(n) = std::env::var("JIZZCRAFT_KNOW")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-    {
-        opts.know = n.clamp(1, 4);
-    }
+    let mut opts = Options::default();
     let mut args = std::env::args().skip(1);
     let mut assume_adult = false;
     let mut bench_file: Option<PathBuf> = None;
