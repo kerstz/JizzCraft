@@ -12,7 +12,22 @@
 //!
 //! Limits for now: muxed representations only (a stream whose audio is a
 //! separate rendition is refused with `separate tracks`; a master that also
-//! offers a muxed variant plays that one), VOD only (`live` otherwise).
+//! offers a muxed variant plays that one). Live is HLS only (see below); a
+//! dynamic DASH manifest is refused with `live`.
+//!
+//! Live HLS (a media playlist without `ENDLIST`): a refresh task reloads the
+//! playlist every target duration (half of it while nothing changed, never
+//! under [`LiveTuning::floor`]) and appends the segments whose media sequence
+//! it has not seen yet. Playback starts three segments from the live edge.
+//! A hole in the sequence, a numbering restart or `EXT-X-DISCONTINUITY` are
+//! timeline breaks (`discont: true`); a segment that already left the window
+//! is skipped, a missing one is skipped too (five in a row end the stream).
+//! The track keeps only a short tail behind the playhead, so memory is
+//! bounded by the window plus the prefetch limits. The stream ends cleanly on
+//! `ENDLIST` or after [`LiveTuning::max_listen`]; it ends with `live ended`
+//! when the playlist cannot be reloaded three times in a row or does not
+//! change for [`LiveTuning::stale`]. The duration is `None` (no seeking), the
+//! quality is fixed (no variants are offered) and key systems stay refused.
 //!
 //! Timeouts are stall based, never a total: 20 s to the first byte of the
 //! answer, 15 s without a body byte; a body that keeps moving is never cut.
@@ -69,6 +84,53 @@ const SKIP_SHARE: u32 = 20;
 const MAX_INITS: usize = 8;
 const MIN_SAMPLE: Duration = Duration::from_millis(500);
 const WAIT_SLICE: Duration = Duration::from_millis(100);
+/// Live playback starts this many segments from the live edge.
+const LIVE_EDGE: usize = 3;
+/// Segments kept behind the playhead on a live track.
+const LIVE_KEEP_BEHIND: usize = 16;
+/// Consecutive live segments that may be skipped before the stream ends.
+const LIVE_MAX_SKIPS: u32 = 5;
+/// Consecutive playlist reloads that may fail before the stream ends.
+const LIVE_MAX_RELOAD_FAILS: u32 = 3;
+const LIVE_MAX_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Live limits; the defaults are the product values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveTuning {
+    /// Shortest reload interval (guards against a target duration of 0).
+    pub floor: Duration,
+    /// End with `live ended` when the playlist brings nothing new for this
+    /// long (or six target durations, whichever is longer).
+    pub stale: Duration,
+    /// Longest listening session; the stream then ends cleanly.
+    pub max_listen: Duration,
+}
+
+impl Default for LiveTuning {
+    fn default() -> Self {
+        LiveTuning {
+            floor: Duration::from_secs(1),
+            stale: Duration::from_secs(120),
+            max_listen: Duration::from_secs(12 * 3600),
+        }
+    }
+}
+
+/// Live playlist state; present only for an HLS stream without `ENDLIST`.
+struct LiveState {
+    target: Duration,
+    /// Media sequence number of the last segment appended.
+    last_seq: u64,
+    /// First track index of the current numbering (moves on a restart).
+    epoch_idx: usize,
+    /// `ENDLIST` seen (or the listening limit reached): drain, then end.
+    ended: bool,
+    /// The stream cannot go on; played out after what is buffered.
+    fatal: Option<String>,
+    /// Segments skipped in a row.
+    fail_run: u32,
+    task: Option<AbortHandle>,
+}
 
 /// Inclusive byte range.
 type Range = (u64, u64);
@@ -96,7 +158,11 @@ struct Seg {
     discont: bool,
 }
 
+/// The segments of one stream. Indices are absolute: a live track drops old
+/// segments from the front (`base` grows), so `segs[0]` is index `base`.
+#[derive(Clone)]
 struct Track {
+    base: usize,
     segs: Vec<Seg>,
     total: Duration,
 }
@@ -108,14 +174,43 @@ impl Track {
             s.start = t;
             t += s.dur;
         }
-        Track { segs, total: t }
+        Track {
+            base: 0,
+            segs,
+            total: t,
+        }
+    }
+
+    /// One past the last index.
+    fn end(&self) -> usize {
+        self.base + self.segs.len()
+    }
+
+    fn get(&self, i: usize) -> Option<&Seg> {
+        self.segs.get(i.checked_sub(self.base)?)
     }
 
     /// Index of the segment containing `t` (the last one if past the end).
     fn index_at(&self, t: Duration) -> usize {
-        self.segs
-            .partition_point(|s| s.start <= t)
-            .saturating_sub(1)
+        self.base
+            + self
+                .segs
+                .partition_point(|s| s.start <= t)
+                .saturating_sub(1)
+    }
+
+    /// Live: append a segment at the end of the timeline.
+    fn push(&mut self, mut s: Seg) {
+        s.start = self.total;
+        self.total += s.dur;
+        self.segs.push(s);
+    }
+
+    /// Live: forget every segment before absolute index `i`.
+    fn trim_before(&mut self, i: usize) {
+        let n = i.saturating_sub(self.base).min(self.segs.len());
+        self.segs.drain(..n);
+        self.base += n;
     }
 }
 
@@ -379,6 +474,7 @@ struct State {
     switching: Option<usize>,
     switched: Option<(usize, Track)>,
     switch_task: Option<AbortHandle>,
+    live: Option<LiveState>,
 }
 
 struct Shared {
@@ -391,6 +487,7 @@ struct Shared {
     codecs: Vec<Option<String>>,
     quality: Quality,
     t0: Instant,
+    tuning: LiveTuning,
     closed: AtomicBool,
     meter: Mutex<Meter>,
     state: Mutex<State>,
@@ -692,7 +789,7 @@ async fn fetch_task(sh: Arc<Shared>, epoch: u64, idx: usize, seg: Seg) {
 
 // ---- tracks -----------------------------------------------------------------
 
-fn hls_track(base: &str, origin: &str, segments: &[hls::Segment]) -> Result<Track, String> {
+fn hls_segs(base: &str, origin: &str, segments: &[hls::Segment]) -> Result<Vec<Seg>, String> {
     let part_of = |uri: &str, r: Option<hls::ByteRange>| -> Result<Part, String> {
         Ok(Part {
             url: resolve(base, uri, origin)?,
@@ -727,7 +824,53 @@ fn hls_track(base: &str, origin: &str, segments: &[hls::Segment]) -> Result<Trac
             discont: s.discontinuity,
         });
     }
-    Ok(Track::new(segs))
+    Ok(segs)
+}
+
+fn hls_track(base: &str, origin: &str, segments: &[hls::Segment]) -> Result<Track, String> {
+    Ok(Track::new(hls_segs(base, origin, segments)?))
+}
+
+/// What a media playlist turned out to be.
+enum Hls {
+    Vod(Track),
+    Live {
+        /// The last [`LIVE_EDGE`] segments of the window.
+        track: Track,
+        target: Duration,
+        last_seq: u64,
+    },
+}
+
+fn hls_load(base: &str, origin: &str, text: &str) -> Result<Hls, String> {
+    match hls::parse(text)? {
+        hls::Playlist::Media {
+            segments,
+            ended,
+            vod,
+            target,
+            ..
+        } => {
+            if ended || vod {
+                return Ok(Hls::Vod(hls_track(base, origin, &segments)?));
+            }
+            let mut segs = hls_segs(base, origin, &segments)?;
+            let last_seq = segs.last().map_or(0, |s| s.seq);
+            let skip = segs.len().saturating_sub(LIVE_EDGE);
+            segs.drain(..skip);
+            let target = if target.is_finite() && target > 0.0 {
+                Duration::from_secs_f64(target.min(LIVE_MAX_INTERVAL.as_secs_f64()))
+            } else {
+                Duration::ZERO
+            };
+            Ok(Hls::Live {
+                track: Track::new(segs),
+                target,
+                last_seq,
+            })
+        }
+        hls::Playlist::Master { .. } => Err("unsupported stream".into()),
+    }
 }
 
 fn hls_media(base: &str, origin: &str, text: &str) -> Result<Track, String> {
@@ -836,6 +979,7 @@ fn new_state(track: Track, variant: usize, auto: bool) -> State {
         switching: None,
         switched: None,
         switch_task: None,
+        live: None,
     }
 }
 
@@ -848,7 +992,7 @@ fn finish(
     headers: Vec<(String, String)>,
     (variants, srcs, codecs): VariantSet,
     (track, variant): (Track, usize),
-    quality: Quality,
+    (quality, tuning): (Quality, LiveTuning),
 ) -> SegmentedReader {
     let sh = Arc::new(Shared {
         client,
@@ -859,6 +1003,7 @@ fn finish(
         codecs,
         quality,
         t0: Instant::now(),
+        tuning,
         closed: AtomicBool::new(false),
         meter: Mutex::new(Meter::default()),
         state: Mutex::new(new_state(track, variant, true)),
@@ -867,7 +1012,12 @@ fn finish(
     SegmentedReader { handle, sh }
 }
 
-fn probe(client: reqwest::Client, url: &str, headers: Vec<(String, String)>) -> Shared {
+fn probe(
+    client: reqwest::Client,
+    url: &str,
+    headers: Vec<(String, String)>,
+    tuning: LiveTuning,
+) -> Shared {
     Shared {
         client,
         origin: url.to_owned(),
@@ -877,6 +1027,7 @@ fn probe(client: reqwest::Client, url: &str, headers: Vec<(String, String)>) -> 
         codecs: Vec::new(),
         quality: Quality::default(),
         t0: Instant::now(),
+        tuning,
         closed: AtomicBool::new(false),
         meter: Mutex::new(Meter::default()),
         state: Mutex::new(new_state(Track::new(Vec::new()), 0, true)),
@@ -884,7 +1035,41 @@ fn probe(client: reqwest::Client, url: &str, headers: Vec<(String, String)>) -> 
     }
 }
 
-/// Open an HLS VOD stream (a master or a media playlist).
+/// Start a live stream: the reader plus the task that reloads the playlist.
+fn finish_live(
+    handle: Handle,
+    client: reqwest::Client,
+    origin: String,
+    playlist: String,
+    headers: Vec<(String, String)>,
+    live: (Track, Duration, u64),
+    (quality, tuning): (Quality, LiveTuning),
+) -> SegmentedReader {
+    let (track, target, last_seq) = live;
+    // No variants: the quality of a live stream is fixed.
+    let r = finish(
+        handle.clone(),
+        client,
+        origin,
+        headers,
+        (Vec::new(), Vec::new(), Vec::new()),
+        (track, 0),
+        (quality, tuning),
+    );
+    let task = handle.spawn(live_refresh(handle.clone(), Arc::clone(&r.sh), playlist));
+    r.sh.lock().live = Some(LiveState {
+        target,
+        last_seq,
+        epoch_idx: 0,
+        ended: false,
+        fatal: None,
+        fail_run: 0,
+        task: Some(task.abort_handle()),
+    });
+    r
+}
+
+/// Open an HLS stream (a master or a media playlist), on demand or live.
 pub async fn open_hls(
     handle: Handle,
     client: reqwest::Client,
@@ -892,22 +1077,46 @@ pub async fn open_hls(
     quality: Quality,
     headers: Vec<(String, String)>,
 ) -> Result<SegmentedReader, String> {
-    let p = probe(client.clone(), &url, headers.clone());
+    open_hls_with(handle, client, url, quality, headers, LiveTuning::default()).await
+}
+
+/// [`open_hls`] with explicit live limits (tests and tuning).
+pub async fn open_hls_with(
+    handle: Handle,
+    client: reqwest::Client,
+    url: String,
+    quality: Quality,
+    headers: Vec<(String, String)>,
+    tuning: LiveTuning,
+) -> Result<SegmentedReader, String> {
+    let p = probe(client.clone(), &url, headers.clone(), tuning);
     let raw = get_bytes(&p, &url, None, hls::MAX_TEXT).await?;
     let text = String::from_utf8(raw).map_err(|_| "no media".to_owned())?;
     match hls::parse(&text)? {
-        hls::Playlist::Media { .. } => {
-            let track = hls_media(&url, &url, &text)?;
-            Ok(finish(
+        hls::Playlist::Media { .. } => match hls_load(&url, &url, &text)? {
+            Hls::Vod(track) => Ok(finish(
                 handle,
                 client,
                 url,
                 headers,
                 (Vec::new(), Vec::new(), Vec::new()),
                 (track, 0),
-                quality,
-            ))
-        }
+                (quality, tuning),
+            )),
+            Hls::Live {
+                track,
+                target,
+                last_seq,
+            } => Ok(finish_live(
+                handle,
+                client,
+                url.clone(),
+                url,
+                headers,
+                (track, target, last_seq),
+                (quality, tuning),
+            )),
+        },
         hls::Playlist::Master { variants, audio } => {
             let mut info = Vec::new();
             let mut srcs = Vec::new();
@@ -944,16 +1153,36 @@ pub async fn open_hls(
             let pairs: Vec<(Option<u32>, u64)> =
                 info.iter().map(|i| (i.height, i.bandwidth)).collect();
             let idx = pick_variant(&pairs, quality, None);
-            let track = load_track(&p, &srcs[idx]).await?;
-            Ok(finish(
-                handle,
-                client,
-                url,
-                headers,
-                (info, srcs, codecs),
-                (track, idx),
-                quality,
-            ))
+            let VariantSrc::Playlist(pl) = &srcs[idx] else {
+                return Err("unsupported stream".into());
+            };
+            let pl = pl.clone();
+            let raw = get_bytes(&p, &pl, None, hls::MAX_TEXT).await?;
+            let text = String::from_utf8(raw).map_err(|_| "no media".to_owned())?;
+            match hls_load(&pl, &url, &text)? {
+                Hls::Vod(track) => Ok(finish(
+                    handle,
+                    client,
+                    url,
+                    headers,
+                    (info, srcs, codecs),
+                    (track, idx),
+                    (quality, tuning),
+                )),
+                Hls::Live {
+                    track,
+                    target,
+                    last_seq,
+                } => Ok(finish_live(
+                    handle,
+                    client,
+                    url,
+                    pl,
+                    headers,
+                    (track, target, last_seq),
+                    (quality, tuning),
+                )),
+            }
         }
     }
 }
@@ -966,7 +1195,8 @@ pub async fn open_dash(
     quality: Quality,
     headers: Vec<(String, String)>,
 ) -> Result<SegmentedReader, String> {
-    let p = probe(client.clone(), &url, headers.clone());
+    let tuning = LiveTuning::default();
+    let p = probe(client.clone(), &url, headers.clone(), tuning);
     let raw = get_bytes(&p, &url, None, dash::MAX_TEXT).await?;
     let mpd = dash::parse(&raw)?;
     let has = |k: dash::Kind| mpd.sets.iter().any(|s| s.kind == k);
@@ -1004,45 +1234,231 @@ pub async fn open_dash(
         headers,
         (info, srcs, codecs),
         (track, idx),
-        quality,
+        (quality, tuning),
     ))
+}
+
+// ---- live ----------------------------------------------------------------
+
+impl Shared {
+    fn end_live(&self, fatal: Option<String>) {
+        let mut st = self.lock();
+        if let Some(l) = st.live.as_mut() {
+            match fatal {
+                Some(e) => l.fatal = Some(e),
+                None => l.ended = true,
+            }
+        }
+        drop(st);
+        self.cv.notify_all();
+    }
+}
+
+/// Append the segments of a reloaded window that were not seen yet and move
+/// the playhead past what the server no longer has. Returns how many were
+/// new. `segs` carries media sequence numbers; `media_seq` is the window's
+/// first.
+fn live_merge(st: &mut State, media_seq: u64, segs: Vec<Seg>) -> usize {
+    let Some(live) = st.live.as_mut() else {
+        return 0;
+    };
+    let Some(window_last) = segs.last().map(|s| s.seq) else {
+        return 0;
+    };
+    let last = live.last_seq;
+    // Numbering went backwards: the origin restarted.
+    let restart = window_last < last;
+    let mut fresh: Vec<Seg> = if restart {
+        segs
+    } else {
+        segs.into_iter().filter(|s| s.seq > last).collect()
+    };
+    if fresh.is_empty() {
+        return 0;
+    }
+    // Segments lost between two reloads, or a restart: a timeline break.
+    if restart || fresh[0].seq > last + 1 {
+        fresh[0].discont = true;
+    }
+    let n = fresh.len();
+    let track = Arc::make_mut(&mut st.track);
+    let first_new = track.end();
+    if restart {
+        live.epoch_idx = first_new;
+    }
+    for s in fresh {
+        live.last_seq = s.seq;
+        track.push(s);
+    }
+    // First index the server still lists. Older ones that are not in memory
+    // are gone: step over them.
+    let window_first = if restart {
+        first_new
+    } else {
+        let from = live.epoch_idx.max(track.base);
+        from + track.segs[from - track.base..].partition_point(|s| s.seq < media_seq)
+    };
+    let mut next = st.next.max(track.base);
+    while next < window_first && !st.ready.contains_key(&next) {
+        next += 1;
+    }
+    if next > st.next {
+        st.next = next;
+        st.need_discont = true;
+        st.last_init = None;
+    }
+    let keep_from = st.next.saturating_sub(LIVE_KEEP_BEHIND);
+    if keep_from > track.base {
+        track.trim_before(keep_from);
+        let base = track.base;
+        st.failed.retain(|i, _| *i >= base);
+        st.ready.retain(|i, _| *i >= base);
+        st.inflight.retain(|i, h| {
+            let keep = *i >= base;
+            if !keep {
+                h.abort();
+            }
+            keep
+        });
+    }
+    n
+}
+
+/// Reload the playlist until the stream ends, is closed or fails. Prefetch
+/// goes on here too, so a consumer that is slow to ask does not lose the
+/// segments the window is about to drop.
+async fn live_refresh(handle: Handle, sh: Arc<Shared>, url: String) {
+    let started = Instant::now();
+    let mut last_new = Instant::now();
+    let mut fails = 0u32;
+    let mut changed = true;
+    loop {
+        let target = sh.lock().live.as_ref().map_or(Duration::ZERO, |l| l.target);
+        let every = target.clamp(Duration::ZERO, LIVE_MAX_INTERVAL);
+        let every = if changed { every } else { every / 2 };
+        let wait = every.max(sh.tuning.floor);
+        let due = Instant::now() + wait;
+        while Instant::now() < due {
+            if sh.closed.load(Ordering::SeqCst) {
+                return;
+            }
+            let left = due.saturating_duration_since(Instant::now());
+            tokio::time::sleep(left.min(Duration::from_millis(50))).await;
+        }
+        if sh.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        if started.elapsed() >= sh.tuning.max_listen {
+            sh.end_live(None);
+            return;
+        }
+        let raw = match get_bytes(&sh, &url, None, hls::MAX_TEXT).await {
+            Ok(r) => r,
+            Err(e) if e == "cancelled" => return,
+            Err(e) if !skippable(&e) => return sh.end_live(Some(e)),
+            Err(_) => {
+                fails += 1;
+                changed = false;
+                if fails >= LIVE_MAX_RELOAD_FAILS {
+                    return sh.end_live(Some("live ended".into()));
+                }
+                continue;
+            }
+        };
+        let parsed = String::from_utf8(raw)
+            .map_err(|_| "no media")
+            .and_then(|t| hls::parse(&t));
+        let (media_seq, segments, ended) = match parsed {
+            Ok(hls::Playlist::Media {
+                media_seq,
+                segments,
+                ended,
+                ..
+            }) => (media_seq, segments, ended),
+            // An empty or garbled reload counts like a failed request.
+            Err("no media") => {
+                fails += 1;
+                changed = false;
+                if fails >= LIVE_MAX_RELOAD_FAILS {
+                    return sh.end_live(Some("live ended".into()));
+                }
+                continue;
+            }
+            // Key systems and policy refusals are never retried.
+            Err(e) => return sh.end_live(Some(e.to_owned())),
+            Ok(hls::Playlist::Master { .. }) => {
+                return sh.end_live(Some("unsupported stream".into()));
+            }
+        };
+        fails = 0;
+        let segs = match hls_segs(&url, &sh.origin, &segments) {
+            Ok(s) => s,
+            Err(e) => return sh.end_live(Some(e)),
+        };
+        let added = {
+            let mut st = sh.lock();
+            let n = live_merge(&mut st, media_seq, segs);
+            top_up(&handle, &sh, &mut st);
+            n
+        };
+        if ended {
+            sh.end_live(None);
+            return;
+        }
+        if added > 0 {
+            last_new = Instant::now();
+            changed = true;
+            sh.cv.notify_all();
+        } else {
+            changed = false;
+            let limit = sh.tuning.stale.max(target * 6);
+            if last_new.elapsed() >= limit {
+                return sh.end_live(Some("live ended".into()));
+            }
+        }
+    }
+}
+
+/// Start downloads for the window ahead of `next`.
+fn top_up(handle: &Handle, sh: &Arc<Shared>, st: &mut State) {
+    let track = Arc::clone(&st.track);
+
+    let Some(first) = track.get(st.next) else {
+        return;
+    };
+    let base = first.start;
+    let mut bytes: usize = st.ready.values().map(|r| r.bytes.len()).sum();
+    for idx in st.next..track.end() {
+        let Some(seg) = track.get(idx) else {
+            continue;
+        };
+        let wanted_now = idx == st.next;
+        if !wanted_now && seg.start.saturating_sub(base) >= WINDOW {
+            break;
+        }
+        if st.ready.contains_key(&idx)
+            || st.inflight.contains_key(&idx)
+            || st.failed.contains_key(&idx)
+        {
+            continue;
+        }
+        if st.inflight.len() >= MAX_CONCURRENT {
+            break;
+        }
+        if !wanted_now && bytes + st.inflight.len() * st.avg_bytes > MAX_BUFFER {
+            break;
+        }
+        bytes += st.avg_bytes;
+        let h = handle.spawn(fetch_task(Arc::clone(sh), st.epoch, idx, seg.clone()));
+        st.inflight.insert(idx, h.abort_handle());
+    }
 }
 
 // ---- reader -----------------------------------------------------------------
 
 impl SegmentedReader {
-    /// Start downloads for the window ahead of `next`.
     fn top_up(&self, st: &mut State) {
-        let track = Arc::clone(&st.track);
-        if st.next >= track.segs.len() {
-            return;
-        }
-        let base = track.segs[st.next].start;
-        let mut bytes: usize = st.ready.values().map(|r| r.bytes.len()).sum();
-        for idx in st.next..track.segs.len() {
-            let seg = &track.segs[idx];
-            let wanted_now = idx == st.next;
-            if !wanted_now && seg.start.saturating_sub(base) >= WINDOW {
-                break;
-            }
-            if st.ready.contains_key(&idx)
-                || st.inflight.contains_key(&idx)
-                || st.failed.contains_key(&idx)
-            {
-                continue;
-            }
-            if st.inflight.len() >= MAX_CONCURRENT {
-                break;
-            }
-            if !wanted_now && bytes + st.inflight.len() * st.avg_bytes > MAX_BUFFER {
-                break;
-            }
-            bytes += st.avg_bytes;
-            let h = self
-                .handle
-                .spawn(fetch_task(Arc::clone(&self.sh), st.epoch, idx, seg.clone()));
-            st.inflight.insert(idx, h.abort_handle());
-        }
+        top_up(&self.handle, &self.sh, st);
     }
 
     /// Keep one segment behind and nothing beyond the window.
@@ -1052,8 +1468,8 @@ impl SegmentedReader {
             return;
         }
         let lo = st.next.saturating_sub(1);
-        let hi_t = track.segs.get(st.next).map_or(track.total, |s| s.start) + WINDOW;
-        let keep = |i: usize| i >= lo && track.segs.get(i).is_some_and(|s| s.start <= hi_t);
+        let hi_t = track.get(st.next).map_or(track.total, |s| s.start) + WINDOW;
+        let keep = |i: usize| i >= lo && track.get(i).is_some_and(|s| s.start <= hi_t);
         st.ready.retain(|i, _| keep(*i));
         let stale: Vec<usize> = st.inflight.keys().copied().filter(|i| !keep(*i)).collect();
         for i in stale {
@@ -1104,7 +1520,7 @@ impl SegmentedReader {
         let mut buffer = Duration::ZERO;
         let mut i = st.next;
         while st.ready.contains_key(&i) {
-            buffer += st.track.segs[i].dur;
+            buffer += st.track.get(i).map_or(Duration::ZERO, |s| s.dur);
             i += 1;
         }
         let cap = sh.quality.max_height;
@@ -1146,13 +1562,9 @@ impl SegmentedReader {
         let Some((v, track)) = st.switched.take() else {
             return;
         };
-        let at = st
-            .track
-            .segs
-            .get(st.next)
-            .map_or(st.track.total, |s| s.start);
+        let at = st.track.get(st.next).map_or(st.track.total, |s| s.start);
         let idx = if track.segs.is_empty() || at >= track.total {
-            track.segs.len()
+            track.end()
         } else {
             track.index_at(at)
         };
@@ -1169,7 +1581,9 @@ impl SegmentedReader {
     }
 
     fn emit(st: &mut State, idx: usize) {
-        let seg = st.track.segs[idx].clone();
+        let Some(seg) = st.track.get(idx).cloned() else {
+            return;
+        };
         // The segment's bytes move into the chunk; nothing is copied.
         let Some(Ready { bytes, init }) = st.ready.remove(&idx) else {
             return;
@@ -1196,6 +1610,9 @@ impl SegmentedReader {
         st.last_init = seg.init.clone();
         st.need_discont = false;
         st.next = idx + 1;
+        if let Some(l) = st.live.as_mut() {
+            l.fail_run = 0;
+        }
     }
 }
 
@@ -1211,6 +1628,9 @@ impl Drop for SegmentedReader {
         if let Some(h) = st.switch_task.take() {
             h.abort();
         }
+        if let Some(h) = st.live.as_mut().and_then(|l| l.task.take()) {
+            h.abort();
+        }
         drop(st);
         self.sh.cv.notify_all();
     }
@@ -1218,14 +1638,19 @@ impl Drop for SegmentedReader {
 
 impl TimedSource for SegmentedReader {
     fn duration(&self) -> Option<Duration> {
-        Some(self.sh.lock().track.total)
+        let st = self.sh.lock();
+        st.live.is_none().then_some(st.track.total)
     }
 
     fn seek(&mut self, t: Duration) -> Duration {
         let mut st = self.sh.lock();
         let track = Arc::clone(&st.track);
+        if st.live.is_some() {
+            // A live stream has no timeline to move on.
+            return track.get(st.next).map_or(track.total, |s| s.start);
+        }
         if track.segs.is_empty() || t >= track.total {
-            st.next = track.segs.len();
+            st.next = track.end();
             st.outbox.clear();
             return track.total;
         }
@@ -1237,7 +1662,7 @@ impl TimedSource for SegmentedReader {
         st.failed.clear();
         Self::evict(&mut st);
         self.top_up(&mut st);
-        track.segs[idx].start
+        track.get(idx).map_or(track.total, |s| s.start)
     }
 
     fn pull(&mut self) -> io::Result<Option<Chunk>> {
@@ -1250,30 +1675,55 @@ impl TimedSource for SegmentedReader {
             }
             self.apply_switch(&mut st);
             self.abr_tick(&mut st);
-            if st.next >= st.track.segs.len() {
-                return Ok(None);
-            }
-            self.top_up(&mut st);
-            let idx = st.next;
-            if st.ready.contains_key(&idx) {
-                Self::emit(&mut st, idx);
-                Self::evict(&mut st);
-                continue;
-            }
-            if let Some(e) = st.failed.get(&idx).cloned() {
-                // One lost segment is a glitch, not the end of the film.
-                let dur = st.track.segs[idx].dur;
-                let total = st.track.total;
-                if skippable(&e) && (st.skipped + dur) * SKIP_SHARE < total {
-                    st.skipped += dur;
-                    st.failed.remove(&idx);
-                    st.next = idx + 1;
-                    st.need_discont = true;
-                    st.last_init = None;
+            if st.next >= st.track.end() {
+                // Everything listed so far is out. A live stream waits for
+                // the next reload unless it is over.
+                match st.live.as_ref() {
+                    None => return Ok(None),
+                    Some(l) if l.fatal.is_some() => {
+                        let e = l.fatal.clone().unwrap_or_default();
+                        return Err(io::Error::other(e));
+                    }
+                    Some(l) if l.ended => return Ok(None),
+                    Some(_) => {}
+                }
+            } else {
+                self.top_up(&mut st);
+                let idx = st.next;
+                if st.ready.contains_key(&idx) {
+                    Self::emit(&mut st, idx);
                     Self::evict(&mut st);
                     continue;
                 }
-                return Err(io::Error::other(e));
+                if let Some(e) = st.failed.get(&idx).cloned() {
+                    // One lost segment is a glitch, not the end of the film.
+                    let dur = st.track.get(idx).map_or(Duration::ZERO, |s| s.dur);
+                    let total = st.track.total;
+                    let live_run = st.live.as_ref().map(|l| l.fail_run);
+                    let affordable = match live_run {
+                        // Live: a few in a row, then the stream is gone.
+                        Some(run) => run < LIVE_MAX_SKIPS,
+                        None => (st.skipped + dur) * SKIP_SHARE < total,
+                    };
+                    if skippable(&e) && affordable {
+                        match st.live.as_mut() {
+                            Some(l) => l.fail_run += 1,
+                            None => st.skipped += dur,
+                        }
+                        st.failed.remove(&idx);
+                        st.next = idx + 1;
+                        st.need_discont = true;
+                        st.last_init = None;
+                        Self::evict(&mut st);
+                        continue;
+                    }
+                    let e = if live_run.is_some() && skippable(&e) {
+                        "live ended".to_owned()
+                    } else {
+                        e
+                    };
+                    return Err(io::Error::other(e));
+                }
             }
             let now = Instant::now();
             if now >= deadline {
@@ -1290,11 +1740,12 @@ impl TimedSource for SegmentedReader {
     fn buffered_until(&self) -> Option<Duration> {
         let st = self.sh.lock();
         let track = &st.track;
-        let first = track.segs.get(st.next)?;
+        let first = track.get(st.next)?;
         let mut t = first.start;
         let mut i = st.next;
         while st.ready.contains_key(&i) {
-            t = track.segs[i].start + track.segs[i].dur;
+            let Some(s) = track.get(i) else { break };
+            t = s.start + s.dur;
             i += 1;
         }
         Some(t)
@@ -1496,6 +1947,58 @@ mod tests {
         let (k, iv) = ([1u8; 16], [2u8; 16]);
         assert!(decrypt(&k, &iv, &[0u8; 15]).is_err());
         assert!(decrypt(&k, &iv, &[0u8; 16]).is_err());
+    }
+
+    fn live_seg(seq: u64) -> Seg {
+        Seg {
+            part: Part {
+                url: format!("http://x.invalid/s{seq}.ts"),
+                range: None,
+            },
+            dur: Duration::from_secs(2),
+            start: Duration::ZERO,
+            init: None,
+            key: None,
+            seq,
+            discont: false,
+        }
+    }
+
+    #[test]
+    fn a_live_track_stays_bounded_and_indices_stay_absolute() {
+        let mut st = new_state(Track::new(vec![live_seg(0), live_seg(1)]), 0, false);
+        st.live = Some(LiveState {
+            target: Duration::from_secs(2),
+            last_seq: 1,
+            epoch_idx: 0,
+            ended: false,
+            fatal: None,
+            fail_run: 0,
+            task: None,
+        });
+        // 5000 reloads of a 6-segment window; the consumer follows.
+        for n in 1..5000u64 {
+            let first = n;
+            let win: Vec<Seg> = (first..first + 6).map(live_seg).collect();
+            let added = live_merge(&mut st, first, win);
+            assert!(added >= 1);
+            st.next = st.track.end();
+            assert!(
+                st.track.segs.len() <= 6 + LIVE_KEEP_BEHIND + 6,
+                "{}",
+                st.track.segs.len()
+            );
+        }
+        // Absolute indices survive trimming; the newest segment is last.
+        let end = st.track.end();
+        assert!(end > 4000);
+        assert_eq!(st.track.get(end - 1).unwrap().seq, 5004);
+        assert!(st.track.get(0).is_none());
+        // Timeline is cumulative even though the head was dropped.
+        assert!(st.track.total >= Duration::from_secs(2 * 4000));
+        // Replaying an old window adds nothing.
+        let old: Vec<Seg> = (5000..5005).map(live_seg).collect();
+        assert_eq!(live_merge(&mut st, 5000, old), 0);
     }
 
     #[test]

@@ -14,7 +14,9 @@ use jizzcraft_core::timed::{Chunk, TimedSource};
 use jizzcraft_fetch::FetchConfig;
 use jizzcraft_fetch::errors;
 use jizzcraft_fetch::pick::{Prefer, Quality};
-use jizzcraft_fetch::segmented::{AbrConfig, SegmentedReader, open_dash, open_hls};
+use jizzcraft_fetch::segmented::{
+    AbrConfig, LiveTuning, SegmentedReader, open_dash, open_hls, open_hls_with,
+};
 use jizzcraft_fetch::service::FetchService;
 
 /// The proxy policy is process-global, so these tests run one at a time.
@@ -671,21 +673,10 @@ fn dash_list_and_sidx_play_back() {
 }
 
 #[test]
-fn a_live_playlist_says_live() {
+fn a_dynamic_dash_manifest_still_says_live() {
     let _g = serial();
     reset_policy();
-    let pl = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:10\n#EXTINF:2,\ns0.ts\n#EXTINF:2,\ns1.ts\n";
-    let port = serve(by_path(pl.into(), 2, 1), hits());
     let rt = rt();
-    let err = open(
-        &rt,
-        format!("http://127.0.0.1:{port}/m.m3u8"),
-        Quality::default(),
-    )
-    .err()
-    .expect("live is refused");
-    assert!(err.contains("live"), "{err}");
-    // Same for a dynamic DASH manifest.
     let h: Handler = Arc::new(|_| ok("<MPD type=\"dynamic\"><Period/></MPD>"));
     let port = serve(h, hits());
     let err = rt
@@ -697,8 +688,458 @@ fn a_live_playlist_says_live() {
             Vec::new(),
         ))
         .err()
-        .expect("live is refused");
+        .expect("live DASH is refused");
     assert!(err.contains("live"), "{err}");
+}
+
+// ---- live HLS ---------------------------------------------------------------
+
+fn fast_live() -> LiveTuning {
+    LiveTuning {
+        floor: Duration::from_millis(20),
+        stale: Duration::from_secs(60),
+        max_listen: Duration::from_secs(60),
+    }
+}
+
+/// A sliding window over a synthetic live origin. `head` is the number of
+/// segments published so far; `window` how many are listed.
+struct Origin {
+    head: AtomicUsize,
+    window: usize,
+    ended: std::sync::atomic::AtomicBool,
+    /// Extra tag lines inserted before the segment with this sequence.
+    disc_at: Option<usize>,
+    /// Segment indexes answered with 404.
+    missing: Vec<usize>,
+    log: std::sync::Mutex<Vec<String>>,
+}
+
+impl Origin {
+    fn new(head: usize, window: usize) -> Arc<Origin> {
+        Arc::new(Origin {
+            head: AtomicUsize::new(head),
+            window,
+            ended: std::sync::atomic::AtomicBool::new(false),
+            disc_at: None,
+            missing: Vec::new(),
+            log: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    fn publish(&self, head: usize) {
+        self.head.store(head, Ordering::SeqCst);
+    }
+
+    fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+    }
+
+    fn playlist(&self) -> String {
+        let head = self.head.load(Ordering::SeqCst);
+        let first = head.saturating_sub(self.window);
+        let mut p = format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:0.1\n#EXT-X-MEDIA-SEQUENCE:{first}\n"
+        );
+        for i in first..head {
+            if self.disc_at == Some(i) {
+                p.push_str("#EXT-X-DISCONTINUITY\n");
+            }
+            p.push_str(&format!("#EXTINF:0.1,\ns{i}.ts\n"));
+        }
+        if self.ended.load(Ordering::SeqCst) {
+            p.push_str("#EXT-X-ENDLIST\n");
+        }
+        p
+    }
+
+    fn handler(self: &Arc<Self>) -> Handler {
+        let o = Arc::clone(self);
+        Arc::new(move |p: &str| {
+            o.log.lock().unwrap().push(p.to_owned());
+            if p.ends_with(".m3u8") {
+                return ok(o.playlist());
+            }
+            let i: usize = p
+                .trim_start_matches("/s")
+                .trim_end_matches(".ts")
+                .parse()
+                .unwrap_or(usize::MAX);
+            let head = o.head.load(Ordering::SeqCst);
+            let first = head.saturating_sub(o.window);
+            if i < head && i >= first && !o.missing.contains(&i) {
+                ok(seg_bytes(3, i))
+            } else {
+                status(404)
+            }
+        })
+    }
+
+    fn requested_segments(&self) -> Vec<usize> {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.strip_prefix("/s")?.strip_suffix(".ts")?.parse().ok())
+            .collect()
+    }
+
+    fn playlist_hits(&self) -> usize {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.ends_with(".m3u8"))
+            .count()
+    }
+}
+
+fn open_live(
+    rt: &tokio::runtime::Runtime,
+    port: u16,
+    path: &str,
+    t: LiveTuning,
+) -> Result<SegmentedReader, String> {
+    rt.block_on(open_hls_with(
+        rt.handle().clone(),
+        reqwest::Client::new(),
+        format!("http://127.0.0.1:{port}{path}"),
+        Quality::default(),
+        Vec::new(),
+        t,
+    ))
+}
+
+/// Which segment a chunk holds (its length encodes the index).
+fn seq_of(c: &Chunk) -> usize {
+    (c.bytes.len() - 1000) / 7
+}
+
+#[test]
+fn live_starts_three_from_the_edge_and_plays_each_segment_once() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(6, 6);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    // No total length, no seeking, no quality chip.
+    assert_eq!(r.duration(), None);
+    assert!(r.variants().is_empty());
+    let mut seen = Vec::new();
+    for i in 0..3 {
+        let c = pull_one(&mut r);
+        if i == 0 {
+            assert_eq!(c.pts, Some(Duration::ZERO));
+            assert!(!c.discont);
+        }
+        seen.push(seq_of(&c));
+    }
+    assert_eq!(seen, [3, 4, 5]);
+    // The origin keeps publishing; the window slides (6 listed of 14).
+    for head in 7..=14 {
+        o.publish(head);
+        std::thread::sleep(Duration::from_millis(130));
+    }
+    o.end();
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    seen.extend(chunks.iter().map(seq_of));
+    // Every segment exactly once, in order, nothing re-fetched or replayed.
+    assert_eq!(seen, (3..14).collect::<Vec<_>>());
+    assert!(chunks.iter().all(|c| !c.discont));
+    let mut asked = o.requested_segments();
+    asked.sort_unstable();
+    asked.dedup();
+    assert_eq!(asked, (3..14).collect::<Vec<_>>());
+    // The reader went on asking for the playlist while it played.
+    assert!(o.playlist_hits() >= 4);
+    reset_policy();
+}
+
+#[test]
+fn a_hole_in_the_sequence_is_a_discontinuity_and_playback_resumes() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(5, 5);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    let first: Vec<usize> = (0..3).map(|_| seq_of(&pull_one(&mut r))).collect();
+    assert_eq!(first, [2, 3, 4]);
+    // The consumer was away: the window jumps far ahead of what was seen.
+    o.publish(20);
+    let c = pull_one(&mut r);
+    assert_eq!(seq_of(&c), 15);
+    assert!(c.discont, "the hole must break the timeline");
+    o.end();
+    let (rest, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(
+        rest.iter().map(seq_of).collect::<Vec<_>>(),
+        [16, 17, 18, 19]
+    );
+    // Segments 5..15 are gone: never asked for.
+    assert!(
+        o.requested_segments()
+            .iter()
+            .all(|&i| !(5..15).contains(&i))
+    );
+    reset_policy();
+}
+
+#[test]
+fn ext_x_discontinuity_marks_the_chunk() {
+    let _g = serial();
+    reset_policy();
+    let mut o = Origin::new(8, 8);
+    Arc::get_mut(&mut o).unwrap().disc_at = Some(6);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    o.end();
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    // Starts at 5; the tag sits before 6.
+    let flags: Vec<(usize, bool)> = chunks.iter().map(|c| (seq_of(c), c.discont)).collect();
+    assert_eq!(flags, [(5, false), (6, true), (7, false)]);
+    reset_policy();
+}
+
+#[test]
+fn a_missing_live_segment_is_skipped_with_a_discontinuity() {
+    let _g = serial();
+    reset_policy();
+    let mut o = Origin::new(9, 9);
+    Arc::get_mut(&mut o).unwrap().missing = vec![7];
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    o.end();
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    let flags: Vec<(usize, bool)> = chunks.iter().map(|c| (seq_of(c), c.discont)).collect();
+    assert_eq!(flags, [(6, false), (8, true)]);
+    reset_policy();
+}
+
+#[test]
+fn a_numbering_restart_is_followed_and_flagged() {
+    let _g = serial();
+    reset_policy();
+    // Two origins behind one port: the second starts again from 0.
+    let first = Origin::new(6, 6);
+    let second = Origin::new(4, 4);
+    let flip = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (a, b, f) = (first.handler(), second.handler(), flip.clone());
+    let h: Handler = Arc::new(
+        move |p: &str| {
+            if f.load(Ordering::SeqCst) { b(p) } else { a(p) }
+        },
+    );
+    let port = serve(h, hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    let seen: Vec<usize> = (0..3).map(|_| seq_of(&pull_one(&mut r))).collect();
+    assert_eq!(seen, [3, 4, 5]);
+    flip.store(true, Ordering::SeqCst);
+    let c = pull_one(&mut r);
+    assert_eq!(seq_of(&c), 0);
+    assert!(c.discont);
+    second.end();
+    let (rest, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(rest.iter().map(seq_of).collect::<Vec<_>>(), [1, 2, 3]);
+    reset_policy();
+}
+
+#[test]
+fn dropping_a_live_reader_stops_the_reloads() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(6, 6);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    let _ = pull_one(&mut r);
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(o.playlist_hits() >= 3, "it was reloading");
+    let t0 = Instant::now();
+    drop(r);
+    assert!(t0.elapsed() < Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(150));
+    let after = (o.playlist_hits(), o.requested_segments().len());
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!((o.playlist_hits(), o.requested_segments().len()), after);
+    reset_policy();
+}
+
+#[test]
+fn a_playlist_that_stops_changing_ends_with_live_ended() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(4, 4);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let t = LiveTuning {
+        stale: Duration::from_millis(500),
+        ..fast_live()
+    };
+    let mut r = open_live(&rt, port, "/live.m3u8", t).unwrap();
+    let (chunks, err) = drain(&mut r);
+    // What was listed plays out first.
+    assert_eq!(chunks.iter().map(seq_of).collect::<Vec<_>>(), [1, 2, 3]);
+    let err = err.expect("ends with an error");
+    assert_eq!(errors::classify(&err), errors::LIVE_ENDED);
+    reset_policy();
+}
+
+#[test]
+fn losing_the_playlist_ends_with_live_ended() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(4, 4);
+    let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (inner, g) = (o.handler(), gone.clone());
+    let h: Handler = Arc::new(move |p: &str| {
+        if p.ends_with(".m3u8") && g.load(Ordering::SeqCst) {
+            status(404)
+        } else {
+            inner(p)
+        }
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    let _ = pull_one(&mut r);
+    gone.store(true, Ordering::SeqCst);
+    let (_, err) = drain(&mut r);
+    let err = err.expect("ends with an error");
+    assert_eq!(errors::classify(&err), errors::LIVE_ENDED);
+    reset_policy();
+}
+
+#[test]
+fn the_listening_session_is_bounded() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(4, 4);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let t = LiveTuning {
+        max_listen: Duration::from_millis(400),
+        ..fast_live()
+    };
+    let mut r = open_live(&rt, port, "/live.m3u8", t).unwrap();
+    let (_, err) = drain(&mut r);
+    assert!(err.is_none(), "a limit is a clean end: {err:?}");
+    reset_policy();
+}
+
+#[test]
+fn live_drm_is_refused_at_open_and_when_it_appears_later() {
+    let _g = serial();
+    reset_policy();
+    let rt = rt();
+    let sample = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k\"\n#EXTINF:2,\ns0.ts\n";
+    let h: Handler = Arc::new(move |_| ok(sample));
+    let port = serve(h, hits());
+    let err = open_live(&rt, port, "/l.m3u8", fast_live())
+        .err()
+        .expect("refused");
+    assert_eq!(errors::classify(&err), errors::PROTECTED);
+    // Widevine key format.
+    let wv = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\",KEYFORMAT=\"urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed\"\n#EXTINF:2,\ns0.ts\n";
+    let h: Handler = Arc::new(move |_| ok(wv));
+    let port = serve(h, hits());
+    let err = open_live(&rt, port, "/l.m3u8", fast_live())
+        .err()
+        .expect("refused");
+    assert_eq!(errors::classify(&err), errors::PROTECTED);
+
+    // Clear at first, protected on a later reload: what is buffered plays,
+    // then the stream ends as protected. No key is ever requested.
+    let o = Origin::new(4, 4);
+    let drm = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (inner, d) = (o.handler(), drm.clone());
+    let h: Handler = Arc::new(move |p: &str| {
+        if p.ends_with(".m3u8") && d.load(Ordering::SeqCst) {
+            ok(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:0.1\n#EXT-X-MEDIA-SEQUENCE:5\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k\"\n#EXTINF:0.1,\ns5.ts\n",
+            )
+        } else {
+            inner(p)
+        }
+    });
+    let port = serve(h, hits());
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    let _ = pull_one(&mut r);
+    drm.store(true, Ordering::SeqCst);
+    let (_, err) = drain(&mut r);
+    assert_eq!(errors::classify(&err.expect("refused")), errors::PROTECTED);
+    reset_policy();
+}
+
+#[test]
+fn live_from_a_master_plays_the_chosen_variant_without_a_quality_chip() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(5, 5);
+    let inner = o.handler();
+    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=160x120\nlow/live.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=320x240\nhigh/live.m3u8\n";
+    let h: Handler = Arc::new(move |p: &str| {
+        if p == "/master.m3u8" {
+            ok(master)
+        } else if let Some(rest) = p.strip_prefix("/high/") {
+            inner(&format!("/{rest}"))
+        } else {
+            inner(p)
+        }
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    // Segments resolve against the variant playlist: /high/s4.ts.
+    let mut r = open_live(&rt, port, "/master.m3u8", fast_live()).unwrap();
+    assert_eq!(r.duration(), None);
+    assert!(r.variants().is_empty());
+    let c = pull_one(&mut r);
+    assert_eq!(seq_of(&c), 2);
+    o.end();
+    let (rest, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(rest.len(), 2);
+    reset_policy();
+}
+
+#[test]
+fn live_seek_is_a_no_op_and_memory_stays_bounded_on_a_long_run() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(4, 4);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let mut r = open_live(&rt, port, "/live.m3u8", fast_live()).unwrap();
+    let c = pull_one(&mut r);
+    // Seeking does not move anything.
+    let _ = r.seek(Duration::from_secs(1000));
+    let mut last = seq_of(&c);
+    for head in 5..=200 {
+        o.publish(head);
+        // Pull whatever is there; the origin only lists 4.
+        loop {
+            match r.pull() {
+                Ok(Some(c)) => last = seq_of(&c),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+    o.end();
+    let (_, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert!(last >= 150, "kept up with the edge: {last}");
+    reset_policy();
 }
 
 const AUDIO_MEDIA: &str = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nv0.ts\n#EXT-X-ENDLIST\n";

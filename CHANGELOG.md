@@ -16,6 +16,22 @@ anything may change between minor versions.
   it. See `docs/perf.md`; RSS, time to first frame and UI frame cost are not
   covered yet.
 
+### Streaming
+- Live HLS streams (issue #7). A media playlist without `#EXT-X-ENDLIST` now
+  plays instead of being refused: it starts three segments from the live
+  edge, is reloaded every target duration, plays each segment once by media
+  sequence, resumes after a hole, follows a numbering restart and
+  `#EXT-X-DISCONTINUITY`, skips a missing segment, and ends cleanly on
+  `ENDLIST` or after 12 hours (or with "The live stream ended." when the
+  playlist is lost). The player shows a translated `LIVE` chip and no
+  timeline; seeking stays off. Key systems (SAMPLE-AES, Widevine, ...) are
+  still refused, including when they appear in a later reload. Live DASH is
+  still refused with its own sentence ("Live DASH streams are not supported.",
+  translated). Same address checks, proxy kill switch and cancellation as
+  on-demand streams; bytes still reach the player through `open_timed` only.
+  Tests: sliding-window loopback server (gap, discontinuity, restart,
+  `ENDLIST`, stale, cancellation, DRM) and e2e scenario `s06b`.
+
 ### Player
 - Local subtitles (issue #9). A `.srt` or `.vtt` next to the video with the
   same base name is picked up, with an optional language tag (`clip.fr.srt`,

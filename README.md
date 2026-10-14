@@ -356,7 +356,7 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 >
 > **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only (Windows and macOS builds exist but have not been run).
 >
-> **Streaming scope (Online edition only, experimental)**: direct video addresses, HLS and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Not supported: live streams, separate audio and video tracks, DRM, subtitles, saving a stream to disk as a feature.
+> **Streaming scope (Online edition only, experimental)**: direct video addresses, HLS (on demand and live) and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Not supported: live DASH, separate audio and video tracks, DRM, subtitles, saving a stream to disk as a feature.
 
 ## Privacy guarantees
 
