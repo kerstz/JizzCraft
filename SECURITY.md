@@ -16,8 +16,12 @@ JizzCraft is early alpha. Only the latest commit on `main` receives fixes.
 
 ## Scope
 
-In scope, for example: anything that makes JizzCraft open a network connection
-(including through GStreamer, despite the guard in `crates/media/src/guard.rs`),
+In scope, for example: anything that makes the **default build** open a network
+connection (including through GStreamer, despite the guard in
+`crates/media/src/guard.rs`); in the `network` build, a connection before the
+user starts a fetch action, an extra listening port, indexer keys, queries or
+torrent names leaking into logs, toasts, the database or backups, or a torrent
+writing outside the download folder or overwriting a file;
 modify/move/delete user media, run a shell command built from a file name, leak
 full paths or file names into logs without `JIZZCRAFT_DEBUG=1`, inject SQL
 through filters or saved views, or crash on a crafted file in a way that looks
@@ -29,6 +33,12 @@ are **not encrypted** today. Bugs in GStreamer, its plugins or the `image`
 decoders themselves should be reported upstream.
 
 ## Things to know
+
+- The opt-in `network` build reveals your IP address to the indexers you
+  configure and to BitTorrent peers, trackers and DHT nodes. Use the `proxy`
+  setting (SOCKS5) or a VPN if that matters. Files it downloads are parsed by
+  GStreamer without a sandbox like any other. What you download is your
+  responsibility.
 
 - Every imported video is parsed by the system GStreamer plugins to make its
   thumbnail, without a sandbox. Keep GStreamer up to date, and treat files from

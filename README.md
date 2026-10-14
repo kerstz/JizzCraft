@@ -6,7 +6,7 @@
 
 **The porn viewer you already know how to use.**
 
-Your library, in a native app written entirely in Rust. Open source, offline, and yours. Fully usable with one hand, which we are told is an accessibility feature, and we are sticking to that.
+Your library, in a native app written entirely in Rust. Open source, offline by default, and yours. Fully usable with one hand, which we are told is an accessibility feature, and we are sticking to that.
 
 ![100% Rust](https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square)
 ![Linux](https://img.shields.io/badge/platform-Linux-2f7bf5?style=flat-square)
@@ -28,7 +28,7 @@ Yes, the name is exactly what you think it is. Everything else here tries hard t
 - ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs.
 - ✋ **One hand is enough.** A left-hand preset puts browsing, opening, playback, seeking, volume, favorites, ratings and the boss key around `WASD`. [Details and honest footnote below](#one-hand-is-enough).
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
-- 🔒 **Private by default.** No account, no telemetry, no network connections: GStreamer's network-capable elements are switched off inside the app, so even a streaming playlist renamed to `.mp4` is refused, not fetched. A boss key, a discreet mode and a screen-share-safe mode are built in.
+- 🔒 **Private by default.** No account, no telemetry, and the default build makes no network connections: GStreamer's network-capable elements are switched off inside the app, so even a streaming playlist renamed to `.mp4` is refused, not fetched. A boss key, a discreet mode and a screen-share-safe mode are built in.
 - 🤖 **Agent-ready.** One registry of named commands drives the menus, the shortcuts and a JSON CLI.
 
 ## One hand is enough
@@ -122,7 +122,7 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 | Videos | whatever your GStreamer can decode (MP4/H.264, WebM/VP8/VP9, MKV, …) |
 | Inspector | name, path, type, size, resolution, duration, codec, added date |
 | Shortcuts | `?` lists every binding (generated from one table). Anywhere: `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Alt+0`–`5` rate. Library: arrows move, `Enter` opens, `Home`/`End`, `/` search, `1`–`4` tabs, `S` favorite. Viewer: `←`/`→`, `0` fit, `1` 100 %, `+`/`-` zoom, `X` hide. Player: `Space`, `←`/`→` ±5 s, `↑`/`↓` volume, `M` mute, `F` fullscreen, `Page Up`/`Page Down` previous/next, `Home` restart. Triage: `→` keep, `↓` hide, `↑` favorite, `←` undo. A left-hand preset keeps everything on `WASD` (see [One hand is enough](#one-hand-is-enough)). Digits and left-hand keys match the physical key, so they work on AZERTY. Shuffle, saved views, speed, A-B loop and autoplay are on-screen controls; random pick, slideshow, triage, frame step and markers have no shortcut yet |
-| Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network connections |
+| Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network connections in the default build |
 
 ## Built for agents
 
@@ -255,7 +255,7 @@ cargo xtask screenshots       # render README images through the app itself
 
 *The boring section. Boring is the point.*
 
-- No accounts, telemetry, analytics, cloud sync, ads or network connections. The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
+- No accounts, telemetry, analytics, cloud sync or ads. The default build makes no network connections (the optional `network` build is described above). The player only accepts local file paths, and GStreamer's network-capable elements are disabled inside the app, so playlists and stream descriptions are refused rather than followed (see *Under the hood*). Files on network mounts (NFS, SMB, sshfs) are read through your operating system like any other file. `--bench-gst-play` runs the external `gst-play-1.0`, which this guard does not cover.
 - No scraping, no downloaders, no external feeds.
 - Your media is never modified, moved or deleted. Thumbnails and previews are written to the XDG cache directory (or the portable home) only.
 - No shell commands are ever built from file names. Paths are passed as arguments to APIs.
@@ -272,6 +272,22 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md). Report v
 ## Inspiration
 
 The idea comes from a joke thread on r/linuxmemes, ["Not another one"](https://www.reddit.com/r/linuxmemes/comments/1x454bj/not_another_one/), about yet another vibe-coded Rust app ending in "Craft". The thread's remarks on accessibility, one-handed use and repetitive filtering shaped the keyboard-first design and the left-hand key preset. One-handed use was raised as an accessibility point and has been implemented as one, with a completely straight face. No content from the thread is reproduced here, and the project is not affiliated with its author or with the subreddit.
+
+## Optional network build
+
+The default build never touches the network. If you want to search indexers and download torrents from inside the app, build the opt-in variant:
+
+```sh
+cargo build --release -p jizzcraft --features network
+cargo build --release -p jizzcraft-cli --features network
+```
+
+- **Nothing is bundled.** You add your own [Torznab](https://torznab.github.io/spec-1.3-draft/) endpoint (a local Jackett or Prowlarr, for instance) with its API key. Torznab is how those tools expose their search. There is no built-in site, tracker or index.
+- **Downloads are a normal library folder.** Set a download folder, and it is imported like any other. Playback is still from disk (`file://`), never from a URL.
+- **In the app:** `Ctrl+J` opens Downloads (indexers, search, torrents). **From the CLI:** `jizzcraft-cli run fetch.search '{"query":"…"}'`, `fetch.add`, `fetch.grab` (search then add one result in a call, optional `wait_secs`), `fetch.list`, `fetch.pause`, `fetch.resume`, `fetch.remove`. A cron job or a script can drive all of it.
+- **Safe defaults.** DHT on, incoming connections off, no seeding after completion, SOCKS5 proxy supported. Indexer keys are stored in `fetch.json` with mode 0600, never in the database, backups or logs. Removing a torrent never deletes files; a torrent never overwrites an existing file.
+- **What it exposes.** Your IP is visible to the indexers you configure and to BitTorrent peers. What you search for and download is your responsibility.
+- **Verified by tests.** The default dependency tree is checked to contain no network crate; the network build is tested against a local mock indexer and a two-session swarm on 127.0.0.1.
 
 ## Parody disclaimer
 
