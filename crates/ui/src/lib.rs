@@ -12,6 +12,7 @@ pub mod identity;
 pub mod keys;
 pub mod lang;
 pub mod player_view;
+pub mod subs;
 pub mod theme;
 pub mod widgets;
 

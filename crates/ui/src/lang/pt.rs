@@ -964,4 +964,23 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Interface zoom", "Zoom da interface"),
     ("Reduce motion", "Reduzir animações"),
     ("Reset", "Repor"),
+    ("Subs", "Leg."),
+    ("Subtitles", "Legendas"),
+    ("Off", "Desligadas"),
+    ("Timing", "Sincronia"),
+    ("Earlier", "Mais cedo"),
+    ("Later", "Mais tarde"),
+    (
+        "Subtitles: pick a track or turn them off",
+        "Legendas: escolha uma faixa ou desligue",
+    ),
+    ("SUBTITLES OFF", "LEGENDAS DESLIGADAS"),
+    ("SUBTITLES: {}", "LEGENDAS: {}"),
+    ("SUBTITLE TIMING: {}", "SINCRONIA DAS LEGENDAS: {}"),
+    (
+        "Cycle subtitle tracks, then off",
+        "Alternar faixas de legendas e depois desligar",
+    ),
+    ("Subtitles earlier (0.1 s)", "Legendas mais cedo (0,1 s)"),
+    ("Subtitles later (0.1 s)", "Legendas mais tarde (0,1 s)"),
 ];

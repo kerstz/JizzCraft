@@ -1018,6 +1018,36 @@ pub const KEYMAP: &[Binding] = &[
     ),
     b(
         Player,
+        Both,
+        Key::V,
+        true,
+        "V",
+        "player.subs",
+        r#"{"action":"cycle"}"#,
+        "Cycle subtitle tracks, then off",
+    ),
+    alt(b(
+        Player,
+        Both,
+        Key::ArrowLeft,
+        false,
+        "Alt+←",
+        "player.subs",
+        r#"{"delta_ms":-100}"#,
+        "Subtitles earlier (0.1 s)",
+    )),
+    alt(b(
+        Player,
+        Both,
+        Key::ArrowRight,
+        false,
+        "Alt+→",
+        "player.subs",
+        r#"{"delta_ms":100}"#,
+        "Subtitles later (0.1 s)",
+    )),
+    b(
+        Player,
         Def,
         Key::L,
         false,
@@ -1858,6 +1888,7 @@ mod tests {
             "player.loop",
             "player.frame",
             "player.marker.jump",
+            "player.subs",
         ] {
             assert!(KEYMAP.iter().any(|b| b.cmd == cmd), "no key for {cmd}");
         }

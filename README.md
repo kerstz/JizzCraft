@@ -239,6 +239,7 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 
 - **Resume and history**, with a pause switch, a clear button and a setting that hides history in the UI. History is aggregate (count, last played, resume point), never an event log.
 - **Speed** from the player bar (cycles 0.5×–2×; `player.speed` accepts 0.25×–4×), pitch preserved when `scaletempo` (gst-plugins-good) is installed. **A-B loop** from the player bar. **Markers** show as timeline ticks and in the inspector (click to seek, × to remove). Adding markers, jumping between them and **frame step** are commands for now (`markers.add`, `player.marker.jump`, `player.frame`).
+- **Subtitles**: a `.srt` or `.vtt` sidecar with the same base name (`clip.fr.srt` for a language) is shown as an overlay. `V` cycles tracks then off, `Alt+←` / `Alt+→` shift timing by 0.1 s, and the `Subs` chip in the bar has the menu. Local files only; the choice is remembered.
 - **Scrub previews** on the timeline, decoded on demand into a cache and blurred in discreet and share-safe modes.
 - **Autoplay-next** with a three-second countdown that Esc cancels. Three seconds is enough time to reconsider your choices, or not.
 
