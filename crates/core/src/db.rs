@@ -500,6 +500,31 @@ impl Db {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Forget one imported root and every media row under it (labels, markers
+    /// and playlist entries go with them through `ON DELETE CASCADE`).
+    /// Only database rows are touched, never a file on disk. Returns how many
+    /// media rows were dropped, or `None` when `path` is not an imported root.
+    pub fn remove_folder(&mut self, path: &Path) -> Result<Option<u64>> {
+        let blob = path_to_blob(path);
+        let tx = self.conn.transaction()?;
+        let id: Option<i64> = tx
+            .query_row("SELECT id FROM folders WHERE path = ?1", [&blob], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let n: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM media WHERE folder_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        tx.execute("DELETE FROM folders WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(Some(n as u64))
+    }
+
     // ---- media ---------------------------------------------------------
 
     fn where_clause(f: &Filter) -> (String, Vec<Value>) {

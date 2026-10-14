@@ -223,3 +223,52 @@ fn sort_keys_and_direction() {
             .is_err()
     );
 }
+
+#[test]
+fn remove_folder_forgets_rows_never_files() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    png(&a.path().join("one.png"), 8, 8);
+    png(&a.path().join("two.png"), 8, 8);
+    png(&b.path().join("keep.png"), 8, 8);
+    let mut db = Db::open_in_memory().unwrap();
+    scan::import_folder(&mut db, a.path()).unwrap();
+    scan::import_folder(&mut db, b.path()).unwrap();
+    assert_eq!(db.stats().unwrap().folders, 2);
+    let root_a = db.folders().unwrap()[0].1.clone();
+
+    // Not an imported root: nothing happens.
+    assert_eq!(db.remove_folder(&a.path().join("nope")).unwrap(), None);
+    assert_eq!(db.remove_folder(&root_a).unwrap(), Some(2));
+
+    let s = db.stats().unwrap();
+    assert_eq!((s.folders, s.total), (1, 1));
+    // The files are still on disk.
+    assert!(a.path().join("one.png").exists());
+    assert!(a.path().join("two.png").exists());
+    // Importing again brings them back.
+    let (_, rep) = scan::import_folder(&mut db, a.path()).unwrap();
+    assert_eq!(rep.added, 2);
+}
+
+#[test]
+fn library_remove_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    png(&tmp.path().join("z.png"), 4, 4);
+    let mut db = Db::open_in_memory().unwrap();
+    let mut reg: Registry<Db> = Registry::new();
+    register_core(&mut reg);
+    reg.run(&mut db, "library.import", json!({ "path": tmp.path() }))
+        .unwrap();
+    let root = db.folders().unwrap()[0].1.clone();
+    assert!(reg.run(&mut db, "library.remove", json!({})).is_err());
+    let r = reg
+        .run(&mut db, "library.remove", json!({ "path": root }))
+        .unwrap();
+    assert_eq!(r["removed_media"], 1);
+    assert!(
+        reg.run(&mut db, "library.remove", json!({ "path": root }))
+            .is_err()
+    );
+    assert!(tmp.path().join("z.png").exists());
+}
