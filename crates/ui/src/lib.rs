@@ -3,8 +3,10 @@
 pub mod app;
 pub mod bench;
 pub mod config;
+pub mod i18n;
 pub mod identity;
 pub mod keys;
+pub mod lang;
 pub mod player_view;
 pub mod theme;
 pub mod widgets;

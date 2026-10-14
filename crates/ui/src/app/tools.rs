@@ -40,44 +40,59 @@ impl JizzApp {
                 ui.close();
             }
         };
-        item(ui, "Rescan folders", "library.rescan", json!({}));
+        item(
+            ui,
+            crate::i18n::tr("Rescan folders"),
+            "library.rescan",
+            json!({}),
+        );
         ui.separator();
         item(
             ui,
-            "Fingerprint files (for move detection)",
+            crate::i18n::tr("Fingerprint files (for move detection)"),
             "library.fingerprint",
             json!({}),
         );
         item(
             ui,
-            "Check integrity (quick)",
+            crate::i18n::tr("Check integrity (quick)"),
             "library.integrity",
             json!({ "mode": "quick" }),
         );
         item(
             ui,
-            "Check integrity (full decode + checksum)",
+            crate::i18n::tr("Check integrity (full decode + checksum)"),
             "library.integrity",
             json!({ "mode": "full", "checksum": true, "scope": "all" }),
         );
         ui.separator();
-        item(ui, "Back up library…", "library.backup", json!({}));
         item(
             ui,
-            "Export favorites, ratings, markers…",
+            crate::i18n::tr("Back up library…"),
+            "library.backup",
+            json!({}),
+        );
+        item(
+            ui,
+            crate::i18n::tr("Export favorites, ratings, markers…"),
             "meta.export",
             json!({}),
         );
-        item(ui, "Import metadata…", "meta.import", json!({}));
+        item(
+            ui,
+            crate::i18n::tr("Import metadata…"),
+            "meta.import",
+            json!({}),
+        );
         ui.separator();
-        ui.label(theme::hud("Privacy", MUTED));
+        ui.label(theme::hud(crate::i18n::tr("Privacy"), MUTED));
         let paused = self.db.setting("history.enabled").ok().flatten().as_deref() == Some("0");
         item(
             ui,
             if paused {
-                "Resume recording history"
+                crate::i18n::tr("Resume recording history")
             } else {
-                "Pause recording history"
+                crate::i18n::tr("Pause recording history")
             },
             "history.pause",
             json!({ "paused": !paused }),
@@ -85,33 +100,48 @@ impl JizzApp {
         item(
             ui,
             if self.cfg.hide_history {
-                "Show history in the app"
+                crate::i18n::tr("Show history in the app")
             } else {
-                "Hide history in the app"
+                crate::i18n::tr("Hide history in the app")
             },
             "history.visible.toggle",
             json!({}),
         );
-        item(ui, "Clear watch history", "history.clear", json!({}));
+        item(
+            ui,
+            crate::i18n::tr("Clear watch history"),
+            "history.clear",
+            json!({}),
+        );
         item(
             ui,
             if self.cfg.disguise {
-                "Launch as JizzCraft (next start)"
+                crate::i18n::tr("Launch as JizzCraft (next start)")
             } else {
-                "Launch as \"Viewer\" (next start)"
+                crate::i18n::tr("Launch as \"Viewer\" (next start)")
             },
             "app.disguise.set",
             json!({ "on": !self.cfg.disguise }),
         );
+        ui.separator();
+        for l in crate::i18n::ALL {
+            let mark = if crate::i18n::current() == l {
+                "● "
+            } else {
+                "   "
+            };
+            let label = format!("{mark}{}", l.native_name());
+            item(ui, &label, "app.language", json!({ "lang": l.code() }));
+        }
         item(
             ui,
-            "Clear preview cache",
+            crate::i18n::tr("Clear preview cache"),
             "cache.clear",
             json!({ "what": "previews" }),
         );
         item(
             ui,
-            "Clear thumbnail cache",
+            crate::i18n::tr("Clear thumbnail cache"),
             "cache.clear",
             json!({ "what": "thumbs" }),
         );

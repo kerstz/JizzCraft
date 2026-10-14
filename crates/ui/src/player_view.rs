@@ -228,7 +228,7 @@ impl PlayerView {
                     painter.text(
                         video_area.center(),
                         Align2::CENTER_CENTER,
-                        "LOADING…",
+                        crate::i18n::tr("LOADING…"),
                         FontId::new(12.0, FontFamily::Monospace),
                         MUTED,
                     );
@@ -242,7 +242,8 @@ impl PlayerView {
                     .player
                     .error()
                     .unwrap_or_else(|| "playback failed".into());
-                let job = theme::spaced("Cannot play this file", 12.0, 1.5, DANGER);
+                let job =
+                    theme::spaced(crate::i18n::tr("Cannot play this file"), 12.0, 1.5, DANGER);
                 painter.galley(
                     video_area.center()
                         - vec2(0.0, 36.0)
@@ -264,7 +265,7 @@ impl PlayerView {
                     painter.text(
                         video_area.center(),
                         Align2::CENTER_CENTER,
-                        format!("BUFFERING {pct}%"),
+                        crate::i18n::tr_dyn(&format!("BUFFERING {pct}%")).into_owned(),
                         FontId::new(12.0, FontFamily::Monospace),
                         TEXT,
                     );
@@ -294,14 +295,14 @@ impl PlayerView {
         if state == PlayState::Ended {
             let r = Rect::from_center_size(video_area.center(), vec2(140.0, 36.0));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
-            if widgets::button_solid(&mut child, "Replay").clicked() {
+            if widgets::button_solid(&mut child, crate::i18n::tr("Replay")).clicked() {
                 self.player.replay();
             }
             if let Some(n) = self.autoplay_in {
                 painter.text(
                     video_area.center() + vec2(0.0, 40.0),
                     Align2::CENTER_CENTER,
-                    format!("NEXT IN {n} · ESC CANCELS"),
+                    crate::i18n::tr_dyn(&format!("NEXT IN {n} · ESC CANCELS")).into_owned(),
                     FontId::new(11.0, FontFamily::Monospace),
                     MUTED,
                 );
@@ -472,8 +473,8 @@ impl PlayerView {
             );
             child.spacing_mut().item_spacing.x = 6.0;
             let rate = self.player.rate();
-            if widgets::toggle_chip(&mut child, "Auto", self.autoplay_on)
-                .on_hover_text("Play the next item when this one ends")
+            if widgets::toggle_chip(&mut child, crate::i18n::tr("Auto"), self.autoplay_on)
+                .on_hover_text(crate::i18n::tr("Play the next item when this one ends"))
                 .clicked()
             {
                 self.actions
@@ -486,7 +487,7 @@ impl PlayerView {
                 _ => "A-B",
             };
             if widgets::toggle_chip(&mut child, label, looping)
-                .on_hover_text("Set loop start, then end, then clear")
+                .on_hover_text(crate::i18n::tr("Set loop start, then end, then clear"))
                 .clicked()
             {
                 self.actions.push((
@@ -499,7 +500,7 @@ impl PlayerView {
                 &format!("{rate:.2}x"),
                 (rate - 1.0).abs() > 0.01,
             )
-            .on_hover_text("Playback speed (click to cycle)")
+            .on_hover_text(crate::i18n::tr("Playback speed (click to cycle)"))
             .clicked()
             {
                 self.actions

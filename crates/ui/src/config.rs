@@ -27,6 +27,8 @@ pub struct Config {
     pub autoplay_next: bool,
     /// Do not generate scrub previews on the timeline.
     pub no_previews: bool,
+    /// Interface language code (`fr`, `es`, …). None: follow the system.
+    pub language: Option<String>,
 }
 
 pub fn path() -> PathBuf {

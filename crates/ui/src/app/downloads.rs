@@ -704,7 +704,7 @@ impl JizzApp {
         let mut open = true;
         let mut cmds: Vec<(&'static str, Value)> = Vec::new();
         let mut choose: Option<usize> = None;
-        egui::Window::new("DOWNLOADS")
+        egui::Window::new(crate::i18n::tr("DOWNLOADS"))
             .open(&mut open)
             .default_width(560.0)
             .show(ctx, |ui| {
@@ -716,18 +716,23 @@ impl JizzApp {
                 ui.horizontal(|ui| {
                     let r = ui.add(
                         TextEdit::singleline(&mut d.input)
-                            .hint_text("search, or paste a magnet link / .torrent / video address")
+                            .hint_text(crate::i18n::tr(
+                                "search, or paste a magnet link / .torrent / video address",
+                            ))
                             .desired_width(330.0),
                     );
                     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let typed = parse_input(&d.input);
-                    let play = ui.add_enabled(typed.is_some() && !busy, egui::Button::new("Play"));
+                    let play = ui.add_enabled(
+                        typed.is_some() && !busy,
+                        egui::Button::new(crate::i18n::tr("Play")),
+                    );
                     let dl = ui.add_enabled(
                         matches!(
                             typed,
                             Some(Typed::Magnet(_) | Typed::TorrentFile(_) | Typed::Url(_))
                         ),
-                        egui::Button::new("Download"),
+                        egui::Button::new(crate::i18n::tr("Download")),
                     );
                     if play.clicked() || enter {
                         match &typed {
@@ -756,16 +761,16 @@ impl JizzApp {
                             _ => {}
                         }
                     }
-                    if d.searching.is_some() && ui.button("Cancel").clicked() {
+                    if d.searching.is_some() && ui.button(crate::i18n::tr("Cancel")).clicked() {
                         cmds.push(("fetch.search.cancel", json!({})));
                     }
                 });
                 if busy {
-                    ui.label(RichText::new("Starting playback…").color(MUTED));
+                    ui.label(RichText::new(crate::i18n::tr("Starting playback…")).color(MUTED));
                 }
                 if let Some(Flow::Choosing { files, picks, .. }) = &d.flow {
                     ui.add_space(4.0);
-                    widgets::eyebrow(ui, "", "Which one?", "");
+                    widgets::eyebrow(ui, "", crate::i18n::tr("Which one?"), "");
                     for &i in picks {
                         let label = if discreet {
                             format!("File {}  ·  {}", i + 1, human(files[i].1))
@@ -781,7 +786,7 @@ impl JizzApp {
                 // ---- setup, only while there is no indexer -----------------
                 if !has_ix {
                     ui.add_space(8.0);
-                    widgets::eyebrow(ui, "", "Search needs an indexer", "");
+                    widgets::eyebrow(ui, "", crate::i18n::tr("Search needs an indexer"), "");
                     ui.label(
                         RichText::new(
                             "Nothing is bundled. Use your own Jackett or Prowlarr (Torznab). \
@@ -789,22 +794,27 @@ impl JizzApp {
                         )
                         .color(MUTED),
                     );
-                    if ui.button("Find on this computer").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("Find on this computer"))
+                        .clicked()
+                    {
                         cmds.push(("fetch.indexers.detect", json!({})));
                     }
                     ui.horizontal(|ui| {
                         ui.add(
                             TextEdit::singleline(&mut d.ix_url)
-                                .hint_text("Torznab URL")
+                                .hint_text(crate::i18n::tr("Torznab URL"))
                                 .desired_width(280.0),
                         );
                         ui.add(
                             TextEdit::singleline(&mut d.ix_key)
-                                .hint_text("API key")
+                                .hint_text(crate::i18n::tr("API key"))
                                 .password(true)
                                 .desired_width(120.0),
                         );
-                        if ui.button("Add").clicked() && !d.ix_url.trim().is_empty() {
+                        if ui.button(crate::i18n::tr("Add")).clicked()
+                            && !d.ix_url.trim().is_empty()
+                        {
                             cmds.push((
                                 "fetch.indexers.add",
                                 json!({ "url": d.ix_url.trim(), "api_key": d.ix_key }),
@@ -838,10 +848,16 @@ impl JizzApp {
                                         ))
                                         .color(MUTED),
                                     );
-                                    if ui.add_enabled(!busy, egui::Button::new("Play")).clicked() {
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            egui::Button::new(crate::i18n::tr("Play")),
+                                        )
+                                        .clicked()
+                                    {
                                         cmds.push(("fetch.play", json!({ "result": i })));
                                     }
-                                    if ui.small_button("Download").clicked() {
+                                    if ui.small_button(crate::i18n::tr("Download")).clicked() {
                                         cmds.push(("fetch.add", json!({ "result": i })));
                                     }
                                 });
@@ -851,11 +867,13 @@ impl JizzApp {
 
                 // ---- torrents ---------------------------------------------
                 ui.add_space(8.0);
-                widgets::eyebrow(ui, "", "Downloads", "");
+                widgets::eyebrow(ui, "", crate::i18n::tr("Downloads"), "");
                 if d.torrents.is_empty() {
-                    ui.label(RichText::new("Nothing downloading.").color(FAINT));
+                    ui.label(RichText::new(crate::i18n::tr("Nothing downloading.")).color(FAINT));
                     if !d.host.host_started()
-                        && ui.small_button("Resume saved downloads").clicked()
+                        && ui
+                            .small_button(crate::i18n::tr("Resume saved downloads"))
+                            .clicked()
                         && let Ok(svc) = d.host.service()
                     {
                         drop(svc.start());
@@ -875,19 +893,22 @@ impl JizzApp {
                                 .show_percentage(),
                         );
                         let state = match t.state {
-                            TorrentState::Initializing => "starting".to_owned(),
+                            TorrentState::Initializing => crate::i18n::tr("starting").to_owned(),
                             TorrentState::Downloading => format!("↓ {}/s", human(t.down_bps)),
-                            TorrentState::Seeding => "done".to_owned(),
-                            TorrentState::Paused => "paused".to_owned(),
-                            TorrentState::Error => "error".to_owned(),
+                            TorrentState::Seeding => crate::i18n::tr("done").to_owned(),
+                            TorrentState::Paused => crate::i18n::tr("paused").to_owned(),
+                            TorrentState::Error => crate::i18n::tr("error").to_owned(),
                         };
                         ui.label(RichText::new(state).color(MUTED));
-                        if ui.add_enabled(!busy, egui::Button::new("Play")).clicked() {
+                        if ui
+                            .add_enabled(!busy, egui::Button::new(crate::i18n::tr("Play")))
+                            .clicked()
+                        {
                             cmds.push(("fetch.play", json!({ "id": t.id })));
                         }
                         if t.progress() >= 1.0
                             && ui
-                                .small_button("External")
+                                .small_button(crate::i18n::tr("External"))
                                 .on_hover_text(
                                     "Open in mpv or VLC. That program is not covered by \
                                      JizzCraft's network protection.",
@@ -898,7 +919,11 @@ impl JizzApp {
                         }
                         let paused = t.state == TorrentState::Paused;
                         if ui
-                            .small_button(if paused { "Resume" } else { "Pause" })
+                            .small_button(if paused {
+                                crate::i18n::tr("Resume")
+                            } else {
+                                crate::i18n::tr("Pause")
+                            })
                             .clicked()
                         {
                             cmds.push((
@@ -911,8 +936,8 @@ impl JizzApp {
                             ));
                         }
                         if ui
-                            .small_button("Forget")
-                            .on_hover_text("Stops tracking. Files are kept.")
+                            .small_button(crate::i18n::tr("Forget"))
+                            .on_hover_text(crate::i18n::tr("Stops tracking. Files are kept."))
                             .clicked()
                         {
                             cmds.push(("fetch.remove", json!({ "id": t.id })));
@@ -922,7 +947,7 @@ impl JizzApp {
 
                 // ---- advanced, folded ---------------------------------------
                 ui.add_space(8.0);
-                ui.collapsing("Advanced", |ui| {
+                ui.collapsing(crate::i18n::tr("Advanced"), |ui| {
                     ui.label(
                         RichText::new(
                             "Connects only to the indexers you add and to BitTorrent peers. \
@@ -931,22 +956,22 @@ impl JizzApp {
                         .color(MUTED),
                     );
                     ui.horizontal(|ui| {
-                        ui.label("Folder");
+                        ui.label(crate::i18n::tr("Folder"));
                         ui.add(
                             TextEdit::singleline(&mut d.dir)
-                                .hint_text("default: Downloads/…")
+                                .hint_text(crate::i18n::tr("default: Downloads/…"))
                                 .desired_width(300.0),
                         );
-                        if ui.button("Set").clicked() {
+                        if ui.button(crate::i18n::tr("Set")).clicked() {
                             cmds.push(("fetch.settings", json!({ "dir": d.dir.trim() })));
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Max MB/s  down");
+                        ui.label(crate::i18n::tr("Max MB/s  down"));
                         ui.add(TextEdit::singleline(&mut d.down_limit).desired_width(40.0));
-                        ui.label("up");
+                        ui.label(crate::i18n::tr("up"));
                         ui.add(TextEdit::singleline(&mut d.up_limit).desired_width(40.0));
-                        if ui.button("Apply").clicked() {
+                        if ui.button(crate::i18n::tr("Apply")).clicked() {
                             let n = |s: &str| s.trim().parse::<u32>().unwrap_or(0);
                             cmds.push((
                             "fetch.settings",
@@ -955,24 +980,28 @@ impl JizzApp {
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Proxy");
+                        ui.label(crate::i18n::tr("Proxy"));
                         ui.add(
                             TextEdit::singleline(&mut d.proxy)
-                                .hint_text("socks5://host:port")
+                                .hint_text(crate::i18n::tr("socks5://host:port"))
                                 .password(true)
                                 .desired_width(220.0),
                         );
-                        if ui.button("Set").clicked() {
+                        if ui.button(crate::i18n::tr("Set")).clicked() {
                             cmds.push(("fetch.settings", json!({ "proxy": d.proxy.trim() })));
                         }
                     });
                     let seed = d.host.config().seed_after_complete;
-                    if widgets::toggle_chip(ui, "Keep seeding when done", seed).clicked() {
+                    if widgets::toggle_chip(ui, crate::i18n::tr("Keep seeding when done"), seed)
+                        .clicked()
+                    {
                         cmds.push(("fetch.settings", json!({ "seed": !seed })));
                     }
                     ui.label(
-                        RichText::new("Speed caps apply the next time the session starts.")
-                            .color(FAINT),
+                        RichText::new(crate::i18n::tr(
+                            "Speed caps apply the next time the session starts.",
+                        ))
+                        .color(FAINT),
                     );
                     let ixs: Vec<(u32, String)> = d
                         .host
@@ -988,15 +1017,19 @@ impl JizzApp {
                             } else {
                                 name
                             });
-                            if ui.small_button("Test").clicked() {
+                            if ui.small_button(crate::i18n::tr("Test")).clicked() {
                                 cmds.push(("fetch.indexers.test", json!({ "id": id })));
                             }
-                            if ui.small_button("Remove").clicked() {
+                            if ui.small_button(crate::i18n::tr("Remove")).clicked() {
                                 cmds.push(("fetch.indexers.remove", json!({ "id": id })));
                             }
                         });
                     }
-                    if has_ix && ui.small_button("Find local Jackett / Prowlarr").clicked() {
+                    if has_ix
+                        && ui
+                            .small_button(crate::i18n::tr("Find local Jackett / Prowlarr"))
+                            .clicked()
+                    {
                         cmds.push(("fetch.indexers.detect", json!({})));
                     }
                 });

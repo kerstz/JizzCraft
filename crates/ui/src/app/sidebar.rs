@@ -98,9 +98,9 @@ impl JizzApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        section(ui, "02", "Views");
+                        section(ui, "02", crate::i18n::tr("Views"));
                         let all_active = active_label.is_none();
-                        if row(ui, 0, "Library", None, all_active).clicked() {
+                        if row(ui, 0, crate::i18n::tr("Library"), None, all_active).clicked() {
                             cmds.push(("view.filter", json!({ "tab": "library" })));
                         }
                         for (key, label, sensitive, n) in &builtin {
@@ -108,13 +108,13 @@ impl JizzApp {
                                 continue;
                             }
                             let on = active_label.as_deref() == Some(*label);
-                            if row(ui, 0, label, Some(*n), on).clicked() {
+                            if row(ui, 0, crate::i18n::tr(label), Some(*n), on).clicked() {
                                 cmds.push(("view.apply", json!({ "name": key })));
                             }
                         }
                         for (i, (name, n)) in saved.iter().enumerate() {
                             let shown = if discreet {
-                                format!("View {:02}", i + 1)
+                                crate::i18n::trf("View {}", &[&format!("{:02}", i + 1)])
                             } else {
                                 name.clone()
                             };
@@ -124,19 +124,22 @@ impl JizzApp {
                                 cmds.push(("view.apply", json!({ "name": name })));
                             }
                             r.context_menu(|ui| {
-                                if ui.button("Delete view").clicked() {
+                                if ui.button(crate::i18n::tr("Delete view")).clicked() {
                                     delete = Some(name.clone());
                                     ui.close();
                                 }
                             });
                         }
                         ui.add_space(S * 2.0);
-                        section(ui, "03", "Folders");
+                        section(ui, "03", crate::i18n::tr("Folders"));
                         if discreet {
                             ui.add_space(S);
                             ui.horizontal(|ui| {
                                 ui.add_space(16.0);
-                                ui.label(theme::hud("Hidden in discreet mode", FAINT));
+                                ui.label(theme::hud(
+                                    crate::i18n::tr("Hidden in discreet mode"),
+                                    FAINT,
+                                ));
                             });
                         } else {
                             for root in &tree {
@@ -173,18 +176,21 @@ impl JizzApp {
         };
         let mut keep = true;
         let mut save = false;
-        egui::Window::new("SAVE VIEW")
+        egui::Window::new(crate::i18n::tr("SAVE VIEW"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new("Name this filter to find it in the sidebar.").color(MUTED),
+                    egui::RichText::new(crate::i18n::tr(
+                        "Name this filter to find it in the sidebar.",
+                    ))
+                    .color(MUTED),
                 );
                 ui.add_space(S);
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut name)
-                        .hint_text("View name")
+                        .hint_text(crate::i18n::tr("View name"))
                         .desired_width(260.0),
                 );
                 r.request_focus();
@@ -193,10 +199,10 @@ impl JizzApp {
                 }
                 ui.add_space(S);
                 ui.horizontal(|ui| {
-                    if widgets::button_solid(ui, "Save").clicked() {
+                    if widgets::button_solid(ui, crate::i18n::tr("Save")).clicked() {
                         save = true;
                     }
-                    if widgets::button_outline(ui, "Cancel").clicked() {
+                    if widgets::button_outline(ui, crate::i18n::tr("Cancel")).clicked() {
                         keep = false;
                     }
                 });
