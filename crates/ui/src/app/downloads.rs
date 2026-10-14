@@ -73,6 +73,8 @@ pub(super) struct Downloads {
     down_limit: String,
     up_limit: String,
     proxy: String,
+    /// Key being typed per source (never stored, cleared after Set).
+    src_key: std::collections::HashMap<u32, String>,
 }
 
 impl Downloads {
@@ -119,6 +121,7 @@ impl Downloads {
             down_limit,
             up_limit,
             proxy: String::new(),
+            src_key: std::collections::HashMap::new(),
         }
     }
 
@@ -313,13 +316,19 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "sources.import",
-        "Add a source from a JSON file you wrote: {path}",
+        "Add a source from a JSON file you wrote: {path?} (asks when absent)",
         |app, a| {
-            let p = a
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("missing `path`"))?;
-            let bytes = std::fs::read(p).map_err(|_| invalid("cannot read the file"))?;
+            let p = match a.get("path").and_then(Value::as_str) {
+                Some(p) => std::path::PathBuf::from(p),
+                None => match rfd::FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .pick_file()
+                {
+                    Some(p) => p,
+                    None => return Ok(json!({ "cancelled": true })),
+                },
+            };
+            let bytes = std::fs::read(&p).map_err(|_| invalid("cannot read the file"))?;
             if bytes.len() > 64 * 1024 {
                 return Err(invalid("definition too large"));
             }
@@ -911,6 +920,11 @@ impl JizzApp {
                             Some(Typed::TorrentFile(p)) => {
                                 cmds.push(("fetch.play", json!({ "torrent_path": p })));
                             }
+                            // A plain video address streams without saving; a
+                            // .torrent link keeps the torrent flow.
+                            Some(Typed::Url(u)) if !is_torrent_url(u) => {
+                                cmds.push(("stream.open", json!({ "url": u })))
+                            }
                             Some(Typed::Url(u)) => cmds.push(("fetch.play", json!({ "url": u }))),
                             Some(Typed::Search(q)) => {
                                 cmds.push(("fetch.search", json!({ "query": q })))
@@ -1183,6 +1197,77 @@ impl JizzApp {
                         ))
                         .color(FAINT),
                     );
+                    // ---- your own sources and resolvers --------------------
+                    ui.add_space(6.0);
+                    widgets::eyebrow(ui, "", crate::i18n::tr("Streaming sources"), "");
+                    ui.label(
+                        RichText::new(crate::i18n::tr(
+                            "None is included. Add a JSON file you wrote; keys stay in fetch.json.",
+                        ))
+                        .color(FAINT),
+                    );
+                    for s in &d.host.config().sources {
+                        ui.horizontal(|ui| {
+                            let name = if discreet {
+                                format!("Source {}", s.id)
+                            } else {
+                                s.name.clone()
+                            };
+                            let mut on = s.enabled;
+                            if ui.checkbox(&mut on, name).clicked() {
+                                cmds.push(("sources.enable", json!({ "id": s.id, "on": on })));
+                            }
+                            if s.auth_header.is_some() {
+                                let key = d.src_key.entry(s.id).or_default();
+                                ui.add(
+                                    TextEdit::singleline(key)
+                                        .hint_text(if s.secret.is_empty() {
+                                            crate::i18n::tr("key")
+                                        } else {
+                                            "••••"
+                                        })
+                                        .password(true)
+                                        .desired_width(110.0),
+                                );
+                                if ui.small_button(crate::i18n::tr("Set")).clicked() {
+                                    cmds.push((
+                                        "sources.secret.set",
+                                        json!({ "id": s.id, "value": key.trim() }),
+                                    ));
+                                    key.clear();
+                                }
+                            }
+                            if ui.small_button(crate::i18n::tr("Remove")).clicked() {
+                                cmds.push(("sources.remove", json!({ "id": s.id })));
+                            }
+                        });
+                    }
+                    if ui
+                        .small_button(crate::i18n::tr("Add a source file…"))
+                        .clicked()
+                    {
+                        cmds.push(("sources.import", json!({})));
+                    }
+                    for r in &d.host.config().resolvers {
+                        ui.horizontal(|ui| {
+                            let name = if discreet {
+                                format!("Resolver {}", r.id)
+                            } else {
+                                r.name.clone()
+                            };
+                            ui.label(format!("{name}  #{}", r.id));
+                            if ui.small_button(crate::i18n::tr("Remove")).clicked() {
+                                cmds.push(("resolvers.remove", json!({ "id": r.id })));
+                            }
+                        });
+                    }
+                    ui.label(
+                        RichText::new(crate::i18n::tr(
+                            "Resolvers are programs you installed: add them with resolvers.add.",
+                        ))
+                        .color(FAINT),
+                    );
+                    ui.add_space(6.0);
                     let seed = d.host.config().seed_after_complete;
                     if widgets::toggle_chip(ui, crate::i18n::tr("Keep seeding when done"), seed)
                         .clicked()
