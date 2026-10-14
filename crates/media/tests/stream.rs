@@ -23,6 +23,10 @@ struct Throttled {
     /// The last bytes are always there: players fetch the index (cues, moov)
     /// from the tail first, and a torrent client prioritises it too.
     tail: u64,
+    /// A torrent client that prioritises the pieces being asked for: once a
+    /// read has been blocked this long, the missing bytes arrive.
+    fill_after: Option<Duration>,
+    blocked_since: Option<Instant>,
 }
 
 impl Read for Throttled {
@@ -37,8 +41,16 @@ impl Read for Throttled {
         let len = self.data.len() as u64;
         let in_tail = self.pos >= len.saturating_sub(self.tail);
         if self.pos >= avail && !in_tail {
+            if let Some(after) = self.fill_after {
+                let since = *self.blocked_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= after {
+                    self.available.store(len, Ordering::SeqCst);
+                    self.blocked_since = None;
+                }
+            }
             return Err(Error::from(ErrorKind::WouldBlock));
         }
+        self.blocked_since = None;
         let limit = if in_tail { len } else { avail };
         let n = buf.len().min((limit - self.pos) as usize);
         buf[..n].copy_from_slice(&self.data[self.pos as usize..self.pos as usize + n]);
@@ -84,6 +96,10 @@ struct Rig {
 }
 
 fn rig(data: Vec<u8>, initial_pct: u64) -> Rig {
+    rig_with(data, initial_pct, None)
+}
+
+fn rig_with(data: Vec<u8>, initial_pct: u64, fill_after: Option<Duration>) -> Rig {
     let len = data.len() as u64;
     let available = Arc::new(AtomicU64::new(len * initial_pct / 100));
     let served_max = Arc::new(Mutex::new(0));
@@ -93,6 +109,8 @@ fn rig(data: Vec<u8>, initial_pct: u64) -> Rig {
         available: Arc::clone(&available),
         served_max: Arc::clone(&served_max),
         tail: len / 8,
+        fill_after,
+        blocked_since: None,
     };
     let player = Player::open_stream(Box::new(reader), len, 0.0, Arc::new(|| {}));
     Rig {
@@ -108,6 +126,17 @@ fn clip(frames: u32) -> Vec<u8> {
     let p = tmp.path().join("s.webm");
     common::make_video(&p, frames, 320, 240);
     std::fs::read(p).unwrap()
+}
+
+/// A clip much bigger than the 64 KiB a typefinder may peek at, so a 60 %
+/// head really is enough to start.
+fn big_clip(frames: u32) -> Vec<u8> {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("b.webm");
+    common::make_video_pattern(&p, frames, 320, 240, "snow");
+    let data = std::fs::read(p).unwrap();
+    assert!(data.len() > 400_000, "clip too small: {}", data.len());
+    data
 }
 
 #[test]
@@ -144,8 +173,11 @@ fn seek_into_a_missing_region_buffers_then_plays() {
         return;
     }
     // Keyframes every 15 frames; 6 s clip. Only the first 60 % (plus the
-    // index at the tail) is present, so a seek to 4 s lands in a hole.
-    let r = rig(clip(180), 60);
+    // index at the tail) is present, so a seek to 4 s lands in a hole. The
+    // clip is larger than a typefinder's peek window (GStreamer 1.24 probes
+    // up to 64 KiB, which would be the whole of a 60 KB clip): the first
+    // frame must not depend on bytes nobody asked for.
+    let r = rig(big_clip(180), 60);
     wait_until("first frame", 15, || r.player.take_frame().is_some());
     wait_until("duration", 5, || r.player.duration().is_some());
     r.player.seek(Duration::from_secs(4), true);
@@ -157,6 +189,29 @@ fn seek_into_a_missing_region_buffers_then_plays() {
         assert_ne!(r.player.state(), PlayState::Error, "{:?}", r.player.error());
         r.player.take_frame();
         r.player.position() >= Duration::from_millis(3500)
+    });
+}
+
+#[test]
+fn a_prioritised_hole_fills_after_a_while_and_playback_follows() {
+    if !clips_ready() {
+        return;
+    }
+    // Tiny clip: GStreamer 1.24's typefinder wants the whole 60 KB, so the
+    // first frame waits for the hole to fill, as it would for a torrent
+    // client that prioritises the pieces being read. Loading shows a
+    // percentage, never an error, and playback starts once it fills.
+    let r = rig_with(clip(180), 60, Some(Duration::from_secs(2)));
+    let start = Instant::now();
+    wait_until("first frame", 20, || {
+        assert_ne!(r.player.state(), PlayState::Error, "{:?}", r.player.error());
+        r.player.take_frame().is_some()
+    });
+    assert!(start.elapsed() < Duration::from_secs(15));
+    wait_until("end of stream", 30, || {
+        assert_ne!(r.player.state(), PlayState::Error, "{:?}", r.player.error());
+        r.player.take_frame();
+        r.player.state() == PlayState::Ended
     });
 }
 

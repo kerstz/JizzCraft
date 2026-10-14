@@ -31,6 +31,8 @@ impl FetchService {
     /// End every `open_any` / `stream_via_resolver` that is still opening
     /// (boss key, panic switch). Streams already handed out are the caller's.
     pub fn cancel_streams(&self) {
+        // Resume positions are memory only and die with the panic switch.
+        crate::stream::resume_clear_all();
         let mut g = self.stream_cancel.lock().unwrap_or_else(|e| e.into_inner());
         g.store(true, Ordering::SeqCst);
         *g = Arc::new(AtomicBool::new(false));
@@ -103,6 +105,10 @@ async fn open_direct(
     handle: tokio::runtime::Handle,
     url: String,
     opts: &StreamOpts,
+    reopen: Option<crate::stream::ReopenFn>,
+    // Set for an address a resolver returned: its title (or "Video") is the
+    // ticket name, and a source that cannot seek is refused, never saved.
+    from_resolver: Option<&str>,
 ) -> Result<Option<StreamTicket>, String> {
     use crate::sniff::{Sniff, sniff};
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -127,30 +133,32 @@ async fn open_direct(
         .default_headers(map)
         .build()
         .map_err(|e| e.without_url().to_string())?;
-    let mut resp = client
-        .get(&url)
-        .header("Range", "bytes=0-4095")
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("error sending request: {}", e.without_url()))?;
+    let mut resp =
+        crate::stream::send_ttfb(client.get(&url).header("Range", "bytes=0-4095")).await?;
     let code = resp.status().as_u16();
     if code != 200 && code != 206 {
-        return Err(format!("HTTP {code}"));
+        return Err(match code {
+            429 | 503 => format!("server busy (HTTP {code})"),
+            300..=399 => format!("redirect refused (HTTP {code})"),
+            c => format!("HTTP {c}"),
+        });
     }
     let mut head: Vec<u8> = Vec::new();
     while head.len() < 4096 {
-        match resp
-            .chunk()
+        let next = tokio::time::timeout(crate::stream::STALL_TIMEOUT, resp.chunk())
             .await
-            .map_err(|e| e.without_url().to_string())?
-        {
+            .map_err(|_| "server timeout".to_string())?
+            .map_err(|e| crate::stream::net_error(&e))?;
+        match next {
             Some(c) => head.extend_from_slice(&c),
             None => break,
         }
     }
     drop(resp);
-    let name = safe_file_name(&url).unwrap_or_else(|| "stream".to_owned());
+    let name = match from_resolver {
+        Some(t) => t.to_owned(),
+        None => safe_file_name(&url).unwrap_or_else(|| "stream".to_owned()),
+    };
     match sniff(&head) {
         Sniff::Hls => {
             let r = crate::segmented::open_hls(handle, client, url, opts.quality, headers).await?;
@@ -170,12 +178,17 @@ async fn open_direct(
             if proxy_blocked() {
                 return Err("proxy required".into());
             }
-            match crate::stream::open(handle, client.clone(), url.clone()).await {
+            match crate::stream::open_with(handle, client.clone(), url.clone(), reopen).await {
                 Ok(o) => Ok(Some(StreamTicket::Live {
                     reader: StreamReader(Box::new(o.reader)),
                     len: o.len,
                     name,
+                    status: None,
                 })),
+                // A page's video is never written to disk: no `.part` file.
+                Err(e) if e == crate::stream::NOT_SEEKABLE && from_resolver.is_some() => {
+                    Err(crate::resolver::NEEDS_SAVING.to_string())
+                }
                 Err(e) if e == crate::stream::NOT_SEEKABLE => {
                     http_stream_with(cfg, client, url, name).await.map(Some)
                 }
@@ -193,23 +206,66 @@ async fn resolve_and_open(
     page_url: String,
     opts: &StreamOpts,
 ) -> Result<StreamTicket, String> {
-    if cfg.require_proxy && (current_proxy().is_none() || !def.honours_proxy) {
+    if cfg.require_proxy && (current_proxy().is_none() || !def.proxy_aware()) {
         return Err("proxy required".to_string());
     }
-    let formats = tokio::task::spawn_blocking(move || crate::resolver::run(&def, &page_url))
-        .await
-        .map_err(|_| "resolver failed".to_string())??;
+    let (def2, page2) = (def.clone(), page_url.clone());
+    let (formats, meta) =
+        tokio::task::spawn_blocking(move || crate::resolver::run_meta(&def2, &page2))
+            .await
+            .map_err(|_| "resolver failed".to_string())??;
+    // The name of the ticket: what the page said, never the CDN file name.
+    let title = meta.title.unwrap_or_else(|| "Video".to_owned());
     let mut last = "no media".to_string();
-    for f in crate::resolver::muxed(formats)?.into_iter().take(4) {
+    for (i, f) in crate::resolver::muxed(formats)?
+        .into_iter()
+        .take(4)
+        .enumerate()
+    {
         let mut o = opts.clone();
         o.headers.extend(f.headers);
-        match open_direct(cfg, handle.clone(), f.url, &o).await {
+        // A signed address that expires mid-stream is renewed by asking the
+        // same resolver again; the reader verifies it is the same file.
+        let (d, p) = (def.clone(), page_url.clone());
+        let reopen: crate::stream::ReopenFn = Arc::new(move || {
+            let (tx, rx) = channel();
+            let (d, p) = (d.clone(), p.clone());
+            std::thread::spawn(move || {
+                // Whatever goes wrong on the second ask: the link expired.
+                let r = crate::resolver::run(&d, &p)
+                    .and_then(crate::resolver::muxed)
+                    .ok()
+                    .and_then(|v| v.into_iter().nth(i).map(|f| f.url))
+                    .ok_or_else(|| "expired".to_string());
+                let _ = tx.send(r);
+            });
+            rx
+        });
+        match open_direct(cfg, handle.clone(), f.url, &o, Some(reopen), Some(&title)).await {
             Ok(Some(t)) => return Ok(t),
             Ok(None) => {}
-            Err(e) => last = e,
+            Err(e) => {
+                if fault_rank(&e) > fault_rank(&last) {
+                    last = e;
+                }
+            }
         }
     }
     Err(last)
+}
+
+/// How specific a failure is, to keep the most useful one across resolvers.
+fn fault_rank(e: &str) -> u8 {
+    use crate::resolver::{Fault, NEEDS_SAVING};
+    if let Some(f) = Fault::from_keyword(e) {
+        f.rank()
+    } else if e == NEEDS_SAVING {
+        4
+    } else if e == "unsupported stream" {
+        3
+    } else {
+        0
+    }
 }
 
 async fn open_any_task(
@@ -218,22 +274,29 @@ async fn open_any_task(
     url: String,
     opts: StreamOpts,
 ) -> Result<StreamTicket, String> {
-    if let Some(t) = open_direct(&cfg, handle.clone(), url.clone(), &opts).await? {
+    if let Some(t) = open_direct(&cfg, handle.clone(), url.clone(), &opts, None, None).await? {
         return Ok(t);
     }
     // Not media: a page. Each enabled resolver in order, first usable wins.
     let mut blocked = false;
+    let mut best = String::from("no media");
     for def in cfg.resolvers.iter().filter(|r| r.enabled) {
-        if cfg.require_proxy && (current_proxy().is_none() || !def.honours_proxy) {
+        if cfg.require_proxy && (current_proxy().is_none() || !def.proxy_aware()) {
             blocked = true;
             continue;
         }
-        if let Ok(t) = resolve_and_open(&cfg, handle.clone(), def.clone(), url.clone(), &opts).await
-        {
-            return Ok(t);
+        match resolve_and_open(&cfg, handle.clone(), def.clone(), url.clone(), &opts).await {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                if fault_rank(&e) > fault_rank(&best) {
+                    best = e;
+                }
+            }
         }
     }
-    Err(if blocked {
+    Err(if fault_rank(&best) > 0 {
+        best
+    } else if blocked {
         "proxy required".into()
     } else {
         "no media".into()
@@ -251,7 +314,7 @@ async fn open_stream_url(
     let name = safe_file_name(&url).ok_or("no video file")?;
     let client = FetchService::builder()?
         .connect_timeout(SEARCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(same_origin_policy())
         .build()
         .map_err(|e| e.without_url().to_string())?;
     match crate::stream::open(handle, client, url.clone()).await {
@@ -259,6 +322,7 @@ async fn open_stream_url(
             reader: StreamReader(Box::new(o.reader)),
             len: o.len,
             name,
+            status: None,
         }),
         Err(e) if e == crate::stream::NOT_SEEKABLE => http_stream(cfg, url).await,
         Err(e) => Err(e),

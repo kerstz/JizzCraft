@@ -302,6 +302,19 @@ A few playful one-liners show up in empty states, toasts and the player. They ar
 | Images | PNG, JPEG, WebP, GIF (first frame), BMP. AVIF is indexed but only displayed if the `image` crate is built with AVIF support (it is not, today). |
 | Videos | extensions `mp4 mkv webm mov avi m4v wmv flv mpg mpeg ts ogv`; actual playback depends on the GStreamer plugins you have installed. |
 
+## Organise your library
+
+Playlists (ordered by hand), categories (a tree) and tags (flat) live in the library database only; your files are never touched. Everything is available from the CLI too:
+
+```sh
+jizzcraft-cli playlist create Evening
+jizzcraft-cli playlist add 1 12 7 31
+jizzcraft-cli query --playlist 1 --sort position
+jizzcraft-cli query --tag 3 --not-tag 5
+```
+
+See [`docs/organise.md`](docs/organise.md) for how they behave when files move, what discreet mode masks, and export/import.
+
 ## Troubleshooting
 
 **"missing GStreamer plugin: …"** — install the plugin sets listed above (`gst-plugins-good/bad/ugly`, `gst-libav`). The error names what is missing. Check with `gst-inspect-1.0 avdec_h264`.

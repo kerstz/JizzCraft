@@ -11,7 +11,21 @@
 //! sent on top of the defaults, never a source key.
 //!
 //! Limits for now: muxed representations only (a stream whose audio is a
-//! separate rendition is refused as unsupported), VOD only, no live.
+//! separate rendition is refused with `separate tracks`; a master that also
+//! offers a muxed variant plays that one), VOD only (`live` otherwise).
+//!
+//! Timeouts are stall based, never a total: 20 s to the first byte of the
+//! answer, 15 s without a body byte; a body that keeps moving is never cut.
+//! (The 15 s connect timeout belongs to the client the caller builds.)
+//!
+//! Quality: the throughput estimate is the aggregate of all concurrent
+//! downloads per wall second of activity. [`AbrPolicy`] decides; the switch
+//! happens at a segment boundary inside the reader when the codecs agree, and
+//! only otherwise is a pipeline rebuild requested through `wants_downgrade`.
+//!
+//! A segment that still fails after its retries is skipped with a
+//! discontinuity when it is under 5 % of the duration (and all skips together
+//! stay under 5 %); otherwise the stream ends with the raw error.
 //!
 //! Chunk contract: the first chunk after a seek or a discontinuity carries
 //! `discont: true`; when an init segment goes first it is that chunk (pts
@@ -46,7 +60,14 @@ const MAX_KEY_READ: usize = 64;
 const MAX_RANGE_SKIP: u64 = 256 << 20;
 // Five tries; after that the server and we agree to disagree.
 const ATTEMPTS: u32 = 5;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Documented for the client builder; the client is built by the caller.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const TTFB_TIMEOUT: Duration = Duration::from_secs(20);
+const STALL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Largest share of the duration that may be skipped after failures.
+const SKIP_SHARE: u32 = 20;
+const MAX_INITS: usize = 8;
+const MIN_SAMPLE: Duration = Duration::from_millis(500);
 const WAIT_SLICE: Duration = Duration::from_millis(100);
 
 /// Inclusive byte range.
@@ -104,8 +125,233 @@ enum VariantSrc {
 }
 
 struct Ready {
-    bytes: Arc<Vec<u8>>,
+    bytes: Vec<u8>,
     init: Option<Arc<Vec<u8>>>,
+}
+
+// ---- throughput and quality policy -----------------------------------------
+
+/// Aggregate throughput: bytes received per second during which at least one
+/// download was active (concurrent downloads share the same seconds).
+#[derive(Default)]
+pub(crate) struct Meter {
+    n: usize,
+    since: Option<Instant>,
+    active: Duration,
+    bytes: u64,
+    mark_active: Duration,
+    mark_bytes: u64,
+    ema: Option<f64>,
+}
+
+impl Meter {
+    fn begin(&mut self, now: Instant) {
+        if self.n == 0 {
+            self.since = Some(now);
+        }
+        self.n += 1;
+    }
+
+    fn end(&mut self, now: Instant) {
+        self.n = self.n.saturating_sub(1);
+        if self.n == 0
+            && let Some(s) = self.since.take()
+        {
+            self.active += now.saturating_duration_since(s);
+        }
+    }
+
+    fn add(&mut self, n: usize) {
+        self.bytes += n as u64;
+    }
+
+    /// Smoothed bits per second; folds in a new window once enough has
+    /// been observed.
+    fn sample(&mut self, now: Instant) -> Option<f64> {
+        let act = self.active
+            + self
+                .since
+                .map_or(Duration::ZERO, |s| now.saturating_duration_since(s));
+        let d = act.saturating_sub(self.mark_active);
+        let moved = self.bytes - self.mark_bytes;
+        // Half a second of activity, or a quarter megabyte of it on a fast
+        // link, makes a window worth believing.
+        if d >= MIN_SAMPLE || (moved >= (256 << 10) && d >= Duration::from_millis(20)) {
+            let bps = moved as f64 * 8.0 / d.as_secs_f64();
+            self.mark_active = act;
+            self.mark_bytes = self.bytes;
+            self.ema = Some(self.ema.map_or(bps, |e| e * 0.5 + bps * 0.5));
+        }
+        self.ema
+    }
+}
+
+/// Counts a download as active until dropped (also when it is aborted).
+struct Active(Arc<Shared>);
+
+impl Active {
+    fn new(sh: &Arc<Shared>) -> Self {
+        sh.meter().begin(Instant::now());
+        Active(Arc::clone(sh))
+    }
+}
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        self.0.meter().end(Instant::now());
+    }
+}
+
+/// Tunable thresholds of [`AbrPolicy`]; the defaults are the product values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AbrConfig {
+    /// Lower when less than this is buffered ahead and throughput is short.
+    pub down_buffer: Duration,
+    /// ...and throughput is under this multiple of the current bitrate.
+    pub down_ratio: f64,
+    /// Never lower again within this time of the last switch.
+    pub down_gap: Duration,
+    /// Raise only with at least this much buffered ahead...
+    pub up_buffer: Duration,
+    /// ...and throughput at this multiple of the next variant's bitrate...
+    pub up_ratio: f64,
+    /// ...held for this long...
+    pub up_hold: Duration,
+    /// ...and at most once in this time (counted from any switch).
+    pub up_gap: Duration,
+}
+
+impl Default for AbrConfig {
+    fn default() -> Self {
+        AbrConfig {
+            down_buffer: Duration::from_secs(10),
+            down_ratio: 1.2,
+            down_gap: Duration::from_secs(4),
+            up_buffer: Duration::from_secs(30),
+            up_ratio: 1.5,
+            up_hold: Duration::from_secs(20),
+            up_gap: Duration::from_secs(60),
+        }
+    }
+}
+
+/// What the policy sees. `cands` = (variant index, bandwidth in bit/s) of
+/// every variant that may be chosen, the current one included.
+pub struct AbrInput<'a> {
+    /// Monotonic time since the stream opened.
+    pub now: Duration,
+    pub buffer_ahead: Duration,
+    /// Aggregate throughput, bit/s, once measured.
+    pub bps: Option<f64>,
+    pub current: usize,
+    pub cands: &'a [(usize, u64)],
+    /// A segment is already on its third failed try.
+    pub retry_pressure: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbrChoice {
+    Stay,
+    Switch(usize),
+}
+
+/// Pure quality policy: no clock, no I/O; the caller supplies the time.
+#[derive(Debug, Clone, Default)]
+pub struct AbrPolicy {
+    cfg: AbrConfig,
+    good_since: Option<Duration>,
+    last_switch: Option<Duration>,
+}
+
+impl AbrPolicy {
+    pub fn new(cfg: AbrConfig) -> Self {
+        AbrPolicy {
+            cfg,
+            good_since: None,
+            last_switch: None,
+        }
+    }
+
+    pub fn decide(&mut self, i: &AbrInput<'_>) -> AbrChoice {
+        let cfg = self.cfg;
+        let Some(cur_bw) = i.cands.iter().find(|c| c.0 == i.current).map(|c| c.1) else {
+            return AbrChoice::Stay;
+        };
+        let lower = || {
+            i.cands
+                .iter()
+                .copied()
+                .filter(|c| c.1 < cur_bw || (c.1 == cur_bw && c.0 < i.current))
+        };
+        let since_switch = self.last_switch.map(|t| i.now.saturating_sub(t));
+        let short = i.buffer_ahead < cfg.down_buffer
+            && i.bps.is_some_and(|b| b < cfg.down_ratio * cur_bw as f64);
+        if (short || i.retry_pressure) && since_switch.is_none_or(|d| d >= cfg.down_gap) {
+            // The best lower variant the measured speed carries, else the
+            // lowest there is.
+            let fits = |c: &(usize, u64)| i.bps.is_some_and(|b| c.1 as f64 * cfg.down_ratio <= b);
+            let pick = lower()
+                .filter(fits)
+                .max_by_key(|c| (c.1, c.0))
+                .or_else(|| lower().min_by_key(|c| (c.1, c.0)));
+            if let Some((v, _)) = pick {
+                self.good_since = None;
+                self.last_switch = Some(i.now);
+                return AbrChoice::Switch(v);
+            }
+        }
+        // Next variant up, if any.
+        let next = i
+            .cands
+            .iter()
+            .copied()
+            .filter(|c| c.1 > cur_bw || (c.1 == cur_bw && c.0 > i.current))
+            .min_by_key(|c| (c.1, c.0));
+        let good = next.is_some_and(|(_, bw)| {
+            i.buffer_ahead >= cfg.up_buffer && i.bps.is_some_and(|b| b >= cfg.up_ratio * bw as f64)
+        });
+        if !good {
+            self.good_since = None;
+            return AbrChoice::Stay;
+        }
+        let since = *self.good_since.get_or_insert(i.now);
+        if i.now.saturating_sub(since) >= cfg.up_hold
+            && since_switch.is_none_or(|d| d >= cfg.up_gap)
+        {
+            self.good_since = None;
+            self.last_switch = Some(i.now);
+            return AbrChoice::Switch(next.map_or(i.current, |c| c.0));
+        }
+        AbrChoice::Stay
+    }
+}
+
+fn families(c: &str) -> Vec<String> {
+    let mut f: Vec<String> = c
+        .split(',')
+        .map(|p| {
+            p.trim()
+                .split('.')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    f.sort();
+    f.dedup();
+    f
+}
+
+/// Can the reader move between these two variants without a new pipeline?
+/// Known codec families must agree; unknown ones are trusted only for HLS
+/// (transport streams carry their own tables).
+fn compatible(a: Option<&str>, b: Option<&str>, hls: bool) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => families(a) == families(b),
+        (None, None) => hls,
+        _ => false,
+    }
 }
 
 struct State {
@@ -119,9 +365,15 @@ struct State {
     keys: HashMap<String, Arc<[u8; 16]>>,
     last_init: Option<Part>,
     need_discont: bool,
-    est_bps: Option<f64>,
     avg_bytes: usize,
-    slow_streak: u32,
+    abr: AbrPolicy,
+    /// A segment is on a late retry: lower before it gives up.
+    pressure: bool,
+    /// A lower quality needs a new pipeline; `wants_downgrade` says so once.
+    rebuild: bool,
+    /// Time skipped after failed segments.
+    skipped: Duration,
+    inits: HashMap<(String, Option<Range>), Arc<Vec<u8>>>,
     auto: bool,
     variant: usize,
     switching: Option<usize>,
@@ -136,12 +388,20 @@ struct Shared {
     headers: Vec<(String, String)>,
     variants: Vec<VariantInfo>,
     srcs: Vec<VariantSrc>,
+    codecs: Vec<Option<String>>,
+    quality: Quality,
+    t0: Instant,
     closed: AtomicBool,
+    meter: Mutex<Meter>,
     state: Mutex<State>,
     cv: Condvar,
 }
 
 impl Shared {
+    fn meter(&self) -> MutexGuard<'_, Meter> {
+        self.meter.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -150,6 +410,15 @@ impl Shared {
 pub struct SegmentedReader {
     handle: Handle,
     sh: Arc<Shared>,
+}
+
+impl SegmentedReader {
+    /// Replace the quality thresholds (tests and tuning; defaults are right).
+    #[must_use]
+    pub fn with_abr(self, cfg: AbrConfig) -> Self {
+        self.sh.lock().abr = AbrPolicy::new(cfg);
+        self
+    }
 }
 
 // ---- requests ---------------------------------------------------------------
@@ -191,6 +460,7 @@ enum BodyErr {
 
 /// Read at most `cap` bytes, after discarding `skip` leading bytes.
 async fn read_body(
+    sh: &Shared,
     mut resp: reqwest::Response,
     cap: usize,
     skip: u64,
@@ -199,14 +469,20 @@ async fn read_body(
     if take.is_none() && resp.content_length().is_some_and(|l| l > cap as u64) {
         return Err(BodyErr::Final("too large".into()));
     }
-    let mut out = Vec::new();
+    let hint = resp
+        .content_length()
+        .unwrap_or(0)
+        .min(cap as u64)
+        .min(8 << 20);
+    let mut out = Vec::with_capacity(hint as usize);
     let mut seen = 0u64;
     loop {
-        let c = match tokio::time::timeout(REQUEST_TIMEOUT, resp.chunk()).await {
+        let c = match tokio::time::timeout(STALL_TIMEOUT, resp.chunk()).await {
             Ok(Ok(Some(c))) => c,
             Ok(Ok(None)) => break,
             _ => return Err(BodyErr::Retry("stalled".into())),
         };
+        sh.meter().add(c.len());
         let mut piece: &[u8] = &c;
         if seen < skip {
             let drop_n = ((skip - seen) as usize).min(piece.len());
@@ -247,7 +523,7 @@ async fn get_bytes(
         if !inward_ok(&sh.origin, url) {
             return Err("unsupported stream".into());
         }
-        let mut req = sh.client.get(url).timeout(REQUEST_TIMEOUT);
+        let mut req = sh.client.get(url);
         for (k, v) in &sh.headers {
             req = req.header(k.as_str(), v.as_str());
         }
@@ -255,8 +531,9 @@ async fn get_bytes(
             req = req.header("Range", format!("bytes={a}-{b}"));
         }
         let mut wait = Duration::from_millis(250 << attempt);
-        match req.send().await {
-            Ok(resp) => {
+        match tokio::time::timeout(TTFB_TIMEOUT, req.send()).await {
+            Err(_) => last = "stalled".into(),
+            Ok(Ok(resp)) => {
                 let code = resp.status().as_u16();
                 match code {
                     200 | 206 => {
@@ -271,7 +548,7 @@ async fn get_bytes(
                             }
                             _ => (0, None),
                         };
-                        match read_body(resp, cap, skip, take).await {
+                        match read_body(sh, resp, cap, skip, take).await {
                             Ok(b) => return Ok(b),
                             Err(BodyErr::Final(e)) => return Err(e),
                             Err(BodyErr::Retry(e)) => last = e,
@@ -289,7 +566,7 @@ async fn get_bytes(
                     c => return Err(format!("http {c}")),
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 last = if e.is_timeout() {
                     "stalled".into()
                 } else {
@@ -297,11 +574,28 @@ async fn get_bytes(
                 };
             }
         }
+        if attempt >= 2 {
+            // Third failure: tell the quality policy before we give up.
+            sh.lock().pressure = true;
+        }
         if attempt + 1 < ATTEMPTS {
             tokio::time::sleep(wait).await;
         }
     }
     Err(last)
+}
+
+fn retain_muxed<T>(v: &mut Vec<T>, separate: &[bool]) {
+    let mut i = 0;
+    v.retain(|_| {
+        i += 1;
+        !separate[i - 1]
+    });
+}
+
+/// Failures worth skipping a segment for; policy refusals are final.
+fn skippable(e: &str) -> bool {
+    e == "stalled" || e == "error sending request" || e.starts_with("http ")
 }
 
 fn decrypt(key: &[u8; 16], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
@@ -335,6 +629,23 @@ fn head_ok(b: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Init segments are shared by many media segments: fetch each once.
+async fn get_init(sh: &Shared, p: &Part) -> Result<Arc<Vec<u8>>, String> {
+    let key = (p.url.clone(), p.range);
+    if let Some(i) = sh.lock().inits.get(&key) {
+        return Ok(Arc::clone(i));
+    }
+    let b = get_bytes(sh, &p.url, p.range, MAX_SEGMENT).await?;
+    head_ok(&b)?;
+    let b = Arc::new(b);
+    let mut st = sh.lock();
+    if st.inits.len() >= MAX_INITS {
+        st.inits.clear();
+    }
+    st.inits.insert(key, Arc::clone(&b));
+    Ok(b)
+}
+
 async fn download(sh: &Shared, seg: &Seg) -> Result<(Ready, usize, Duration), String> {
     let t0 = Instant::now();
     let mut body = get_bytes(sh, &seg.part.url, seg.part.range, MAX_SEGMENT).await?;
@@ -347,45 +658,28 @@ async fn download(sh: &Shared, seg: &Seg) -> Result<(Ready, usize, Duration), St
     }
     head_ok(&body)?;
     let init = match &seg.init {
-        Some(p) => {
-            let b = get_bytes(sh, &p.url, p.range, MAX_SEGMENT).await?;
-            head_ok(&b)?;
-            Some(Arc::new(b))
-        }
+        Some(p) => Some(get_init(sh, p).await?),
         None => None,
     };
-    Ok((
-        Ready {
-            bytes: Arc::new(body),
-            init,
-        },
-        wire,
-        net,
-    ))
+    Ok((Ready { bytes: body, init }, wire, net))
 }
 
 async fn fetch_task(sh: Arc<Shared>, epoch: u64, idx: usize, seg: Seg) {
+    let active = Active::new(&sh);
     let res = download(&sh, &seg).await;
+    drop(active);
     let mut st = sh.lock();
     if st.epoch != epoch {
         return;
     }
     st.inflight.remove(&idx);
     match res {
-        Ok((r, wire, net)) => {
-            let secs = net.as_secs_f64().max(1e-3);
-            let sample = wire as f64 * 8.0 / secs;
-            st.est_bps = Some(st.est_bps.map_or(sample, |e| e * 0.7 + sample * 0.3));
+        Ok((r, wire, _net)) => {
             st.avg_bytes = if st.avg_bytes == 0 {
                 wire
             } else {
                 (st.avg_bytes * 7 + wire * 3) / 10
             };
-            if net > seg.dur {
-                st.slow_streak += 1;
-            } else {
-                st.slow_streak = 0;
-            }
             st.ready.insert(idx, r);
         }
         Err(e) => {
@@ -446,7 +740,7 @@ fn hls_media(base: &str, origin: &str, text: &str) -> Result<Track, String> {
         } => {
             // A live window has no end to seek in; later.
             if !(ended || vod) {
-                return Err("unsupported stream".into());
+                return Err("live stream".into());
             }
             hls_track(base, origin, &segments)
         }
@@ -531,9 +825,12 @@ fn new_state(track: Track, variant: usize, auto: bool) -> State {
         keys: HashMap::new(),
         last_init: None,
         need_discont: false,
-        est_bps: None,
         avg_bytes: 0,
-        slow_streak: 0,
+        abr: AbrPolicy::default(),
+        pressure: false,
+        rebuild: false,
+        skipped: Duration::ZERO,
+        inits: HashMap::new(),
         auto,
         variant,
         switching: None,
@@ -542,14 +839,16 @@ fn new_state(track: Track, variant: usize, auto: bool) -> State {
     }
 }
 
+type VariantSet = (Vec<VariantInfo>, Vec<VariantSrc>, Vec<Option<String>>);
+
 fn finish(
     handle: Handle,
     client: reqwest::Client,
     origin: String,
     headers: Vec<(String, String)>,
-    (variants, srcs): (Vec<VariantInfo>, Vec<VariantSrc>),
-    track: Track,
-    variant: usize,
+    (variants, srcs, codecs): VariantSet,
+    (track, variant): (Track, usize),
+    quality: Quality,
 ) -> SegmentedReader {
     let sh = Arc::new(Shared {
         client,
@@ -557,7 +856,11 @@ fn finish(
         headers: allowed_headers(headers),
         variants,
         srcs,
+        codecs,
+        quality,
+        t0: Instant::now(),
         closed: AtomicBool::new(false),
+        meter: Mutex::new(Meter::default()),
         state: Mutex::new(new_state(track, variant, true)),
         cv: Condvar::new(),
     });
@@ -571,7 +874,11 @@ fn probe(client: reqwest::Client, url: &str, headers: Vec<(String, String)>) -> 
         headers: allowed_headers(headers),
         variants: Vec::new(),
         srcs: Vec::new(),
+        codecs: Vec::new(),
+        quality: Quality::default(),
+        t0: Instant::now(),
         closed: AtomicBool::new(false),
+        meter: Mutex::new(Meter::default()),
         state: Mutex::new(new_state(Track::new(Vec::new()), 0, true)),
         cv: Condvar::new(),
     }
@@ -596,14 +903,15 @@ pub async fn open_hls(
                 client,
                 url,
                 headers,
-                (Vec::new(), Vec::new()),
-                track,
-                0,
+                (Vec::new(), Vec::new(), Vec::new()),
+                (track, 0),
+                quality,
             ))
         }
         hls::Playlist::Master { variants, audio } => {
             let mut info = Vec::new();
             let mut srcs = Vec::new();
+            let mut codecs = Vec::new();
             let mut separate_audio = Vec::new();
             for v in &variants {
                 // A variant pointing inward from a public master is dropped.
@@ -619,26 +927,32 @@ pub async fn open_hls(
                         .as_ref()
                         .is_some_and(|g| audio.iter().any(|a| &a.group == g && a.uri.is_some())),
                 );
+                codecs.push(v.codecs.clone());
                 srcs.push(VariantSrc::Playlist(u));
             }
             if info.is_empty() {
                 return Err("unsupported stream".into());
             }
+            // Muxed variants win when the master offers any; a master that
+            // only has video plus separate audio cannot be played yet.
+            if separate_audio.iter().all(|s| *s) {
+                return Err("separate tracks".into());
+            }
+            retain_muxed(&mut info, &separate_audio);
+            retain_muxed(&mut srcs, &separate_audio);
+            retain_muxed(&mut codecs, &separate_audio);
             let pairs: Vec<(Option<u32>, u64)> =
                 info.iter().map(|i| (i.height, i.bandwidth)).collect();
             let idx = pick_variant(&pairs, quality, None);
-            if separate_audio[idx] {
-                return Err("unsupported stream".into());
-            }
             let track = load_track(&p, &srcs[idx]).await?;
             Ok(finish(
                 handle,
                 client,
                 url,
                 headers,
-                (info, srcs),
-                track,
-                idx,
+                (info, srcs, codecs),
+                (track, idx),
+                quality,
             ))
         }
     }
@@ -658,7 +972,7 @@ pub async fn open_dash(
     let has = |k: dash::Kind| mpd.sets.iter().any(|s| s.kind == k);
     if has(dash::Kind::Video) && has(dash::Kind::Audio) {
         // Separate audio is not muxed in yet.
-        return Err("unsupported stream".into());
+        return Err("separate tracks".into());
     }
     let set = mpd
         .sets
@@ -674,6 +988,7 @@ pub async fn open_dash(
             bandwidth: r.bandwidth,
         })
         .collect();
+    let codecs: Vec<Option<String>> = set.reps.iter().map(|r| r.codecs.clone()).collect();
     let pairs: Vec<(Option<u32>, u64)> = info.iter().map(|i| (i.height, i.bandwidth)).collect();
     let idx = pick_variant(&pairs, quality, None);
     let srcs: Vec<VariantSrc> = set
@@ -687,9 +1002,9 @@ pub async fn open_dash(
         client,
         url,
         headers,
-        (info, srcs),
-        track,
-        idx,
+        (info, srcs, codecs),
+        (track, idx),
+        quality,
     ))
 }
 
@@ -748,6 +1063,85 @@ impl SegmentedReader {
         }
     }
 
+    fn start_switch(&self, st: &mut State, i: usize) {
+        st.switching = Some(i);
+        st.switched = None;
+        if let Some(h) = st.switch_task.take() {
+            h.abort();
+        }
+        let sh = Arc::clone(&self.sh);
+        let task = self.handle.spawn(async move {
+            let res = load_track(&sh, &sh.srcs[i]).await;
+            let mut st = sh.lock();
+            if st.switching != Some(i) {
+                return;
+            }
+            match res {
+                Ok(t) => st.switched = Some((i, t)),
+                // Stay where we are; the current variant still plays.
+                Err(_) => st.switching = None,
+            }
+            drop(st);
+            sh.cv.notify_all();
+        });
+        st.switch_task = Some(task.abort_handle());
+    }
+
+    /// Automatic quality: measure, ask the policy, switch in the reader when
+    /// the codecs agree, otherwise ask for a rebuild (downgrades only).
+    fn abr_tick(&self, st: &mut State) {
+        let sh = &self.sh;
+        let measured = sh.meter().sample(Instant::now());
+        let pressure = std::mem::take(&mut st.pressure);
+        if !st.auto
+            || sh.variants.len() < 2
+            || st.switching.is_some()
+            || st.switched.is_some()
+            || st.rebuild
+        {
+            return;
+        }
+        let mut buffer = Duration::ZERO;
+        let mut i = st.next;
+        while st.ready.contains_key(&i) {
+            buffer += st.track.segs[i].dur;
+            i += 1;
+        }
+        let cap = sh.quality.max_height;
+        let cands: Vec<(usize, u64)> = (0..sh.variants.len())
+            .filter(|&v| {
+                v == st.variant
+                    || match (cap, sh.variants[v].height) {
+                        (Some(m), Some(h)) => h <= m,
+                        _ => true,
+                    }
+            })
+            .map(|v| (v, sh.variants[v].bandwidth))
+            .collect();
+        let input = AbrInput {
+            now: sh.t0.elapsed(),
+            buffer_ahead: buffer,
+            bps: measured,
+            current: st.variant,
+            cands: &cands,
+            retry_pressure: pressure,
+        };
+        let AbrChoice::Switch(to) = st.abr.decide(&input) else {
+            return;
+        };
+        let hls = matches!(sh.srcs[to], VariantSrc::Playlist(_));
+        let same = compatible(
+            sh.codecs.get(st.variant).and_then(|c| c.as_deref()),
+            sh.codecs.get(to).and_then(|c| c.as_deref()),
+            hls,
+        );
+        if same {
+            self.start_switch(st, to);
+        } else if sh.variants[to].bandwidth < sh.variants[st.variant].bandwidth {
+            st.rebuild = true;
+        }
+    }
+
     fn apply_switch(&self, st: &mut State) {
         let Some((v, track)) = st.switched.take() else {
             return;
@@ -776,24 +1170,26 @@ impl SegmentedReader {
 
     fn emit(st: &mut State, idx: usize) {
         let seg = st.track.segs[idx].clone();
-        let Some(r) = st.ready.get(&idx) else {
+        // The segment's bytes move into the chunk; nothing is copied.
+        let Some(Ready { bytes, init }) = st.ready.remove(&idx) else {
             return;
         };
-        let (bytes, init) = (Arc::clone(&r.bytes), r.init.clone());
-        let flag = st.need_discont || seg.discont;
+        let mut flag = st.need_discont || seg.discont;
         let mut first = true;
         if let (Some(p), Some(i)) = (&seg.init, init)
             && st.last_init.as_ref() != Some(p)
         {
+            // A new init after a quality switch breaks the timeline too.
+            flag |= st.last_init.is_some();
             st.outbox.push_back(Chunk {
-                bytes: i.as_ref().clone(),
+                bytes: Arc::try_unwrap(i).unwrap_or_else(|a| a.as_ref().clone()),
                 pts: None,
                 discont: flag,
             });
             first = false;
         }
         st.outbox.push_back(Chunk {
-            bytes: bytes.as_ref().clone(),
+            bytes,
             pts: Some(seg.start),
             discont: flag && first,
         });
@@ -853,6 +1249,7 @@ impl TimedSource for SegmentedReader {
                 return Ok(Some(c));
             }
             self.apply_switch(&mut st);
+            self.abr_tick(&mut st);
             if st.next >= st.track.segs.len() {
                 return Ok(None);
             }
@@ -863,8 +1260,20 @@ impl TimedSource for SegmentedReader {
                 Self::evict(&mut st);
                 continue;
             }
-            if let Some(e) = st.failed.get(&idx) {
-                return Err(io::Error::other(e.clone()));
+            if let Some(e) = st.failed.get(&idx).cloned() {
+                // One lost segment is a glitch, not the end of the film.
+                let dur = st.track.segs[idx].dur;
+                let total = st.track.total;
+                if skippable(&e) && (st.skipped + dur) * SKIP_SHARE < total {
+                    st.skipped += dur;
+                    st.failed.remove(&idx);
+                    st.next = idx + 1;
+                    st.need_discont = true;
+                    st.last_init = None;
+                    Self::evict(&mut st);
+                    continue;
+                }
+                return Err(io::Error::other(e));
             }
             let now = Instant::now();
             if now >= deadline {
@@ -909,42 +1318,13 @@ impl TimedSource for SegmentedReader {
         if i >= self.sh.variants.len() || i == st.variant || st.switching == Some(i) {
             return;
         }
-        st.switching = Some(i);
-        st.switched = None;
-        if let Some(h) = st.switch_task.take() {
-            h.abort();
-        }
-        let sh = Arc::clone(&self.sh);
-        let task = self.handle.spawn(async move {
-            let res = load_track(&sh, &sh.srcs[i]).await;
-            let mut st = sh.lock();
-            if st.switching != Some(i) {
-                return;
-            }
-            match res {
-                Ok(t) => st.switched = Some((i, t)),
-                // Stay where we are; the current variant still plays.
-                Err(_) => st.switching = None,
-            }
-            drop(st);
-            sh.cv.notify_all();
-        });
-        st.switch_task = Some(task.abort_handle());
+        st.rebuild = false;
+        self.start_switch(&mut st, i);
     }
 
     fn wants_downgrade(&mut self) -> bool {
         let mut st = self.sh.lock();
-        if !st.auto || self.sh.variants.len() < 2 || st.slow_streak < 2 {
-            return false;
-        }
-        let lowest = (0..self.sh.variants.len())
-            .min_by_key(|&i| self.sh.variants[i].bandwidth)
-            .unwrap_or(0);
-        if st.variant == lowest || st.ready.contains_key(&st.next) {
-            return false;
-        }
-        st.slow_streak = 0;
-        true
+        std::mem::take(&mut st.rebuild)
     }
 }
 
@@ -956,6 +1336,128 @@ fn _assert_send(r: SegmentedReader) -> impl Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn abr_policy_table() {
+        // variants: 0 = 500k, 1 = 1M, 2 = 2.5M
+        let all = [(0usize, 500_000u64), (1, 1_000_000), (2, 2_500_000)];
+        struct C {
+            now: u64,
+            buf: u64,
+            bps: Option<f64>,
+            cur: usize,
+            pressure: bool,
+            want: AbrChoice,
+        }
+        let c = |now, buf, bps: Option<f64>, cur, pressure, want| C {
+            now,
+            buf,
+            bps,
+            cur,
+            pressure,
+            want,
+        };
+        use AbrChoice::{Stay, Switch};
+        let cases = [
+            // Short buffer and speed under 1.2x the bitrate: lower.
+            c(10, 5, Some(2.0e6), 2, false, Switch(1)),
+            // The best lower one the speed carries (1.2 * 500k fits 800k).
+            c(10, 5, Some(0.8e6), 2, false, Switch(0)),
+            // Speed fine for the current one: stay.
+            c(10, 5, Some(3.1e6), 2, false, Stay),
+            // Plenty buffered: stay even when slow.
+            c(10, 15, Some(1.0e6), 2, false, Stay),
+            // Lowest already: nothing to do.
+            c(10, 1, Some(1.0e5), 0, false, Stay),
+            // Retry pressure lowers before the segment gives up.
+            c(10, 40, Some(9.0e6), 2, true, Switch(1)),
+            // No estimate yet: no speed-based decision.
+            c(10, 1, None, 2, false, Stay),
+        ];
+        for (n, k) in cases.iter().enumerate() {
+            let mut p = AbrPolicy::default();
+            let got = p.decide(&AbrInput {
+                now: secs(k.now),
+                buffer_ahead: secs(k.buf),
+                bps: k.bps,
+                current: k.cur,
+                cands: &all,
+                retry_pressure: k.pressure,
+            });
+            assert_eq!(got, k.want, "case {n}");
+        }
+    }
+
+    #[test]
+    fn abr_raises_only_after_hold_and_at_most_once_a_minute() {
+        let all = [(0usize, 500_000u64), (1, 1_000_000)];
+        let mut p = AbrPolicy::default();
+        let at = |p: &mut AbrPolicy, now: u64, buf: u64, bps: f64, cur: usize| {
+            p.decide(&AbrInput {
+                now: secs(now),
+                buffer_ahead: secs(buf),
+                bps: Some(bps),
+                current: cur,
+                cands: &all,
+                retry_pressure: false,
+            })
+        };
+        // 1.5x of 1M = 1.5M. Condition first holds at t=100.
+        assert_eq!(at(&mut p, 100, 35, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 110, 35, 2.0e6, 0), AbrChoice::Stay);
+        // A dip resets the hold.
+        assert_eq!(at(&mut p, 115, 20, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 116, 35, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 135, 35, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 136, 35, 2.0e6, 0), AbrChoice::Switch(1));
+        // Down again at once is refused by the gap, then allowed.
+        assert_eq!(at(&mut p, 137, 2, 0.5e6, 1), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 141, 2, 0.5e6, 1), AbrChoice::Switch(0));
+        // Up needs a minute since the last switch.
+        assert_eq!(at(&mut p, 142, 35, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 165, 35, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 200, 35, 2.0e6, 0), AbrChoice::Stay);
+        assert_eq!(at(&mut p, 201, 35, 2.0e6, 0), AbrChoice::Switch(1));
+    }
+
+    #[test]
+    fn codec_compatibility() {
+        let h = Some("avc1.64001f,mp4a.40.2");
+        assert!(compatible(h, Some("avc1.4d401e, mp4a.40.5"), false));
+        assert!(!compatible(h, Some("hvc1.1.6.L93,mp4a.40.2"), true));
+        assert!(!compatible(h, None, true));
+        assert!(compatible(None, None, true));
+        assert!(!compatible(None, None, false));
+    }
+
+    #[test]
+    fn meter_counts_concurrent_downloads_once() {
+        let t0 = Instant::now();
+        let mut m = Meter::default();
+        // Four downloads overlap for one second and move 1 MB together.
+        for _ in 0..4 {
+            m.begin(t0);
+        }
+        m.add(1_000_000);
+        for _ in 0..4 {
+            m.end(t0 + secs(1));
+        }
+        let bps = m.sample(t0 + secs(5)).unwrap();
+        assert!((bps - 8.0e6).abs() < 1.0, "{bps}");
+        // Idle time does not dilute the estimate.
+        assert_eq!(m.sample(t0 + secs(60)), Some(bps));
+    }
+
+    #[test]
+    fn only_transient_failures_are_skippable() {
+        assert!(skippable("stalled") && skippable("http 404") && skippable("http 503"));
+        assert!(!skippable("unsupported stream") && !skippable("proxy required"));
+        assert!(!skippable("no media") && !skippable("cancelled"));
+    }
 
     #[test]
     fn only_three_headers_pass() {

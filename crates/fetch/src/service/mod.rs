@@ -25,7 +25,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::OnceCell;
 
 pub use torrent::{
-    Listed, Prepared, Source, TorrentReader, TorrentState, TorrentStatus, path_is_safe,
+    Listed, Prepared, ProbeState, Source, StreamStatus, TorrentProbe, TorrentReader, TorrentState,
+    TorrentStatus, path_is_safe,
 };
 
 pub(crate) use proxy::{current_proxy, proxy_blocked, same_origin_policy};
@@ -42,6 +43,9 @@ pub enum StreamTicket {
         len: u64,
         /// File name only, for a window title (hide it when discreet).
         name: String,
+        /// Live numbers for a torrent (peers, speed, paused, error). `None`
+        /// for plain HTTP sources.
+        status: Option<Arc<StreamStatus>>,
     },
     /// An adaptive stream (HLS/DASH) delivered as timed chunks.
     Timed {
@@ -97,6 +101,8 @@ pub struct FetchService {
     cache: Arc<Mutex<Vec<TorrentStatus>>>,
     /// Raised by `cancel_streams`, then swapped for a fresh flag.
     stream_cancel: Mutex<Arc<AtomicBool>>,
+    /// Torrent-side shared state (live statuses, tuning, policy timers).
+    tor: torrent::TorrentShared,
 }
 
 impl FetchService {
@@ -114,14 +120,18 @@ impl FetchService {
             session: Arc::new(OnceCell::new()),
             cache: Arc::new(Mutex::new(Vec::new())),
             stream_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+            tor: torrent::TorrentShared::default(),
         })
     }
 
     /// Replace the configuration (indexers, download folder). A running
-    /// session keeps its network options until the next start.
+    /// session keeps its network options (proxy, DHT, listener, bound
+    /// interface) until the next start; speed limits and the seeding policy
+    /// apply immediately.
     pub fn set_config(&mut self, cfg: FetchConfig) {
         publish_proxy(&cfg);
         self.cfg = Arc::new(cfg);
+        self.apply_limits();
     }
 
     fn rt(&self) -> &Runtime {

@@ -8,6 +8,8 @@ use crate::model::{MediaKind, classify};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -23,6 +25,36 @@ pub struct ScanReport {
     pub skipped_unsupported: u64,
     /// Permission errors, vanished entries, unreadable metadata.
     pub errors: u64,
+    /// The scan was cancelled: what was committed is kept, nothing is flagged
+    /// missing.
+    pub cancelled: bool,
+}
+
+/// Job controls for a scan: `cancel` is checked between rows, `progress`
+/// counts rows examined. Clone it to share with the UI thread.
+#[derive(Debug, Clone, Default)]
+pub struct ScanControl {
+    pub cancel: Arc<AtomicBool>,
+    pub progress: Arc<AtomicU64>,
+}
+
+impl ScanControl {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+/// Rows written per transaction.
+pub const COMMIT_EVERY: u64 = 2000;
+
+/// Commit and reopen the transaction every `COMMIT_EVERY` writes.
+fn tick(conn: &rusqlite::Connection, since: &mut u64) -> Result<()> {
+    *since += 1;
+    if *since >= COMMIT_EVERY {
+        *since = 0;
+        conn.execute_batch("COMMIT; BEGIN IMMEDIATE")?;
+    }
+    Ok(())
 }
 
 impl ScanReport {
@@ -35,6 +67,7 @@ impl ScanReport {
         self.skipped_symlinks += o.skipped_symlinks;
         self.skipped_unsupported += o.skipped_unsupported;
         self.errors += o.errors;
+        self.cancelled |= o.cancelled;
     }
 }
 
@@ -51,9 +84,17 @@ pub fn import_folder(db: &mut Db, path: &Path) -> Result<(i64, ScanReport)> {
 }
 
 pub fn rescan_all(db: &mut Db) -> Result<ScanReport> {
+    rescan_all_with(db, &ScanControl::default())
+}
+
+pub fn rescan_all_with(db: &mut Db, ctl: &ScanControl) -> Result<ScanReport> {
     let mut total = ScanReport::default();
     for (id, root) in db.folders()? {
-        total.merge(&scan_folder(db, id, &root)?);
+        if ctl.cancelled() {
+            total.cancelled = true;
+            break;
+        }
+        total.merge(&scan_folder_with(db, id, &root, ctl)?);
     }
     Ok(total)
 }
@@ -92,8 +133,40 @@ fn win_attrs(_: &std::fs::Metadata) -> u32 {
 }
 
 pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanReport> {
+    scan_folder_with(db, folder_id, root, &ScanControl::default())
+}
+
+/// Scan as a job: commits every `COMMIT_EVERY` rows, publishes progress and
+/// stops between rows when `ctl.cancel` is set, keeping what was committed.
+pub fn scan_folder_with(
+    db: &mut Db,
+    folder_id: i64,
+    root: &Path,
+    ctl: &ScanControl,
+) -> Result<ScanReport> {
+    let conn = &db.conn;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match scan_inner(conn, folder_id, root, ctl) {
+        Ok(rep) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(rep)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn scan_inner(
+    tx: &rusqlite::Connection,
+    folder_id: i64,
+    root: &Path,
+    ctl: &ScanControl,
+) -> Result<ScanReport> {
     let mut rep = ScanReport::default();
-    let tx = db.conn.transaction()?;
+    let mut since = 0u64;
+    ctl.progress.store(0, Ordering::Relaxed);
     tx.execute(
         "UPDATE folders SET scan_gen = scan_gen + 1 WHERE id = ?1",
         [folder_id],
@@ -111,7 +184,6 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
             "UPDATE media SET missing = 1 WHERE folder_id = ?1 AND missing = 0",
             [folder_id],
         )? as u64;
-        tx.commit()?;
         return Ok(rep);
     }
 
@@ -152,6 +224,11 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
             });
 
         for entry in walker {
+            if ctl.cancelled() {
+                rep.cancelled = true;
+                break;
+            }
+            ctl.progress.fetch_add(1, Ordering::Relaxed);
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
@@ -198,6 +275,7 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                 Some((s, m)) if s == size && m == mtime => {
                     touch.execute(params![blob, gen_])?;
                     rep.unchanged += 1;
+                    tick(tx, &mut since)?;
                 }
                 Some(_) => {
                     let (w, h) = if attrs_placeholder(win_attrs(&md)) {
@@ -207,6 +285,7 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                     };
                     update.execute(params![blob, size, mtime, w, h, gen_])?;
                     rep.updated += 1;
+                    tick(tx, &mut since)?;
                 }
                 None => {
                     // Decided after the walk: pairing must not depend on the
@@ -231,6 +310,10 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
         for same_name_only in [true, false] {
             let mut rest = Vec::new();
             for f in todo {
+                if rep.cancelled || ctl.cancelled() {
+                    rep.cancelled = true;
+                    break;
+                }
                 if f.placeholder {
                     // Matching would read the file's bytes.
                     rest.push(f);
@@ -257,6 +340,7 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                             gen_
                         ])?;
                         rep.relinked += 1;
+                        tick(tx, &mut since)?;
                     }
                     None => rest.push(f),
                 }
@@ -264,6 +348,10 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
             todo = rest;
         }
         for f in todo {
+            if rep.cancelled || ctl.cancelled() {
+                rep.cancelled = true;
+                break;
+            }
             let (w, h) = if f.placeholder {
                 (None, None)
             } else {
@@ -284,7 +372,13 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
                 parent_blob(&f.path)
             ])?;
             rep.added += 1;
+            tick(tx, &mut since)?;
         }
+    }
+
+    if rep.cancelled {
+        // Partial walk: flagging anything missing would be a lie.
+        return Ok(rep);
     }
 
     // A directory we could not read must not make its known files "missing".
@@ -300,7 +394,6 @@ pub fn scan_folder(db: &mut Db, folder_id: i64, root: &Path) -> Result<ScanRepor
         "UPDATE media SET missing = 1 WHERE folder_id = ?1 AND scan_gen <> ?2 AND missing = 0",
         params![folder_id, gen_],
     )? as u64;
-    tx.commit()?;
     Ok(rep)
 }
 

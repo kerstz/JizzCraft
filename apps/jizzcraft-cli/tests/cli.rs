@@ -150,3 +150,225 @@ fn run_passes_json_arguments_through() {
             .ends_with("sub/c.png")
     );
 }
+
+/// The support report is built from an allow-list: seed distinctive names,
+/// paths, keys and URLs everywhere they could live and make sure none leaks.
+#[test]
+fn doctor_report_never_contains_user_strings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home-XYZZY-HOME");
+    let lib = tmp.path().join("lib-PLUGH-FOLDER");
+    make_library(&lib);
+    std::fs::rename(lib.join("a.png"), lib.join("SECRETNAME-a.png")).unwrap();
+    assert!(
+        cli(&home, &["scan", lib.to_str().unwrap()])
+            .status
+            .success()
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    let cfg = serde_json::json!({
+        "age_confirmed": true,
+        "language": "fr",
+        "panic_video": "/srv/PANICPATH/video.mp4",
+        "indexer_key": "KEY-0123456789-APIKEY",
+        "source_url": "https://tracker-SECRETHOST.invalid/announce",
+        "last_search": "SEARCHTERM-private"
+    });
+    std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
+    // The config dir under --home is the home itself or a subfolder: write both.
+    for sub in ["config", "state"] {
+        let d = home.join(sub);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), cfg.to_string()).unwrap();
+    }
+    let o = cli(&home, &["doctor", "--report"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
+    for needle in [
+        "XYZZY",
+        "PLUGH",
+        "SECRETNAME",
+        "PANICPATH",
+        "APIKEY",
+        "SECRETHOST",
+        "SEARCHTERM",
+        "tracker",
+        ".invalid",
+        "/home",
+        "lib-",
+        "tmp",
+    ] {
+        assert!(!text.contains(needle), "leaked {needle}:\n{text}");
+    }
+    assert!(text.contains("items: 3"), "{text}");
+    assert!(text.contains("folders: 1"), "{text}");
+    assert!(text.contains("config.age_confirmed: true"), "{text}");
+    assert!(text.contains("schema_version: "), "{text}");
+}
+
+// ---- organise: playlists, tags, categories ----
+
+fn tree_bytes(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut out = vec![];
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let b = std::fs::read(&p).unwrap();
+                out.push((p, b));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn paths_of(v: &Value) -> Vec<String> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            Path::new(m["path"].as_str().unwrap())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+fn id_of(out: &Value) -> i64 {
+    out["id"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("no id in {out}"))
+}
+
+#[test]
+fn organise_end_to_end_and_media_untouched() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    make_library(lib.path());
+    let before = tree_bytes(lib.path());
+    let c = |args: &[&str]| json(&cli(home.path(), args));
+    c(&["--json", "scan", lib.path().to_str().unwrap()]);
+
+    // Media ids by name.
+    let q = c(&["--json", "query", "--type", "image"]);
+    let mut by_name = std::collections::HashMap::new();
+    for m in q["items"].as_array().unwrap() {
+        let n = Path::new(m["path"].as_str().unwrap())
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        by_name.insert(n, m["id"].as_i64().unwrap().to_string());
+    }
+    let (a, b, cc) = (&by_name["a.png"], &by_name["b.png"], &by_name["c.png"]);
+
+    // Playlist: create, add, reorder.
+    let pl = id_of(&c(&["--json", "playlist", "create", "Evening"])).to_string();
+    let added = c(&["--json", "playlist", "add", &pl, cc, a, b]);
+    assert_eq!(added["added"], 3, "{added}");
+    let q = c(&["--json", "query", "--playlist", &pl, "--sort", "position"]);
+    assert_eq!(paths_of(&q), ["c.png", "a.png", "b.png"]);
+    c(&["--json", "playlist", "move", &pl, b, "--before", cc]);
+    let q = c(&["--json", "query", "--playlist", &pl, "--sort", "position"]);
+    assert_eq!(paths_of(&q), ["b.png", "c.png", "a.png"]);
+    let items = c(&["--json", "playlist", "items", &pl]);
+    assert_eq!(items["total"], 3);
+    c(&["--json", "playlist", "sort", &pl, "--by", "name", "--desc"]);
+    let q = c(&["--json", "query", "--playlist", &pl, "--sort", "position"]);
+    assert_eq!(paths_of(&q), ["c.png", "b.png", "a.png"]);
+    let list = c(&["--json", "playlist", "list"]);
+    assert_eq!(list["items"][0]["count"], 3);
+    // Position sorting only makes sense inside a playlist.
+    assert!(
+        !cli(home.path(), &["query", "--sort", "position"])
+            .status
+            .success()
+    );
+    // Human table shows the id and the count.
+    let human = cli(home.path(), &["playlist", "list"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("items") && text.contains(&pl), "{text}");
+
+    // Tags: AND / OR / NOT.
+    let red = id_of(&c(&["--json", "tag", "create", "red"])).to_string();
+    let blue = id_of(&c(&["--json", "tag", "create", "blue"])).to_string();
+    c(&["--json", "tag", "assign", &red, a, b]);
+    c(&["--json", "tag", "assign", &blue, b, cc]);
+    let both = c(&["--json", "query", "--tag", &red, "--tag", &blue]);
+    assert_eq!(paths_of(&both), ["b.png"]);
+    let either = c(&["--json", "query", "--any-tag", &red, "--any-tag", &blue]);
+    assert_eq!(either["count"], 3);
+    let not = c(&["--json", "query", "--tag", &red, "--not-tag", &blue]);
+    assert_eq!(paths_of(&not), ["a.png"]);
+    c(&["--json", "tag", "assign", &red, b, "--off"]);
+    let red_only = c(&["--json", "query", "--tag", &red]);
+    assert_eq!(paths_of(&red_only), ["a.png"]);
+    let tog = c(&["--json", "tag", "toggle", &red, a]);
+    assert_eq!(tog["on"], false);
+    let none = c(&["--json", "query", "--untagged"]);
+    assert_eq!(paths_of(&none), ["a.png"]);
+    c(&["--json", "tag", "toggle", &blue, cc]);
+    c(&["--json", "tag", "assign", &blue, b, "--off"]);
+    let untagged = c(&["--json", "query", "--untagged"]);
+    assert_eq!(untagged["count"], 3);
+
+    // Categories: a subtree filter.
+    let top = id_of(&c(&["--json", "category", "create", "Top"])).to_string();
+    let kid = id_of(&c(&[
+        "--json", "category", "create", "Kid", "--parent", &top,
+    ]))
+    .to_string();
+    c(&["--json", "category", "assign", &kid, cc]);
+    c(&["--json", "category", "assign", &top, a]);
+    let sub = c(&["--json", "query", "--category", &top]);
+    assert_eq!(sub["count"], 2, "{sub}");
+    let just_kid = c(&["--json", "query", "--category", &kid]);
+    assert_eq!(paths_of(&just_kid), ["c.png"]);
+    let unc = c(&["--json", "query", "--uncategorized"]);
+    assert_eq!(paths_of(&unc), ["b.png"]);
+    c(&["--json", "category", "move", &kid]);
+    let cats = c(&["--json", "category", "list"]);
+    assert_eq!(cats["items"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        c(&[
+            "--json",
+            "run",
+            "labels.of",
+            &format!("{{\"media_id\":{cc}}}")
+        ])["categories"][0]["name"],
+        "Kid"
+    );
+
+    // M3U export refuses an existing destination, and works on a new one.
+    let out = tempfile::tempdir().unwrap();
+    let dest = out.path().join("list.m3u8");
+    let dest_s = dest.to_str().unwrap();
+    let ok = c(&["--json", "playlist", "export-m3u", &pl, dest_s]);
+    assert_eq!(ok["written"], 3);
+    let text = std::fs::read_to_string(&dest).unwrap();
+    assert!(text.contains("a.png"));
+    assert!(!text.contains("Evening"));
+    let again = cli(
+        home.path(),
+        &["--json", "playlist", "export-m3u", &pl, dest_s],
+    );
+    assert!(!again.status.success(), "must not overwrite");
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), text);
+
+    // Remove, rename, delete: playlists and labels go, files stay.
+    c(&["--json", "playlist", "rename", &pl, "Night"]);
+    c(&["--json", "playlist", "remove", &pl, a]);
+    c(&["--json", "tag", "merge", &blue, &red]);
+    c(&["--json", "playlist", "delete", &pl]);
+    c(&["--json", "category", "delete", &top]);
+    c(&["--json", "tag", "delete", &red]);
+
+    assert_eq!(before, tree_bytes(lib.path()), "media files changed");
+}

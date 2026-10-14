@@ -14,7 +14,7 @@ use jizzcraft_core::timed::{Chunk, TimedSource};
 use jizzcraft_fetch::FetchConfig;
 use jizzcraft_fetch::errors;
 use jizzcraft_fetch::pick::{Prefer, Quality};
-use jizzcraft_fetch::segmented::{SegmentedReader, open_dash, open_hls};
+use jizzcraft_fetch::segmented::{AbrConfig, SegmentedReader, open_dash, open_hls};
 use jizzcraft_fetch::service::FetchService;
 
 /// The proxy policy is process-global, so these tests run one at a time.
@@ -668,4 +668,181 @@ fn dash_list_and_sidx_play_back() {
     assert_eq!(chunks[0].bytes, file[..100]);
     assert_eq!(chunks[1].bytes, file[100..200]);
     assert_eq!(chunks[2].bytes, file[200..300]);
+}
+
+#[test]
+fn a_live_playlist_says_live() {
+    let _g = serial();
+    reset_policy();
+    let pl = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:10\n#EXTINF:2,\ns0.ts\n#EXTINF:2,\ns1.ts\n";
+    let port = serve(by_path(pl.into(), 2, 1), hits());
+    let rt = rt();
+    let err = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/m.m3u8"),
+        Quality::default(),
+    )
+    .err()
+    .expect("live is refused");
+    assert!(err.contains("live"), "{err}");
+    // Same for a dynamic DASH manifest.
+    let h: Handler = Arc::new(|_| ok("<MPD type=\"dynamic\"><Period/></MPD>"));
+    let port = serve(h, hits());
+    let err = rt
+        .block_on(open_dash(
+            rt.handle().clone(),
+            reqwest::Client::new(),
+            format!("http://127.0.0.1:{port}/l.mpd"),
+            Quality::default(),
+            Vec::new(),
+        ))
+        .err()
+        .expect("live is refused");
+    assert!(err.contains("live"), "{err}");
+}
+
+const AUDIO_MEDIA: &str = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nv0.ts\n#EXT-X-ENDLIST\n";
+
+#[test]
+fn separate_audio_only_says_separate_tracks_and_muxed_wins_when_offered() {
+    let _g = serial();
+    reset_policy();
+    let split = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",DEFAULT=YES,URI=\"a.m3u8\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO=\"a\"\nv.m3u8\n";
+    let both = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",DEFAULT=YES,URI=\"a.m3u8\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO=\"a\"\nv.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=640x360\nmuxed.m3u8\n";
+    let h: Handler = Arc::new(move |p: &str| match p {
+        "/split.m3u8" => ok(split),
+        "/both.m3u8" => ok(both),
+        p if p.ends_with(".m3u8") => ok(AUDIO_MEDIA),
+        _ => ok(vec![7u8; 100]),
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let err = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/split.m3u8"),
+        Quality::default(),
+    )
+    .err()
+    .expect("refused");
+    assert!(err.contains("separate tracks"), "{err}");
+    let r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/both.m3u8"),
+        Quality::default(),
+    )
+    .unwrap();
+    // Only the muxed variant is offered, and it is the one playing.
+    assert_eq!(r.variants().len(), 1);
+    assert_eq!(r.variants()[0].height, Some(360));
+    assert_eq!(r.current_variant(), Some(0));
+}
+
+#[test]
+fn one_failed_short_segment_is_skipped_with_a_discontinuity() {
+    let _g = serial();
+    reset_policy();
+    let n = 50;
+    let inner = by_path(playlist(n, "2"), n, 6);
+    let h: Handler = Arc::new(
+        move |p: &str| {
+            if p == "/s7.ts" { status(404) } else { inner(p) }
+        },
+    );
+    let port = serve(h, hits());
+    let rt = rt();
+    let mut r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/m.m3u8"),
+        Quality::default(),
+    )
+    .unwrap();
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(chunks.len(), n - 1);
+    let flagged: Vec<usize> = chunks
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.discont)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(flagged, [7]);
+    assert_eq!(chunks[7].pts, Some(Duration::from_secs(16)));
+}
+
+#[test]
+fn quality_goes_down_when_the_server_is_slow_and_back_up_when_it_recovers() {
+    let _g = serial();
+    reset_policy();
+    let n = 60;
+    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=640x360,CODECS=\"avc1.42e01e,mp4a.40.2\"\nlow.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS=\"avc1.64001f,mp4a.40.2\"\nhigh.m3u8\n";
+    let media = |tag: &str| {
+        let mut p = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:2\n");
+        for i in 0..n {
+            p.push_str(&format!("#EXTINF:2,\n{tag}{i}.ts\n"));
+        }
+        p.push_str("#EXT-X-ENDLIST\n");
+        p
+    };
+    let (low, high) = (media("low"), media("high"));
+    let born = Instant::now();
+    let h: Handler = Arc::new(move |p: &str| match p {
+        "/master.m3u8" => ok(master),
+        "/low.m3u8" => ok(low.clone()),
+        "/high.m3u8" => ok(high.clone()),
+        p if p.starts_with("/low") => ok(vec![1u8; 20_000]),
+        _ => {
+            // The first seconds the network is poor for the big files.
+            if born.elapsed() < Duration::from_millis(2500) {
+                std::thread::sleep(Duration::from_millis(1000));
+            }
+            ok(vec![2u8; 40_000])
+        }
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let cfg = AbrConfig {
+        down_gap: Duration::from_secs(1),
+        up_buffer: Duration::from_secs(6),
+        up_hold: Duration::from_secs(1),
+        up_gap: Duration::from_secs(2),
+        ..AbrConfig::default()
+    };
+    let mut r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/master.m3u8"),
+        Quality::default(),
+    )
+    .unwrap()
+    .with_abr(cfg);
+    assert_eq!(r.current_variant(), Some(1));
+    let mut seen = vec![1usize];
+    let mut count = 0;
+    let t0 = Instant::now();
+    loop {
+        match r.pull() {
+            Ok(Some(_)) => {
+                count += 1;
+                std::thread::sleep(Duration::from_millis(60));
+            }
+            Ok(None) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => panic!("{e}"),
+        }
+        let v = r.current_variant().unwrap();
+        if seen.last() != Some(&v) {
+            seen.push(v);
+        }
+        assert!(t0.elapsed() < Duration::from_secs(40), "stalled {seen:?}");
+    }
+    assert_eq!(count, n);
+    assert!(
+        seen.starts_with(&[1, 0, 1]),
+        "expected down then up, got {seen:?}"
+    );
+    // The pipeline never had to be rebuilt: codecs agree.
+    assert!(!r.wants_downgrade());
 }

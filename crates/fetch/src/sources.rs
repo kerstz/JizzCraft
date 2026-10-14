@@ -16,6 +16,11 @@ use std::fmt;
 /// with Torznab indexer ids.
 pub const ID_BASE: u32 = 1_000_000;
 
+const MAX_NAME: usize = 200;
+const MAX_URL: usize = 4096;
+const MAX_POINTER: usize = 512;
+const MAX_HEADER: usize = 1024;
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Fields {
     pub title: String,
@@ -89,7 +94,9 @@ fn is_http(u: &str) -> bool {
 
 pub(crate) fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // WHATWG parsers (the one `reqwest` uses) read `\` as `/` in http(s)
+    // authorities: `http://127.0.0.1\@public.example/` connects to loopback.
+    let auth = rest.split(['/', '\\', '?', '#']).next().unwrap_or("");
     let auth = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
     if let Some(v6) = auth.strip_prefix('[') {
         return v6.split(']').next().unwrap_or("");
@@ -97,25 +104,175 @@ pub(crate) fn host_of(url: &str) -> &str {
     auth.split(':').next().unwrap_or("")
 }
 
-/// Loopback, private and link-local literals, and `localhost`.
+/// `inet_aton` forms the URL parser accepts and `Ipv4Addr::from_str` does not:
+/// `127.1`, `2130706433`, `0x7f000001`, `0177.0.0.1`.
+fn legacy_ipv4(h: &str) -> Option<std::net::Ipv4Addr> {
+    let parts: Vec<&str> = h.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let mut nums = Vec::with_capacity(parts.len());
+    for p in &parts {
+        let n = if let Some(x) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            if x.is_empty() {
+                0
+            } else {
+                u64::from_str_radix(x, 16).ok()?
+            }
+        } else if p.len() > 1 && p.starts_with('0') {
+            u64::from_str_radix(&p[1..], 8).ok()?
+        } else {
+            p.parse::<u64>().ok()?
+        };
+        nums.push(n);
+    }
+    let (last, init) = nums.split_last()?;
+    if init.iter().any(|&n| n > 255) {
+        return None;
+    }
+    let tail_bytes = 5 - nums.len() as u32; // bytes the last number fills
+    if *last >= 1u64 << (8 * tail_bytes) {
+        return None;
+    }
+    let mut v: u64 = *last;
+    for (i, n) in init.iter().enumerate() {
+        v |= n << (8 * (3 - i as u32));
+    }
+    Some(std::net::Ipv4Addr::from(v as u32))
+}
+
+/// False for any address that is loopback, private, link-local, shared
+/// (CGNAT), multicast, reserved or documentation; and for IPv6 forms that
+/// embed such an IPv4 address (mapped, NAT64, 6to4, compatible).
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(a) => {
+            let o = a.octets();
+            !(a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast()
+                || a.is_multicast()
+                || a.is_documentation()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)
+                || o[0] >= 240)
+        }
+        IpAddr::V6(a) => {
+            let s = a.segments();
+            if a.is_loopback() || a.is_unspecified() || a.is_multicast() {
+                return false;
+            }
+            if (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xffc0) == 0xfec0
+                || (s[0] == 0x2001 && s[1] == 0x0db8)
+            {
+                return false;
+            }
+            let embedded = |hi: u16, lo: u16| {
+                std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8)
+            };
+            // ::ffff:a.b.c.d, ::a.b.c.d, 64:ff9b::a.b.c.d
+            if s[..5] == [0; 5] && (s[5] == 0xffff || s[5] == 0) {
+                return is_public_ip(IpAddr::V4(embedded(s[6], s[7])));
+            }
+            if s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0; 4] {
+                return is_public_ip(IpAddr::V4(embedded(s[6], s[7])));
+            }
+            // 6to4: 2002:a.b.c.d::
+            if s[0] == 0x2002 {
+                return is_public_ip(IpAddr::V4(embedded(s[1], s[2])));
+            }
+            true
+        }
+    }
+}
+
+/// Name suffixes that live on the user's own network by convention.
+const INTRANET_SUFFIXES: &[&str] = &[
+    ".localhost",
+    ".local",
+    ".lan",
+    ".home",
+    ".internal",
+    ".intranet",
+    ".localdomain",
+    ".home.arpa",
+];
+
+/// A name a LAN resolver answers: `localhost`, `nas`, `jackett.lan`.
+pub(crate) fn is_intranet_name(h: &str) -> bool {
+    let h = h.trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost"
+        || h == "local"
+        || !h.contains('.')
+        || INTRANET_SUFFIXES.iter().any(|s| h.ends_with(s))
+}
+
+/// Loopback, private and link-local literals (in any spelling a URL parser
+/// accepts), single-label and intranet names. When in doubt, local.
 pub(crate) fn is_local_host(h: &str) -> bool {
     use std::net::IpAddr;
-    let h = h.trim_end_matches('.').to_ascii_lowercase();
-    if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".local") {
+    let mut h: String = h
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .map(|c| match c {
+            '\u{3002}' | '\u{ff0e}' | '\u{ff61}' => '.',
+            '\u{ff10}'..='\u{ff19}' => char::from(b'0' + (c as u32 - 0xff10) as u8),
+            c => c,
+        })
+        .collect();
+    if h.contains('%') {
+        // Percent-encoded hosts are decoded by URL parsers.
+        let mut out = Vec::with_capacity(h.len());
+        let b = h.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' {
+                let hex = h
+                    .get(i + 1..i + 3)
+                    .and_then(|x| u8::from_str_radix(x, 16).ok());
+                let Some(v) = hex else { return true };
+                out.push(v);
+                i += 3;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        let Ok(d) = String::from_utf8(out) else {
+            return true;
+        };
+        h = d;
+    }
+    if h.is_empty() {
         return true;
     }
-    match h.parse::<IpAddr>() {
-        Ok(IpAddr::V4(a)) => {
-            a.is_loopback() || a.is_private() || a.is_link_local() || a.is_unspecified()
-        }
-        Ok(IpAddr::V6(a)) => {
-            a.is_loopback()
-                || a.is_unspecified()
-                || (a.segments()[0] & 0xfe00) == 0xfc00
-                || (a.segments()[0] & 0xffc0) == 0xfe80
-        }
-        Err(_) => false,
+    // Other numerals (math digits, Arabic-Indic...) are folded by IDNA.
+    if h.chars().any(|c| !c.is_ascii() && c.is_numeric()) {
+        return true;
     }
+    let h = h.trim_end_matches('.').to_ascii_lowercase();
+    // Literals first: `2606:4700::1` and `2545313678` have no dot but are
+    // addresses, not LAN names.
+    if let Ok(ip) = h.parse::<IpAddr>() {
+        return !is_public_ip(ip);
+    }
+    if let Some(ip) = legacy_ipv4(&h) {
+        return !is_public_ip(IpAddr::V4(ip));
+    }
+    // A numeric last label that did not parse is an IPv4 attempt: refuse.
+    let last = h.rsplit('.').next().unwrap_or("");
+    if last.bytes().all(|b| b.is_ascii_digit()) || last.starts_with("0x") {
+        return true;
+    }
+    // Contains a colon but is no IPv6 literal: not a host we understand.
+    h.contains(':') || is_intranet_name(&h)
 }
 
 /// A manifest may only point inward (loopback, private) when it came from
@@ -140,8 +297,42 @@ pub fn validate(d: &SourceDef) -> Result<(), &'static str> {
     if d.name.trim().is_empty() {
         return Err("a source needs a name");
     }
+    let too_long = d.name.len() > MAX_NAME
+        || d.search_url.len() > MAX_URL
+        || d.items.len() > MAX_POINTER
+        || d.fields.title.len() > MAX_POINTER
+        || [&d.fields.media, &d.fields.page_url, &d.fields.size]
+            .into_iter()
+            .any(|p| p.as_deref().is_some_and(|p| p.len() > MAX_POINTER))
+        || d.auth_header
+            .as_deref()
+            .is_some_and(|h| h.len() > MAX_HEADER)
+        || d.auth_prefix.len() > MAX_HEADER
+        || d.user_agent
+            .as_deref()
+            .is_some_and(|h| h.len() > MAX_HEADER)
+        || d.referer.as_deref().is_some_and(|h| h.len() > MAX_URL);
+    if too_long {
+        return Err("a field is too long");
+    }
+    if d.search_url
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err("the search address must not contain spaces or control characters");
+    }
     if !is_http(&d.search_url) {
         return Err("the search address must be http or https");
+    }
+    // The host is what the user vetted; a search term never picks it.
+    let authority = d.search_url.split_once("://").map_or("", |(_, r)| {
+        r.split(['/', '\\', '?', '#']).next().unwrap_or("")
+    });
+    if authority.contains(['{', '}']) {
+        return Err("a placeholder cannot be part of the host");
+    }
+    if host_of(&d.search_url).is_empty() {
+        return Err("the search address has no host");
     }
     // Every `{...}` must be one of the three placeholders. A fourth would need
     // a committee.
@@ -211,12 +402,21 @@ pub fn build_url(d: &SourceDef, query: &str, page: u32, limit: u32) -> String {
         .replace("{limit}", &limit.to_string())
 }
 
+/// Strings from a source's answer are untrusted: no control characters
+/// (they reach toasts and window titles), bounded length.
 fn pointer_str(v: &Value, ptr: &str) -> Option<String> {
-    match v.pointer(ptr)? {
-        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_owned()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    let raw = match v.pointer(ptr)? {
+        Value::String(s) => s.as_str().to_owned(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let clean: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '\u{2028}' | '\u{2029}' | '\u{202e}'))
+        .take(MAX_URL)
+        .collect();
+    let clean = clean.trim();
+    (!clean.is_empty()).then(|| clean.to_owned())
 }
 
 /// Items of a JSON answer, at most `max`. Items whose media or page address is

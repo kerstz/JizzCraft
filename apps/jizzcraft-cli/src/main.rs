@@ -61,9 +61,52 @@ enum GenWhat {
     Man,
 }
 
+/// `doctor --report`: the redacted support report, from an allow-list.
+fn support_report(db_path: &std::path::Path) -> String {
+    use jizzcraft_core::report::Input;
+    let r = jizzcraft_media::doctor::run();
+    let stats = Db::open(db_path)
+        .ok()
+        .map(|db| (db.schema_version().ok(), db.stats().ok()));
+    let input = Input {
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        os: std::env::consts::OS.to_owned(),
+        arch: std::env::consts::ARCH.to_owned(),
+        family: Some(r.family),
+        kind: Some(r.kind),
+        gst_version: jizzcraft_media::doctor::gst_version(),
+        plugins: r
+            .checks
+            .iter()
+            .map(|c| (format!("{}.{}", c.group, c.element), c.ok))
+            .collect(),
+        schema_version: stats.as_ref().and_then(|s| s.0),
+        items: stats.as_ref().and_then(|s| s.1.as_ref()).map(|s| s.total),
+        folders: stats.as_ref().and_then(|s| s.1.as_ref()).map(|s| s.folders),
+        config: std::fs::read(paths::config_dir().join("config.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok()),
+    };
+    jizzcraft_core::report::render(&input)
+}
+
 /// `doctor`: human report or JSON, exit 0 fine, 1 required missing, 2 codecs.
-fn doctor(json: bool) -> ExitCode {
+fn doctor(cli: &Cli, report: bool) -> ExitCode {
+    let json = cli.json;
+    if cli.portable
+        && let Some(h) = paths::portable_home()
+    {
+        paths::set_home(h);
+    }
+    if let Some(h) = cli.home.clone().or_else(paths::home_from_env) {
+        paths::set_home(h);
+    }
     jizzcraft_media::prepare_bundled_env();
+    if report {
+        let db = cli.db.clone().unwrap_or_else(paths::db_path);
+        print!("{}", support_report(&db));
+        return ExitCode::SUCCESS;
+    }
     let r = jizzcraft_media::doctor::run();
     let fix = r.fix();
     if json {
@@ -77,9 +120,14 @@ fn doctor(json: bool) -> ExitCode {
             .iter()
             .map(|(n, ok)| json!({ "dir": n, "writable": ok }))
             .collect();
+        let notes: Vec<Value> = r
+            .notes
+            .iter()
+            .map(|n| json!({ "id": n.id, "warn": n.warn, "text": n.text }))
+            .collect();
         println!(
             "{}",
-            json!({ "checks": checks, "dirs": dirs, "fix": fix, "exit": r.exit_code() })
+            json!({ "checks": checks, "dirs": dirs, "notes": notes, "fix": fix, "exit": r.exit_code() })
         );
     } else {
         print!("{}", r.render_text());
@@ -93,10 +141,159 @@ enum TypeArg {
     Video,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum PlaylistSortArg {
+    Name,
+    Added,
+    Duration,
+    Random,
+}
+
+/// `playlist ...`: ordered, hand-made lists. Database only.
+#[derive(Subcommand)]
+enum PlaylistCmd {
+    /// List playlists with ids and item counts.
+    List,
+    /// Create a playlist.
+    Create { name: String },
+    /// Rename a playlist.
+    Rename { id: i64, name: String },
+    /// Delete a playlist (media files and library entries are untouched).
+    Delete { id: i64 },
+    /// Append items by media id.
+    Add {
+        id: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+    },
+    /// Remove items by media id.
+    Remove {
+        id: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+    },
+    /// Move items; before the given media id, or to the end.
+    Move {
+        id: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+        /// Media id (already in the playlist) to insert before.
+        #[arg(long)]
+        before: Option<i64>,
+    },
+    /// List the items in order.
+    Items {
+        id: i64,
+        #[arg(long)]
+        limit: Option<u64>,
+        #[arg(long)]
+        offset: Option<u64>,
+    },
+    /// Reorder the playlist by a key.
+    Sort {
+        id: i64,
+        #[arg(long, value_enum)]
+        by: PlaylistSortArg,
+        #[arg(long)]
+        desc: bool,
+    },
+    /// Write an .m3u8 file. Refuses to overwrite an existing destination.
+    ExportM3u {
+        id: i64,
+        dest: PathBuf,
+        /// Paths relative to the destination folder.
+        #[arg(long)]
+        relative: bool,
+        /// Write the item names as titles (off by default).
+        #[arg(long)]
+        include_names: bool,
+    },
+}
+
+/// `tag ...`: flat labels.
+#[derive(Subcommand)]
+enum TagCmd {
+    /// List tags with ids and counts.
+    List,
+    /// Create a tag.
+    Create { name: String },
+    /// Rename a tag.
+    Rename { id: i64, name: String },
+    /// Delete a tag (media untouched).
+    Delete { id: i64 },
+    /// Merge a tag into another one.
+    Merge { from: i64, into: i64 },
+    /// Add a tag to items (--off removes it).
+    Assign {
+        tag: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+        #[arg(long)]
+        off: bool,
+    },
+    /// Toggle a tag on items.
+    Toggle {
+        tag: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+    },
+}
+
+/// `category ...`: a tree (depth 4); a filter includes the whole subtree.
+#[derive(Subcommand)]
+enum CategoryCmd {
+    /// List categories in tree order with ids and counts.
+    List,
+    /// Create a category.
+    Create {
+        name: String,
+        #[arg(long)]
+        parent: Option<i64>,
+    },
+    /// Rename a category.
+    Rename { id: i64, name: String },
+    /// Re-parent a category (no --parent = top level).
+    Move {
+        id: i64,
+        #[arg(long)]
+        parent: Option<i64>,
+    },
+    /// Delete a category (children move up, media untouched).
+    Delete { id: i64 },
+    /// Add a category to items (--off removes it).
+    Assign {
+        category: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+        #[arg(long)]
+        off: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Playlists: ordered lists of library items.
+    Playlist {
+        #[command(subcommand)]
+        action: PlaylistCmd,
+    },
+    /// Tags: flat labels.
+    Tag {
+        #[command(subcommand)]
+        action: TagCmd,
+    },
+    /// Categories: a tree of labels.
+    Category {
+        #[command(subcommand)]
+        action: CategoryCmd,
+    },
     /// Check that this machine can play things, and say how to fix it.
-    Doctor,
+    Doctor {
+        /// Print a redacted support report (versions, counts, flags; no paths,
+        /// names, URLs or keys) instead of the check list.
+        #[arg(long)]
+        report: bool,
+    },
     /// Generate shell completions or the man page (for packagers).
     #[command(hide = true)]
     Gen {
@@ -123,7 +320,7 @@ enum Cmd {
         include_missing: bool,
         #[arg(long)]
         limit: Option<u64>,
-        /// Sort key: name, added, size or duration.
+        /// Sort key: name, added, size, duration, random, or position (needs --playlist).
         #[arg(long, default_value = "name")]
         sort: String,
         /// Descending order.
@@ -156,6 +353,27 @@ enum Cmd {
         /// Start from a built-in or saved view (e.g. inbox, top-rated).
         #[arg(long)]
         view: Option<String>,
+        /// Only items in this playlist id.
+        #[arg(long)]
+        playlist: Option<i64>,
+        /// Must have this tag id (repeat: all of them).
+        #[arg(long = "tag", value_name = "ID")]
+        tags: Vec<i64>,
+        /// Has at least one of these tag ids (repeat for more).
+        #[arg(long = "any-tag", value_name = "ID")]
+        any_tags: Vec<i64>,
+        /// Must not have this tag id (repeat for more).
+        #[arg(long = "not-tag", value_name = "ID")]
+        not_tags: Vec<i64>,
+        /// In this category id or any category below it (repeat: all of them).
+        #[arg(long = "category", value_name = "ID")]
+        categories: Vec<i64>,
+        /// Only items without any tag.
+        #[arg(long)]
+        untagged: bool,
+        /// Only items without any category.
+        #[arg(long)]
+        uncategorized: bool,
     },
     /// Set the star rating of an item.
     Rate { id: i64, rating: u8 },
@@ -228,6 +446,9 @@ enum Cmd {
         history: bool,
         #[arg(long)]
         names: bool,
+        /// Also export playlists, tags and categories flagged private.
+        #[arg(long)]
+        private: bool,
     },
     /// Import an export onto matching files.
     Import {
@@ -245,10 +466,28 @@ enum Cmd {
     Commands,
 }
 
+#[cfg(target_os = "linux")]
+fn no_core_dumps() {
+    let lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: plain syscall with a valid pointer; failure is harmless.
+    unsafe {
+        libc::setrlimit(libc::RLIMIT_CORE, &lim);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn no_core_dumps() {}
+
 fn main() -> ExitCode {
+    // Crash note without the panic message; no core dumps with library data.
+    jizzcraft_core::report::install_crash_hook("jizzcraft-cli", env!("CARGO_PKG_VERSION"));
+    no_core_dumps();
     let cli = Cli::parse();
     match &cli.cmd {
-        Cmd::Doctor => return doctor(cli.json),
+        Cmd::Doctor { report } => return doctor(&cli, *report),
         Cmd::Gen { what } => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();
@@ -329,7 +568,7 @@ fn run(cli: &Cli) -> Result<(), String> {
             json!({ "path": dir.to_string_lossy() }),
         ),
         // Handled in `main` before the registry exists.
-        Cmd::Doctor | Cmd::Gen { .. } => return Ok(()),
+        Cmd::Doctor { .. } | Cmd::Gen { .. } => return Ok(()),
         Cmd::Rescan => ("library.rescan".to_owned(), json!({})),
         Cmd::Query {
             fav,
@@ -348,7 +587,17 @@ fn run(cli: &Cli) -> Result<(), String> {
             inbox,
             damaged,
             view,
+            playlist,
+            tags,
+            any_tags,
+            not_tags,
+            categories,
+            untagged,
+            uncategorized,
         } => {
+            if sort == "position" && playlist.is_none() {
+                return Err("--sort position needs --playlist".to_owned());
+            }
             let mut a = json!({});
             if let Some(v) = view {
                 let spec = reg
@@ -392,6 +641,26 @@ fn run(cli: &Cli) -> Result<(), String> {
             }
             if *damaged {
                 set(&mut a, "damaged", json!(true));
+            }
+            if let Some(p) = playlist {
+                a["playlist"] = json!(p);
+            }
+            // Categories filter as labels: the engine includes each subtree.
+            let all: Vec<i64> = tags.iter().chain(categories).copied().collect();
+            for (k, v) in [
+                ("labels_all", &all),
+                ("labels_any", any_tags),
+                ("labels_none", not_tags),
+            ] {
+                if !v.is_empty() {
+                    a[k] = json!(v);
+                }
+            }
+            if *untagged {
+                a["untagged"] = json!(true);
+            }
+            if *uncategorized {
+                a["uncategorized"] = json!(true);
             }
             if let Some(k) = kind {
                 a["kind"] = json!(match k {
@@ -490,12 +759,14 @@ fn run(cli: &Cli) -> Result<(), String> {
             dest,
             history,
             names,
+            private,
         } => (
             "meta.export".to_owned(),
             json!({
                 "dest": dest.to_string_lossy(),
                 "include_history": history,
                 "include_names": names,
+                "include_private": private,
             }),
         ),
         Cmd::Import { src, dry_run } => (
@@ -509,6 +780,9 @@ fn run(cli: &Cli) -> Result<(), String> {
             };
             (name.clone(), a)
         }
+        Cmd::Playlist { action } => playlist_call(action),
+        Cmd::Tag { action } => tag_call(action),
+        Cmd::Category { action } => category_call(action),
         Cmd::Commands => unreachable!(),
     };
 
@@ -521,8 +795,181 @@ fn run(cli: &Cli) -> Result<(), String> {
     Ok(())
 }
 
+fn playlist_call(a: &PlaylistCmd) -> (String, Value) {
+    let (n, v) = match a {
+        PlaylistCmd::List => ("playlist.list", json!({})),
+        PlaylistCmd::Create { name } => ("playlist.create", json!({ "name": name })),
+        PlaylistCmd::Rename { id, name } => ("playlist.rename", json!({ "id": id, "name": name })),
+        PlaylistCmd::Delete { id } => ("playlist.delete", json!({ "id": id })),
+        PlaylistCmd::Add { id, media_ids } => {
+            ("playlist.add", json!({ "id": id, "media_ids": media_ids }))
+        }
+        PlaylistCmd::Remove { id, media_ids } => (
+            "playlist.remove",
+            json!({ "id": id, "media_ids": media_ids }),
+        ),
+        PlaylistCmd::Move {
+            id,
+            media_ids,
+            before,
+        } => (
+            "playlist.move",
+            json!({ "id": id, "media_ids": media_ids, "before": before }),
+        ),
+        PlaylistCmd::Items { id, limit, offset } => {
+            let mut a = json!({ "id": id });
+            if let Some(l) = limit {
+                a["limit"] = json!(l);
+            }
+            if let Some(o) = offset {
+                a["offset"] = json!(o);
+            }
+            ("playlist.items", a)
+        }
+        PlaylistCmd::Sort { id, by, desc } => (
+            "playlist.sort",
+            json!({
+                "id": id,
+                "by": match by {
+                    PlaylistSortArg::Name => "name",
+                    PlaylistSortArg::Added => "added",
+                    PlaylistSortArg::Duration => "duration",
+                    PlaylistSortArg::Random => "random",
+                },
+                "desc": desc,
+            }),
+        ),
+        PlaylistCmd::ExportM3u {
+            id,
+            dest,
+            relative,
+            include_names,
+        } => (
+            "playlist.export_m3u",
+            json!({
+                "id": id,
+                "dest": dest.to_string_lossy(),
+                "relative": relative,
+                "include_names": include_names,
+            }),
+        ),
+    };
+    (n.to_owned(), v)
+}
+
+fn tag_call(a: &TagCmd) -> (String, Value) {
+    let (n, v) = match a {
+        TagCmd::List => ("tag.list", json!({})),
+        TagCmd::Create { name } => ("tag.create", json!({ "name": name })),
+        TagCmd::Rename { id, name } => ("tag.rename", json!({ "id": id, "name": name })),
+        TagCmd::Delete { id } => ("tag.delete", json!({ "id": id })),
+        TagCmd::Merge { from, into } => ("tag.merge", json!({ "from": from, "into": into })),
+        TagCmd::Assign {
+            tag,
+            media_ids,
+            off,
+        } => (
+            "tag.assign",
+            json!({ "ids": [tag], "media_ids": media_ids, "on": !off }),
+        ),
+        TagCmd::Toggle { tag, media_ids } => {
+            ("tag.toggle", json!({ "id": tag, "media_ids": media_ids }))
+        }
+    };
+    (n.to_owned(), v)
+}
+
+fn category_call(a: &CategoryCmd) -> (String, Value) {
+    let (n, v) = match a {
+        CategoryCmd::List => ("category.list", json!({})),
+        CategoryCmd::Create { name, parent } => {
+            let mut a = json!({ "name": name });
+            if let Some(p) = parent {
+                a["parent"] = json!(p);
+            }
+            ("category.create", a)
+        }
+        CategoryCmd::Rename { id, name } => ("category.rename", json!({ "id": id, "name": name })),
+        CategoryCmd::Move { id, parent } => {
+            ("category.move", json!({ "id": id, "parent": parent }))
+        }
+        CategoryCmd::Delete { id } => ("category.delete", json!({ "id": id })),
+        CategoryCmd::Assign {
+            category,
+            media_ids,
+            off,
+        } => (
+            "category.assign",
+            json!({ "ids": [category], "media_ids": media_ids, "on": !off }),
+        ),
+    };
+    (n.to_owned(), v)
+}
+
+/// `#1  3 item(s)  name` style table for playlists, tags and categories.
+fn print_labels(items: &Value, nested: bool) {
+    let rows: Vec<&Value> = items.as_array().into_iter().flatten().collect();
+    println!("{:>6}  {:>6}  name", "id", "items");
+    for r in &rows {
+        let count = if nested { &r["total"] } else { &r["count"] };
+        let indent = "  ".repeat(r["depth"].as_u64().unwrap_or(0) as usize);
+        println!(
+            "{:>6}  {:>6}  {indent}{}",
+            r["id"],
+            count,
+            r["name"].as_str().unwrap_or("?")
+        );
+    }
+    println!("{} total", rows.len());
+}
+
 fn print_human(cmd: &str, v: &Value) {
     match cmd {
+        "playlist.list" | "tag.list" => print_labels(&v["items"], false),
+        "category.list" => print_labels(&v["items"], true),
+        "playlist.items" => {
+            for (i, m) in v["items"].as_array().into_iter().flatten().enumerate() {
+                println!(
+                    "{:>4} {:>6} {:<5} {}",
+                    i as u64 + 1,
+                    m["id"],
+                    m["kind"].as_str().unwrap_or("?"),
+                    m["path"].as_str().unwrap_or("?")
+                );
+            }
+            println!("{} of {} item(s)", v["count"], v["total"]);
+        }
+        "playlist.create" | "tag.create" | "category.create" => println!("created #{}", v["id"]),
+        "playlist.add" => println!("added {} · skipped {}", v["added"], v["skipped"]),
+        "playlist.remove" => println!("removed {}", v["removed"]),
+        "playlist.move" => println!("moved {}", v["moved"]),
+        "tag.assign" | "category.assign" => println!("changed {}", v["changed"]),
+        "tag.toggle" | "category.toggle" => {
+            println!(
+                "{} on {} item(s)",
+                if v["on"] == true { "on" } else { "off" },
+                v["changed"]
+            );
+        }
+        "playlist.delete" | "tag.delete" | "category.delete" => {
+            println!("deleted ({} item link(s) removed)", v["items"]);
+        }
+        "tag.merge" | "category.merge" => println!("moved {}", v["moved"]),
+        "playlist.export_m3u" => println!(
+            "written {} · missing skipped {} · unsafe skipped {}",
+            v["written"], v["skipped_missing"], v["skipped_unsafe"]
+        ),
+        "labels.of" => {
+            for (k, t) in [("tags", "tag"), ("categories", "category")] {
+                for l in v[k].as_array().into_iter().flatten() {
+                    println!(
+                        "{t:<9} {:>6}  {}",
+                        l["id"],
+                        l["name"].as_str().unwrap_or("?")
+                    );
+                }
+            }
+        }
         "media.query" => {
             for m in v["items"].as_array().into_iter().flatten() {
                 let flags = format!(

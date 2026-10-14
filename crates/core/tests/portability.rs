@@ -273,5 +273,88 @@ fn engine_never_touches_media() {
     );
     run(&mut db, "media.relink", json!({ "from": b, "to": a }));
 
+    // Playlists, categories and tags: membership rows only.
+    let pl = run(&mut db, "playlist.create", json!({ "name": "p" }))["id"].clone();
+    run(
+        &mut db,
+        "playlist.add",
+        json!({ "id": pl, "media_ids": [a, b, v] }),
+    );
+    run(
+        &mut db,
+        "playlist.move",
+        json!({ "id": pl, "media_ids": [v], "before": a }),
+    );
+    run(&mut db, "playlist.sort", json!({ "id": pl, "by": "name" }));
+    run(
+        &mut db,
+        "playlist.set",
+        json!({ "id": pl, "color": 5, "private": false }),
+    );
+    run(&mut db, "playlist.rename", json!({ "id": pl, "name": "q" }));
+    run(&mut db, "playlist.items", json!({ "id": pl }));
+    run(&mut db, "playlist.of", json!({ "media_ids": [a] }));
+    run(&mut db, "playlist.list", json!({}));
+    run(
+        &mut db,
+        "playlist.export_m3u",
+        json!({ "id": pl, "dest": work.path().join("p.m3u8"), "include_names": true }),
+    );
+    run(
+        &mut db,
+        "playlist.remove",
+        json!({ "id": pl, "media_ids": [b] }),
+    );
+    let t1 = run(&mut db, "tag.create", json!({ "name": "t1" }))["id"].clone();
+    let t2 = run(&mut db, "tag.create", json!({ "name": "t2" }))["id"].clone();
+    run(
+        &mut db,
+        "tag.assign",
+        json!({ "ids": [t1], "media_ids": [a, b] }),
+    );
+    run(&mut db, "tag.toggle", json!({ "id": t2, "media_ids": [a] }));
+    run(&mut db, "tag.set", json!({ "id": t1, "color": 9 }));
+    run(&mut db, "tag.rename", json!({ "id": t2, "name": "t3" }));
+    run(&mut db, "tag.merge", json!({ "from": t2, "into": t1 }));
+    run(&mut db, "tag.list", json!({}));
+    let c1 = run(&mut db, "category.create", json!({ "name": "c1" }))["id"].clone();
+    let c2 = run(
+        &mut db,
+        "category.create",
+        json!({ "name": "c2", "parent": c1 }),
+    )["id"]
+        .clone();
+    run(
+        &mut db,
+        "category.assign",
+        json!({ "ids": [c2], "media_ids": [a] }),
+    );
+    run(
+        &mut db,
+        "category.toggle",
+        json!({ "id": c1, "media_ids": [b] }),
+    );
+    run(
+        &mut db,
+        "category.move",
+        json!({ "id": c2, "parent": null }),
+    );
+    run(
+        &mut db,
+        "category.set",
+        json!({ "id": c1, "private": true }),
+    );
+    run(
+        &mut db,
+        "category.rename",
+        json!({ "id": c1, "name": "c9" }),
+    );
+    run(&mut db, "category.list", json!({}));
+    run(&mut db, "labels.of", json!({ "media_id": a }));
+    run(&mut db, "category.merge", json!({ "from": c2, "into": c1 }));
+    run(&mut db, "category.delete", json!({ "id": c1 }));
+    run(&mut db, "tag.delete", json!({ "id": t1 }));
+    run(&mut db, "playlist.delete", json!({ "id": pl }));
+
     assert_eq!(hash_tree(t.path()), before, "media tree changed");
 }

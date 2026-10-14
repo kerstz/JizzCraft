@@ -130,8 +130,9 @@ impl JizzApp {
                                 }
                             });
                         }
+                        self.org_sidebar(ui);
                         ui.add_space(S * 2.0);
-                        section(ui, "03", crate::i18n::tr("Folders"));
+                        section(ui, "06", crate::i18n::tr("Folders"));
                         if discreet {
                             ui.add_space(S);
                             ui.horizontal(|ui| {

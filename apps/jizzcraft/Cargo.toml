@@ -13,6 +13,7 @@ jizzcraft-ui.workspace = true
 jizzcraft-core.workspace = true
 jizzcraft-media.workspace = true
 eframe.workspace = true
+rfd.workspace = true
 serde_json.workspace = true
 jizzcraft-fetch = { workspace = true, optional = true }
 
@@ -20,6 +21,9 @@ jizzcraft-fetch = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_System_Console", "Win32_UI_Shell"] }

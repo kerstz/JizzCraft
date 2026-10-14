@@ -8,3 +8,4 @@ av1	codec	gst-plugins-bad	gstreamer1.0-plugins-bad	gstreamer1-plugins-bad-free	g
 vp9	codec	gst-plugins-good	gstreamer1.0-plugins-good	gstreamer1-plugins-good	gstreamer-plugins-good
 opus	codec	gst-plugins-base	gstreamer1.0-plugins-base	gstreamer1-plugins-base	gstreamer-plugins-base
 vaapi	hardware	gst-plugin-va	gstreamer1.0-plugins-bad	gstreamer1-plugins-bad-free	gstreamer-plugins-bad
+streaming	streaming	gst-plugins-bad	gstreamer1.0-plugins-bad	gstreamer1-plugins-bad-free	gstreamer-plugins-bad

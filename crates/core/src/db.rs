@@ -3,6 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{Media, MediaKind, MediaMeta, Stats};
+use crate::organize::OrgFilter;
 use rusqlite::{Connection, OptionalExtension, Row, params, types::Value};
 use std::path::{Path, PathBuf};
 
@@ -79,6 +80,17 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX media_played ON media(last_played_at) WHERE last_played_at IS NOT NULL;
     CREATE INDEX media_hidden ON media(hidden) WHERE hidden = 1;
     CREATE INDEX media_inbox  ON media(inbox) WHERE inbox = 1;",
+    // v3: playlists, categories and tags. Membership rows only; deleting any of
+    // them never touches `media` rows or files.
+    "CREATE TABLE playlists (id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_lc TEXT NOT NULL UNIQUE, color INTEGER CHECK (color IS NULL OR color BETWEEN 0 AND 16777215), private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1)), position INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE playlist_items (playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE, media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE, pos INTEGER NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (playlist_id, media_id)) WITHOUT ROWID;
+    CREATE INDEX playlist_items_pos ON playlist_items(playlist_id, pos);
+    CREATE INDEX playlist_items_media ON playlist_items(media_id);
+    CREATE TABLE labels (id INTEGER PRIMARY KEY, kind INTEGER NOT NULL CHECK (kind IN (1,2)), parent_id INTEGER REFERENCES labels(id) ON DELETE SET NULL, name TEXT NOT NULL, name_lc TEXT NOT NULL, color INTEGER CHECK (color IS NULL OR color BETWEEN 0 AND 16777215), private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1)), position INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, CHECK (kind = 1 OR parent_id IS NULL));
+    CREATE UNIQUE INDEX labels_name ON labels(kind, IFNULL(parent_id, 0), name_lc);
+    CREATE INDEX labels_parent ON labels(parent_id);
+    CREATE TABLE media_labels (label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE, media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE, added_at INTEGER NOT NULL, PRIMARY KEY (label_id, media_id)) WITHOUT ROWID;
+    CREATE INDEX media_labels_media ON media_labels(media_id, label_id);",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -100,6 +112,9 @@ pub enum SortKey {
     PlayCount,
     /// Stable shuffle driven by `Filter::seed`.
     Random,
+    /// Manual order of the playlist in `Filter::org.playlist`. Not in `ALL`:
+    /// it only makes sense inside a playlist.
+    Position,
 }
 
 impl SortKey {
@@ -124,6 +139,7 @@ impl SortKey {
             "played" | "last_played" => Some(SortKey::LastPlayed),
             "plays" | "play_count" => Some(SortKey::PlayCount),
             "random" | "shuffle" => Some(SortKey::Random),
+            "position" => Some(SortKey::Position),
             _ => None,
         }
     }
@@ -138,6 +154,7 @@ impl SortKey {
             SortKey::LastPlayed => "played",
             SortKey::PlayCount => "plays",
             SortKey::Random => "random",
+            SortKey::Position => "position",
         }
     }
 
@@ -155,7 +172,7 @@ impl SortKey {
             SortKey::Rating => "rating",
             SortKey::LastPlayed => "last_played_at",
             SortKey::PlayCount => "play_count",
-            SortKey::Random => "id",
+            SortKey::Random | SortKey::Position => "id",
         }
     }
 }
@@ -246,6 +263,8 @@ pub struct Filter {
     pub recursive: bool,
     /// Seed for `SortKey::Random`.
     pub seed: u32,
+    /// Playlist, tag and category conditions.
+    pub org: OrgFilter,
     pub limit: Option<u64>,
     pub offset: u64,
 }
@@ -284,29 +303,68 @@ pub fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Pre-migration copies kept next to the database.
+const KEEP_BACKUPS: usize = 3;
+
 impl Db {
+    /// Open (and migrate) the library. A database written by a newer build is
+    /// refused with `Error::FutureSchema`; use `open_read_only` for that case.
     pub fn open(path: &Path) -> Result<Db> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        Self::init(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if found > SCHEMA_VERSION {
+            return Err(Error::FutureSchema {
+                found,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        Self::init(conn, Some(path))
+    }
+
+    /// Read-only handle: no migration, no journal change, no writes. For a
+    /// library from a newer build, or when the folder is not writable.
+    pub fn open_read_only(path: &Path) -> Result<Db> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        conn.busy_timeout(std::time::Duration::from_millis(2000))?;
+        conn.pragma_update(None, "query_only", true)?;
+        Ok(Db { conn })
     }
 
     pub fn open_in_memory() -> Result<Db> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Db> {
+    fn init(conn: Connection, path: Option<&Path>) -> Result<Db> {
         conn.pragma_update(None, "foreign_keys", true)?;
         // Background jobs open their own connections; wait instead of failing.
         conn.busy_timeout(std::time::Duration::from_millis(2000))?;
         // Cleared history must not linger in free pages.
         conn.pragma_update(None, "secure_delete", true)?;
-        // WAL is a no-op on in-memory databases; ignore the returned mode.
-        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        // WAL needs shared memory, which network filesystems do not give.
+        let mode = if path.is_some_and(crate::fsutil::is_network_fs) {
+            "DELETE"
+        } else {
+            "WAL"
+        };
+        // No-op (returns "memory") on in-memory databases; ignore the result.
+        let _ = conn.query_row(&format!("PRAGMA journal_mode = {mode}"), [], |_| Ok(()));
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         let mut db = Db { conn };
-        db.migrate()?;
+        db.migrate(path)?;
         Ok(db)
+    }
+
+    /// The frozen migration SQL, so tests can rebuild every historical schema.
+    #[doc(hidden)]
+    pub fn migrations_for_tests() -> &'static [&'static str] {
+        MIGRATIONS
     }
 
     /// Raw connection for tests that need to poke the schema directly.
@@ -321,12 +379,35 @@ impl Db {
             .pragma_query_value(None, "user_version", |r| r.get(0))?)
     }
 
-    fn migrate(&mut self) -> Result<()> {
+    /// `PRAGMA quick_check`. Slow on a big library: run it on a thread with a
+    /// separate connection (`Db::open_read_only`).
+    pub fn quick_check(&self) -> std::result::Result<(), String> {
+        let mut st = self
+            .conn
+            .prepare("PRAGMA quick_check")
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<String> = st
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        if rows.len() == 1 && rows[0] == "ok" {
+            Ok(())
+        } else {
+            Err(rows.join("; "))
+        }
+    }
+
+    fn migrate(&mut self, path: Option<&Path>) -> Result<()> {
         let current = self.schema_version()?;
         if current > SCHEMA_VERSION {
-            return Err(Error::Invalid(format!(
-                "library schema v{current} is newer than this build (v{SCHEMA_VERSION})"
-            )));
+            return Err(Error::FutureSchema {
+                found: current,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        if let Some(p) = path.filter(|_| current > 0 && current < SCHEMA_VERSION) {
+            self.backup_before_migrating(p, current)?;
         }
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
             let tx = self.conn.transaction()?;
@@ -334,6 +415,46 @@ impl Db {
             Self::post_migrate(&tx, (i + 1) as i64)?;
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// `VACUUM INTO <stem>.pre-v{N}.db` beside the database; keeps the newest
+    /// `KEEP_BACKUPS`. A failed backup stops the migration: better a refusal
+    /// than an upgrade with no way back.
+    fn backup_before_migrating(&self, db_path: &Path, version: i64) -> Result<()> {
+        let dir = db_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let stem = db_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("library");
+        let target = dir.join(format!("{stem}.pre-v{version}.db"));
+        let _ = std::fs::remove_file(&target);
+        let target_str = target
+            .to_str()
+            .ok_or_else(|| Error::Invalid("database path is not UTF-8".into()))?;
+        self.conn.execute("VACUUM INTO ?1", [target_str])?;
+
+        let prefix = format!("{stem}.pre-v");
+        let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)?
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with(&prefix)
+                    && n.ends_with(".db")
+                    && n[prefix.len()..n.len() - 3]
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+            })
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect();
+        found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        for (_, old) in found.into_iter().skip(KEEP_BACKUPS) {
+            let _ = std::fs::remove_file(old);
         }
         Ok(())
     }
@@ -429,7 +550,7 @@ impl Db {
             None => {}
         }
         if let Some(days) = f.added_within_days {
-            conds.push("added_at >= ?".into());
+            conds.push("media.added_at >= ?".into());
             args.push(Value::Integer(now_secs() - days as i64 * 86_400));
         }
         if f.inbox {
@@ -474,6 +595,7 @@ impl Db {
             conds.push("name_lc LIKE ? ESCAPE '\\'".into());
             args.push(Value::Text(format!("%{esc}%")));
         }
+        crate::organize::push_conds(&f.org, &mut conds, &mut args);
         let w = if conds.is_empty() {
             String::new()
         } else {
@@ -483,6 +605,9 @@ impl Db {
     }
 
     pub fn query(&self, f: &Filter) -> Result<Vec<Media>> {
+        if let (SortKey::Position, Some(pl)) = (f.sort, f.org.playlist) {
+            return self.query_playlist_order(f, pl);
+        }
         let (w, mut args) = Self::where_clause(f);
         let dir = if f.desc { "DESC" } else { "ASC" };
         // Missing durations always sort last; `id` keeps paging stable.
@@ -506,6 +631,48 @@ impl Db {
             args.push(Value::Integer(l as i64));
             args.push(Value::Integer(f.offset as i64));
         }
+        let mut st = self.conn.prepare_cached(&sql)?;
+        let rows = st.query_map(rusqlite::params_from_iter(args), row_to_media)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// `SortKey::Position`: walk the playlist's own index so a page costs
+    /// O(offset + limit), not O(playlist).
+    fn query_playlist_order(&self, f: &Filter, pl: i64) -> Result<Vec<Media>> {
+        let mut rest = f.clone();
+        rest.org.playlist = None;
+        let (w, wargs) = Self::where_clause(&rest);
+        let mut args = vec![Value::Integer(pl)];
+        args.extend(wargs);
+        let cols: Vec<String> = COLS.split(", ").map(|c| format!("media.{c}")).collect();
+        let w = match w.strip_prefix(" WHERE ") {
+            Some(c) => format!(" AND {c}"),
+            None => String::new(),
+        };
+        let dir = if f.desc { "DESC" } else { "ASC" };
+        let sql = if let (true, Some(l)) = (w.is_empty(), f.limit) {
+            // No other condition: page the playlist's index first, join after.
+            args.push(Value::Integer(l as i64));
+            args.push(Value::Integer(f.offset as i64));
+            format!(
+                "SELECT {} FROM (SELECT media_id, pos, added_at FROM playlist_items \
+                 WHERE playlist_id = ? ORDER BY pos {dir}, added_at, media_id LIMIT ? OFFSET ?) p \
+                 JOIN media ON media.id = p.media_id ORDER BY p.pos {dir}, p.added_at, p.media_id",
+                cols.join(", ")
+            )
+        } else {
+            let mut sql = format!(
+                "SELECT {} FROM playlist_items p JOIN media ON media.id = p.media_id \
+                 WHERE p.playlist_id = ?{w} ORDER BY p.pos {dir}, p.added_at, p.media_id",
+                cols.join(", ")
+            );
+            if let Some(l) = f.limit {
+                sql.push_str(" LIMIT ? OFFSET ?");
+                args.push(Value::Integer(l as i64));
+                args.push(Value::Integer(f.offset as i64));
+            }
+            sql
+        };
         let mut st = self.conn.prepare_cached(&sql)?;
         let rows = st.query_map(rusqlite::params_from_iter(args), row_to_media)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)

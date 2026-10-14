@@ -1,10 +1,10 @@
 //! Plain HTTP: indexer searches, source search, direct downloads.
 
 use super::open::wait_cancel;
-use super::same_origin_policy;
 use super::{
     FetchService, MAX_RESPONSE, SEARCH_TIMEOUT, SearchOutcome, StreamReader, StreamTicket,
 };
+use super::{proxy_blocked, same_origin_policy};
 use crate::config::{FetchConfig, Indexer};
 use crate::redact::redact_url;
 use crate::torznab::{self, SearchResult};
@@ -18,7 +18,7 @@ impl FetchService {
     fn client() -> Result<reqwest::Client, String> {
         Self::builder()?
             .timeout(SEARCH_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(3))
+            .redirect(same_origin_policy())
             .build()
             .map_err(|e| e.without_url().to_string())
     }
@@ -356,6 +356,18 @@ struct PartReader {
     len: u64,
     written: Arc<std::sync::atomic::AtomicU64>,
     failed: Arc<AtomicBool>,
+    reason: Arc<Mutex<String>>,
+    /// Cleared when the reader is dropped: the download stops and its
+    /// `.part` goes away.
+    alive: Arc<AtomicBool>,
+    /// The index sits at the end of the file and there is no `Range`.
+    needs_full: bool,
+}
+
+impl Drop for PartReader {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::SeqCst);
+    }
 }
 
 impl std::io::Read for PartReader {
@@ -366,11 +378,25 @@ impl std::io::Read for PartReader {
         }
         let avail = self.written.load(Ordering::SeqCst);
         if self.pos >= avail {
-            return Err(if self.failed.load(Ordering::SeqCst) {
-                std::io::Error::other("download failed")
-            } else {
-                std::io::ErrorKind::WouldBlock.into()
-            });
+            if self.failed.load(Ordering::SeqCst) {
+                let r = self
+                    .reason
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                return Err(std::io::Error::other(r));
+            }
+            if self.needs_full && self.pos > avail {
+                // Asked for the index at the end: say so, with the progress,
+                // instead of buffering silently.
+                return Err(std::io::Error::other(
+                    crate::fetch_error::NeedsFullDownloadProgress {
+                        written: avail,
+                        total: self.len,
+                    },
+                ));
+            }
+            return Err(std::io::ErrorKind::WouldBlock.into());
         }
         let n = buf.len().min((avail - self.pos) as usize);
         self.file.seek(SeekFrom::Start(self.pos))?;
@@ -402,8 +428,8 @@ pub(super) async fn http_stream(cfg: &FetchConfig, url: String) -> Result<Stream
     }
     let name = safe_file_name(&url).ok_or("no video file")?;
     let client = FetchService::builder()?
-        .connect_timeout(SEARCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .connect_timeout(crate::stream::CONNECT_TIMEOUT)
+        .redirect(same_origin_policy())
         .build()
         .map_err(|e| e.without_url().to_string())?;
     http_stream_with(cfg, client, url, name).await
@@ -415,15 +441,17 @@ pub(super) async fn http_stream_with(
     url: String,
     name: String,
 ) -> Result<StreamTicket, String> {
+    use crate::stream::{STALL_TIMEOUT, send_ttfb};
     use std::io::Write;
     use std::sync::atomic::AtomicU64;
-    let mut resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("error sending request: {}", e.without_url()))?;
+    let mut resp = send_ttfb(client.get(&url)).await?;
+    let code = resp.status().as_u16();
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status().as_u16()));
+        return Err(match code {
+            429 | 503 => format!("server busy (HTTP {code})"),
+            300..=399 => format!("redirect refused (HTTP {code})"),
+            c => format!("HTTP {c}"),
+        });
     }
     let len = resp
         .content_length()
@@ -440,44 +468,116 @@ pub(super) async fn http_stream_with(
         .map_err(|e| e.to_string())?;
 
     // First bytes: a playlist or manifest is refused before anything is kept.
+    // A body that falls silent for STALL_TIMEOUT ends the attempt; a slow one
+    // that keeps moving does not.
     let mut head: Vec<u8> = Vec::new();
+    let mut head_err: Option<String> = None;
     while head.len() < 4096 {
-        match resp
-            .chunk()
-            .await
-            .map_err(|e| e.without_url().to_string())?
-        {
-            Some(c) => head.extend_from_slice(&c),
-            None => break,
+        if proxy_blocked() {
+            head_err = Some("proxy required".into());
+            break;
         }
+        match tokio::time::timeout(STALL_TIMEOUT, resp.chunk()).await {
+            Err(_) => {
+                head_err = Some("server timeout".into());
+                break;
+            }
+            Ok(Err(e)) => {
+                head_err = Some(crate::stream::net_error(&e));
+                break;
+            }
+            Ok(Ok(Some(c))) => head.extend_from_slice(&c),
+            Ok(Ok(None)) => break,
+        }
+    }
+    if let Some(e) = head_err {
+        drop(file);
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
     }
     if jizzcraft_core::manifest::looks_like_manifest(&head) {
         drop(file);
         let _ = std::fs::remove_file(&part);
         return Err("refused: this refers to network media".into());
     }
-    file.write_all(&head).map_err(|e| e.to_string())?;
+    let needs_full = crate::sniff::mp4_index_at_end(&head) && len > head.len() as u64;
+    if let Err(e) = file.write_all(&head) {
+        drop(file);
+        let _ = std::fs::remove_file(&part);
+        return Err(e.to_string());
+    }
     let written = Arc::new(AtomicU64::new(head.len() as u64));
     let failed = Arc::new(AtomicBool::new(false));
-    let (w2, f2, part2, final2) = (
+    let alive = Arc::new(AtomicBool::new(true));
+    let reason = Arc::new(Mutex::new(String::from("unreachable")));
+    let (w2, f2, a2, r2, part2, final2) = (
         Arc::clone(&written),
         Arc::clone(&failed),
+        Arc::clone(&alive),
+        Arc::clone(&reason),
         part.clone(),
         final_path.clone(),
     );
+    // The reader is opened before the task starts so a drop is never missed.
+    let reader = PartReader {
+        file: std::fs::File::open(&part).map_err(|e| e.to_string())?,
+        pos: 0,
+        len,
+        written,
+        failed,
+        reason,
+        alive,
+        needs_full,
+    };
     tokio::spawn(async move {
+        let set_reason = |s: &str| {
+            *r2.lock().unwrap_or_else(|e| e.into_inner()) = s.to_owned();
+        };
         let mut ok = true;
+        let mut idle = Duration::ZERO;
+        let tick = Duration::from_secs(1);
         while ok {
-            match resp.chunk().await {
-                Ok(Some(c)) => {
-                    if file.write_all(&c).is_err() {
+            if !a2.load(Ordering::SeqCst) {
+                // Nobody is reading any more.
+                ok = false;
+                set_reason("cancelled");
+                break;
+            }
+            if proxy_blocked() {
+                ok = false;
+                set_reason("proxy required");
+                break;
+            }
+            match tokio::time::timeout(tick, resp.chunk()).await {
+                Err(_) => {
+                    idle += tick;
+                    if idle >= STALL_TIMEOUT {
                         ok = false;
+                        set_reason("server timeout");
+                    }
+                }
+                Ok(Ok(Some(c))) => {
+                    idle = Duration::ZERO;
+                    if let Err(e) = file.write_all(&c) {
+                        ok = false;
+                        set_reason(
+                            if e.kind() == std::io::ErrorKind::StorageFull
+                                || e.raw_os_error() == Some(28)
+                            {
+                                "disk full"
+                            } else {
+                                "no folder: permission denied"
+                            },
+                        );
                     } else {
                         w2.fetch_add(c.len() as u64, Ordering::SeqCst);
                     }
                 }
-                Ok(None) => break,
-                Err(_) => ok = false,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
+                    ok = false;
+                    set_reason(&crate::stream::net_error(&e));
+                }
             }
         }
         let complete = ok && w2.load(Ordering::SeqCst) >= len && file.sync_all().is_ok();
@@ -490,19 +590,15 @@ pub(super) async fn http_stream_with(
                 let _ = jizzcraft_core::fsutil::replace(&part2, &final2);
             }
         } else {
+            // A server without Range cannot resume: a partial file is junk.
             f2.store(true, Ordering::SeqCst);
+            let _ = std::fs::remove_file(&part2);
         }
     });
-    let reader = PartReader {
-        file: std::fs::File::open(&part).map_err(|e| e.to_string())?,
-        pos: 0,
-        len,
-        written,
-        failed,
-    };
     Ok(StreamTicket::Live {
         reader: StreamReader(Box::new(reader)),
         len,
         name,
+        status: None,
     })
 }
