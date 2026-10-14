@@ -22,6 +22,7 @@ pub mod scan;
 pub mod search;
 pub mod subtitles;
 pub mod timed;
+pub mod vault;
 pub mod view;
 
 pub use commands::{HasLibrary, Registry, register_core};
