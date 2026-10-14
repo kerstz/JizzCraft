@@ -12,6 +12,21 @@
   <a href="#a-look-around">A look around</a> · <a href="#why-jizzcraft">Why JizzCraft</a> · <a href="#downloads">Downloads</a> · <a href="#built-for-agents">For agents</a> · <a href="#privacy-guarantees">Privacy</a> · <a href="#status">Status</a> · <a href="#license-and-credits">License</a>
 </p>
 
+## Two editions
+
+JizzCraft ships as two editions of the same code base. Pick the one that fits how you use it; you can switch at any time and your library, settings and thumbnails are shared.
+
+| | **Offline edition** | **Online edition** |
+| --- | --- | --- |
+| Network code | **None.** Not linked, not compiled. A test fails if a network crate enters the dependency tree. | Opt-in, behind clear switches. Nothing connects before you act. |
+| What it is | A private library and player for the files already on your disk. | The same app plus tools to find and play things: indexers, torrents, streaming from your own sources, resolvers, and an optional built-in browser. |
+| Built from | the default build | `--features network` (browser: `--features online`, not yet shipped) |
+| Branch | [`edition/offline`](../../tree/edition/offline) | [`edition/online`](../../tree/edition/online) |
+| Release files | `jizzcraft-<version>-…` | `jizzcraft-network-<version>-…` (`install.sh --with-network`) |
+| Proxy / VPN kill switch | n/a | yes: nothing connects without your proxy when you ask for it |
+
+`main` is where both editions are developed; the two branches are the release channels for each edition.
+
 > [!IMPORTANT]
 > **Alpha software (v0.1).** It works and it is tested, but expect rough edges and changes between versions. Linux is the tested platform; Windows and macOS compile but have not been run on real machines yet. Streaming from your own sources (HLS/DASH, resolvers) is new and experimental. Your media is never modified, and the library schema only ever grows through migrations, but keep a backup of anything you cannot replace (`jizzcraft-cli` has a backup command).
 
