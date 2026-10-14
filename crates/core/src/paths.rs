@@ -69,3 +69,15 @@ pub fn cache_dir() -> PathBuf {
         .map(|d| d.cache_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".cache"))
 }
+
+/// Runtime state that must survive restarts but is not user data (torrent
+/// session resume files). Never inside the library or a media folder.
+pub fn state_dir() -> PathBuf {
+    if let Some(h) = home() {
+        return h.join("state");
+    }
+    dirs()
+        .and_then(|d| d.state_dir().map(|p| p.to_path_buf()))
+        .or_else(|| dirs().map(|d| d.data_dir().to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from(".state"))
+}
