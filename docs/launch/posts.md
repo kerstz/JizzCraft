@@ -17,6 +17,28 @@ docs; keep it that way if you edit them. Before posting anywhere:
 
 Repository: https://github.com/kerstz/JizzCraft
 
+## Order
+
+One or two posts a day, Tuesday to Friday of the same week, in the US
+morning (about 15:00 to 17:00 in France), so the first hours of each thread
+fall when you can answer. A suggestion, not a rule: move a day rather than
+post when you cannot stay in the thread.
+
+| Day | Where | Attach |
+| --- | --- | --- |
+| 1 | r/linuxmemes | `docs/media/demo.gif` as an image post; the repository link in the body or the first comment |
+| 2 | r/rust | nothing: a text post with the link; GitHub's preview uses the social preview |
+| 3 | r/SideProject | `docs/media/demo.gif` |
+| 3 | r/coolgithubprojects | nothing: a link post to the repository |
+| 4 | Hacker News (Show HN) | nothing: URL only, then the first comment |
+
+The GIF (960 × 664, about 24 s, under 2 MB) and the social preview
+(1280 × 640) are rendered by `docs/media/make-demo.sh`; upload the social
+preview in the repository settings before day 1 (see
+[github-settings.md](github-settings.md)). `docs/launch/launch-kit.html` is
+this file as a page with copy buttons and the media embedded; rebuild it with
+`python3 docs/launch/make-launch-kit.py` after editing this file.
+
 ---
 
 ## r/linuxmemes
@@ -180,3 +202,14 @@ with the privacy engineering and be matter-of-fact about the subject.
 >
 > Written in Rust (egui/wgpu, GStreamer, SQLCipher). MIT/Apache-2.0. The demo
 > GIF is rendered by the app from synthetic test patterns.
+
+---
+
+## After posting
+
+- Answer questions in the first hours. Correct a wrong claim in the thread,
+  in the open, rather than editing it away.
+- Turn bug reports and feature ideas into issues (without real file names,
+  paths or media), and link the issue in the thread.
+- Do not repost a removed or flagged post; ask the moderators why instead.
+- Note what worked (title, hour, attachment) for the next release.
