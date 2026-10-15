@@ -27,6 +27,53 @@ pub fn replace(tmp: &Path, dst: &Path) -> io::Result<()> {
     Err(last.unwrap_or_else(|| io::ErrorKind::PermissionDenied.into()))
 }
 
+/// `create_dir_all` with mode 0700 on Unix for every directory it creates
+/// (library, config and cache directories hold private data; existing
+/// directories are left as they are). Elsewhere it is `create_dir_all`.
+pub fn create_private_dir_all(dir: &Path) -> io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+}
+
+/// `OpenOptions` that create files readable by their owner only (0600 on
+/// Unix, the default elsewhere).
+pub fn private_file_options() -> std::fs::OpenOptions {
+    let mut o = std::fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o
+}
+
+/// Make an existing file readable by its owner only (no-op off Unix and on
+/// a missing file).
+pub fn make_private(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Create an empty private file when `path` does not exist yet, so that
+/// SQLite (which would use the umask) opens an already-0600 file.
+pub fn precreate_private(path: &Path) {
+    let _ = private_file_options()
+        .write(true)
+        .create_new(true)
+        .open(path);
+}
+
 /// Filesystem types where SQLite's WAL (shared memory) is unsafe.
 const NETWORK_FS: &[&str] = &[
     "nfs",

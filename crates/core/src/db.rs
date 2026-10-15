@@ -416,6 +416,28 @@ impl LibraryOpener {
     }
 }
 
+/// Owner-only mode on the database and its side files (a library created by
+/// an older build may be 0644). Unix only; best effort.
+fn harden_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut p = path.as_os_str().to_os_string();
+        p.push(suffix);
+        crate::fsutil::make_private(Path::new(&p));
+    }
+}
+
+/// `VACUUM INTO` a fresh owner-only file (the target must not exist or be
+/// empty, so it is created 0600 first).
+fn vacuum_into_private(conn: &Connection, target: &Path, target_str: &str) -> rusqlite::Result<()> {
+    let _ = std::fs::remove_file(target);
+    crate::fsutil::precreate_private(target);
+    let r = conn.execute("VACUUM INTO ?1", [target_str]).map(|_| ());
+    if r.is_err() {
+        let _ = std::fs::remove_file(target);
+    }
+    r
+}
+
 /// `PRAGMA key` and a first read, before anything else touches the file.
 fn apply_key(conn: &Connection, key: &crate::vault::DbKey) -> Result<()> {
     use crate::vault::VaultError;
@@ -542,8 +564,11 @@ impl Db {
             _ => {}
         }
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
+            crate::fsutil::create_private_dir_all(parent)?;
         }
+        // Owner-only from the first byte (SQLite gives its -wal / -journal
+        // files the mode of the main file).
+        crate::fsutil::precreate_private(path);
         let conn = Connection::open(path)?;
         if let Some(k) = key {
             apply_key(&conn, k)?;
@@ -555,7 +580,9 @@ impl Db {
                 supported: SCHEMA_VERSION,
             });
         }
-        Self::init(conn, Some(path), key.is_some())
+        let db = Self::init(conn, Some(path), key.is_some())?;
+        harden_files(path);
+        Ok(db)
     }
 
     /// Read-only handle: no migration, no journal change, no writes. For a
@@ -713,7 +740,7 @@ impl Db {
         let target_str = target
             .to_str()
             .ok_or_else(|| Error::Invalid("database path is not UTF-8".into()))?;
-        self.conn.execute("VACUUM INTO ?1", [target_str])?;
+        vacuum_into_private(&self.conn, &target, target_str)?;
 
         rotate_backups(dir, &format!("{stem}.pre-v"), |tail| {
             tail.chars().all(|c| c.is_ascii_digit())
@@ -829,7 +856,7 @@ impl Db {
         if query_only {
             self.conn.pragma_update(None, "query_only", false)?;
         }
-        let r = self.conn.execute("VACUUM INTO ?1", [target_str]);
+        let r = vacuum_into_private(&self.conn, &target, target_str);
         if query_only {
             let _ = self.conn.pragma_update(None, "query_only", true);
         }

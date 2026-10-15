@@ -10,7 +10,6 @@ use crate::organize::LabelKind;
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
@@ -66,11 +65,16 @@ pub fn backup(db: &Db, dest: &Path) -> Result<u64> {
     } else {
         None
     };
+    // Private from the start: an empty 0600 file is a valid VACUUM INTO target.
+    crate::fsutil::precreate_private(dest);
     db.conn.execute("VACUUM INTO ?1", [d])?;
     let len = std::fs::metadata(dest)?.len();
     if let Some((dst, bytes)) = header {
         let write = || -> std::io::Result<()> {
-            let mut f = OpenOptions::new().write(true).create_new(true).open(&dst)?;
+            let mut f = crate::fsutil::private_file_options()
+                .write(true)
+                .create_new(true)
+                .open(&dst)?;
             f.write_all(&bytes)?;
             f.sync_all()
         };
@@ -277,7 +281,10 @@ pub fn export_meta_ext(
         "labels": label_docs,
         "playlists": playlists,
     });
-    let mut f = OpenOptions::new().write(true).create_new(true).open(dest)?;
+    let mut f = crate::fsutil::private_file_options()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
     f.write_all(serde_json::to_string_pretty(&doc).expect("json").as_bytes())?;
     Ok(rep)
 }

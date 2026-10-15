@@ -209,8 +209,14 @@ pub fn install_crash_hook(app: &'static str, version: &'static str) {
         );
         // Resolved now, so a --home given after startup is honoured.
         let dir = crate::paths::state_dir();
-        if std::fs::create_dir_all(&dir).is_ok() {
-            let _ = std::fs::write(dir.join(format!("crash-{ts}.txt")), text);
+        if crate::fsutil::create_private_dir_all(&dir).is_ok() {
+            use std::io::Write;
+            let _ = crate::fsutil::private_file_options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(dir.join(format!("crash-{ts}.txt")))
+                .and_then(|mut f| f.write_all(text.as_bytes()));
         }
         prev(info);
     }));
