@@ -25,8 +25,15 @@ pub const EXIT_HEADER: u8 = 5;
 
 /// Minimum length of a new passphrase, in characters.
 pub const MIN_PASSPHRASE_CHARS: usize = 12;
-/// Longest passphrase accepted from a descriptor, in bytes.
-const MAX_PASSPHRASE_BYTES: u64 = 4096;
+/// Longest passphrase accepted, in characters: the same limit as the GUI.
+pub const MAX_PASSPHRASE_CHARS: usize = vault::MAX_PASSPHRASE_CHARS;
+/// Read cap in bytes: the longest passphrase in UTF-8 plus a line ending.
+const MAX_PASSPHRASE_BYTES: u64 = (MAX_PASSPHRASE_CHARS as u64) * 4 + 2;
+/// Attempts at a new passphrase on a terminal before giving up.
+const PROMPT_ATTEMPTS: usize = 3;
+
+const STDIN_TTY_REFUSED: &str =
+    "--passphrase-stdin needs piped input: use the interactive prompt instead";
 
 const NO_RECOVERY_WARNING: &str = "WARNING: there is no recovery. If you forget the passphrase, the library database\n\
 and its encrypted caches are lost for good. Your media files are not touched,\n\
@@ -115,7 +122,11 @@ fn read_stream(mut r: impl Read) -> Result<Secret, Fail> {
     }
     let s = String::from_utf8(std::mem::take(&mut *buf))
         .map_err(|_| Fail::new(1, "the passphrase is not valid UTF-8"))?;
-    Ok(Zeroizing::new(s))
+    let s = Zeroizing::new(s);
+    if s.chars().count() > MAX_PASSPHRASE_CHARS {
+        return Err(Fail::new(1, "the passphrase is too long"));
+    }
+    Ok(s)
 }
 
 #[cfg(unix)]
@@ -146,8 +157,24 @@ fn prompt(text: &str) -> Result<Secret, Fail> {
     eprint!("{text}");
     let r = rpassword::read_password();
     eprintln!();
-    r.map(Zeroizing::new)
-        .map_err(|_| Fail::new(1, "cannot read the passphrase"))
+    let s = r
+        .map(Zeroizing::new)
+        .map_err(|_| Fail::new(1, "cannot read the passphrase"))?;
+    if s.chars().count() > MAX_PASSPHRASE_CHARS {
+        return Err(Fail::new(1, "the passphrase is too long"));
+    }
+    Ok(s)
+}
+
+/// Descriptors 0, 1 and 2 are the standard streams, not a secret channel.
+fn fd_refused(fd: i32) -> bool {
+    (0..=2).contains(&fd)
+}
+
+/// `--passphrase-stdin` cannot set a new passphrase from a terminal: it would
+/// be one silent entry with no confirmation.
+pub fn stdin_flag_refused(passphrase_stdin: bool, stdin_is_terminal: bool) -> bool {
+    passphrase_stdin && stdin_is_terminal
 }
 
 impl Sources {
@@ -168,6 +195,17 @@ impl Sources {
                 1,
                 "--passphrase-fd and --new-passphrase-fd must differ",
             ));
+        }
+        for fd in [self.passphrase_fd, self.new_passphrase_fd]
+            .into_iter()
+            .flatten()
+        {
+            if fd_refused(fd) {
+                return Err(Fail::new(
+                    1,
+                    "descriptors 0, 1 and 2 are not accepted: use --passphrase-stdin for standard input",
+                ));
+            }
         }
         if self.passphrase_stdin && self.new_passphrase_fd == Some(0) {
             return Err(Fail::new(
@@ -193,6 +231,15 @@ impl Sources {
         Ok(None)
     }
 
+    /// Refuse `--passphrase-stdin` when stdin is a terminal, for the commands
+    /// that set a new passphrase (the prompt asks twice, the flag would not).
+    pub fn check_new(&self) -> Result<(), Fail> {
+        if stdin_flag_refused(self.passphrase_stdin, std::io::stdin().is_terminal()) {
+            return Err(Fail::new(1, STDIN_TTY_REFUSED));
+        }
+        Ok(())
+    }
+
     /// A new passphrase for `enable` or `change-passphrase`: from
     /// `--new-passphrase-fd`, else (`allow_primary`) the primary source, else
     /// a terminal asked twice.
@@ -203,26 +250,46 @@ impl Sources {
             self.current("")?
                 .ok_or_else(|| Fail::new(1, "no passphrase given"))?
         } else if interactive() {
-            let a = prompt("New passphrase: ")?;
-            let b = prompt("Repeat the new passphrase: ")?;
-            if *a != *b {
-                return Err(Fail::new(1, "the two entries differ"));
-            }
-            a
+            self.ask_twice()?
         } else {
             return Err(Fail::new(
                 1,
                 "a new passphrase is required: use a terminal or --new-passphrase-fd N",
             ));
         };
-        if s.chars().count() < MIN_PASSPHRASE_CHARS {
-            return Err(Fail::new(
-                1,
-                format!("the passphrase must have at least {MIN_PASSPHRASE_CHARS} characters"),
-            ));
-        }
+        too_short(&s)?;
         Ok(s)
     }
+
+    /// Ask on the terminal, twice, again when the entries differ or are too
+    /// short (a typo on a single silent entry would lock the library).
+    fn ask_twice(&self) -> Result<Secret, Fail> {
+        for attempt in 1..=PROMPT_ATTEMPTS {
+            let a = prompt("New passphrase: ")?;
+            if too_short(&a).is_err() {
+                eprintln!("The passphrase must have at least {MIN_PASSPHRASE_CHARS} characters.");
+                continue;
+            }
+            let b = prompt("Repeat the new passphrase: ")?;
+            if *a == *b {
+                return Ok(a);
+            }
+            if attempt < PROMPT_ATTEMPTS {
+                eprintln!("The two entries differ, try again.");
+            }
+        }
+        Err(Fail::new(1, "the two entries differ"))
+    }
+}
+
+fn too_short(s: &str) -> Result<(), Fail> {
+    if s.chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(Fail::new(
+            1,
+            format!("the passphrase must have at least {MIN_PASSPHRASE_CHARS} characters"),
+        ));
+    }
+    Ok(())
 }
 
 /// An opened library and, in vault mode, the keys derived from it.
@@ -333,6 +400,7 @@ pub fn run(cmd: &VaultCmd, db_path: &Path, src: &Sources, json_out: bool) -> Res
         VaultCmd::Enable {
             i_understand_no_recovery,
         } => {
+            src.check_new()?;
             match vault_convert::recover(db_path).map_err(from_vault)? {
                 FileFormat::Encrypted => return Err(from_vault(VaultError::AlreadyEncrypted)),
                 FileFormat::Absent => return Err(Fail::new(1, "there is no library to encrypt")),
@@ -376,6 +444,7 @@ pub fn run(cmd: &VaultCmd, db_path: &Path, src: &Sources, json_out: bool) -> Res
             Ok(())
         }
         VaultCmd::ChangePassphrase => {
+            src.check_new()?;
             let old = needed(src, db_path)?;
             let new = src.new_passphrase(false)?;
             vault_convert::change_passphrase(db_path, &old, &new).map_err(from_vault)?;
@@ -438,5 +507,49 @@ mod tests {
     fn oversized_input_is_refused() {
         let big = vec![b'a'; 5000];
         assert!(read_stream(&big[..]).is_err());
+    }
+
+    #[test]
+    fn limit_is_1024_characters_not_bytes() {
+        assert_eq!(MAX_PASSPHRASE_CHARS, 1024);
+        let ok = "a".repeat(1024);
+        assert!(read_stream(ok.as_bytes()).is_ok());
+        let long = "a".repeat(1025);
+        assert!(read_stream(long.as_bytes()).is_err());
+        // 1024 four-byte characters are accepted: bytes are not the limit.
+        let wide = "\u{1F600}".repeat(1024);
+        assert_eq!(wide.len(), 4096);
+        assert!(read_stream(wide.as_bytes()).is_ok());
+        let wider = "\u{1F600}".repeat(1025);
+        assert!(read_stream(wider.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn standard_descriptors_are_refused() {
+        for fd in [0, 1, 2] {
+            let s = Sources {
+                passphrase_fd: Some(fd),
+                ..Default::default()
+            };
+            assert!(s.check().is_err(), "--passphrase-fd {fd}");
+            let s = Sources {
+                new_passphrase_fd: Some(fd),
+                ..Default::default()
+            };
+            assert!(s.check().is_err(), "--new-passphrase-fd {fd}");
+        }
+        let s = Sources {
+            passphrase_fd: Some(3),
+            new_passphrase_fd: Some(4),
+            ..Default::default()
+        };
+        assert!(s.check().is_ok());
+    }
+
+    #[test]
+    fn stdin_flag_on_a_terminal_is_refused_for_new_passphrases() {
+        assert!(stdin_flag_refused(true, true));
+        assert!(!stdin_flag_refused(true, false));
+        assert!(!stdin_flag_refused(false, true));
     }
 }

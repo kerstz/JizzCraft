@@ -4,9 +4,10 @@
 //! directory and every captured stdout/stderr is searched for them, for the
 //! passphrase and for the database key.
 //!
-//! Documented exceptions: `config/config.json` (out of the first version's
-//! scope, see docs/vault.md) and the media file itself (it lives outside the
-//! home and the vault never touches media). Output of commands that print
+//! `config/config.json` is scanned too: only the keys of the GUI `Config`
+//! are allowed in it (`panic_video` may hold a path the owner chose, never a
+//! library item name; see docs/vault.md). The media file itself lives outside
+//! the home and the vault never touches media. Output of commands that print
 //! library data on purpose (`tag create`, `search`, ...) is not searched for
 //! names, only for the passphrase and the key.
 //!
@@ -144,15 +145,63 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Files under `home` that contain any needle (`config.json` excepted).
+/// Keys `config.json` may hold (the GUI `Config` struct). `panic_video` is a
+/// path chosen by the owner: it can name a file, so it is never a library
+/// item, and the canary names must not appear anywhere in the file.
+const CONFIG_ALLOWED: &[&str] = &[
+    "age_confirmed",
+    "onboarding_done",
+    "discreet",
+    "screen_share_safe",
+    "inspector_open",
+    "sidebar_closed",
+    "volume",
+    "left_hand",
+    "sort",
+    "sort_desc",
+    "hide_history",
+    "disguise",
+    "autoplay_next",
+    "no_previews",
+    "language",
+    "no_jokes",
+    "skip_age_gate",
+    "panic_video",
+    "cache_pruned_at",
+    "ui_zoom",
+    "reduce_motion",
+    "subs",
+    "audio_lang",
+    "autolock_minutes",
+    "boss_locks",
+];
+
+/// Every key of every `config.json` under `home` is on the allow list.
+fn config_keys_not_allowed(home: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    walk(home, &mut files);
+    let mut bad = Vec::new();
+    for f in files
+        .iter()
+        .filter(|f| f.file_name().is_some_and(|n| n == "config.json"))
+    {
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(f).unwrap()).expect("config.json is valid JSON");
+        for k in v.as_object().expect("config.json is an object").keys() {
+            if !CONFIG_ALLOWED.contains(&k.as_str()) {
+                bad.push(k.clone());
+            }
+        }
+    }
+    bad
+}
+
+/// Files under `home` that contain any needle, `config.json` included.
 fn leaks(home: &Path, needles: &[(&str, Vec<u8>)]) -> Vec<String> {
     let mut files = Vec::new();
     walk(home, &mut files);
     let mut found = Vec::new();
     for f in files {
-        if f.file_name().is_some_and(|n| n == "config.json") {
-            continue;
-        }
         let bytes = std::fs::read(&f).unwrap();
         for (label, n) in needles {
             if contains(&bytes, n) {
@@ -215,6 +264,13 @@ fn canary_nothing_readable_after_enable() {
     let lib = tempfile::tempdir().unwrap();
     make_media(lib.path());
     let h = home.path();
+    // A config.json as the GUI writes it: allowed keys only, and it is scanned.
+    std::fs::create_dir_all(h.join("config")).unwrap();
+    std::fs::write(
+        h.join("config").join("config.json"),
+        r#"{"age_confirmed":true,"left_hand":true,"language":"fr","panic_video":"/neutral/videos/maths.mp4"}"#,
+    )
+    .unwrap();
     let mut checked_outputs: Vec<(String, String)> = Vec::new();
     let mut all_outputs: Vec<(String, String)> = Vec::new();
 
@@ -396,6 +452,29 @@ fn canary_nothing_readable_after_enable() {
     needles.extend(all_keys(h));
     let found = leaks(h, &needles);
     assert!(found.is_empty(), "plaintext found on disk: {found:?}");
+    assert_eq!(config_keys_not_allowed(h), Vec::<String>::new());
+    // The header of a production enable carries the default cost (65536/3/1).
+    let hdr = std::fs::read(jizzcraft_core::vault::header_path(
+        &h.join("data").join("library.db"),
+    ))
+    .or_else(|_| {
+        let mut files = Vec::new();
+        walk(h, &mut files);
+        let f = files
+            .into_iter()
+            .find(|p| p.extension().is_some_and(|e| e == "vault"))
+            .expect("a .vault header under home");
+        std::fs::read(f)
+    })
+    .unwrap();
+    assert_eq!(
+        jizzcraft_core::vault::validate_header(&hdr).unwrap(),
+        jizzcraft_core::vault::KdfParams {
+            m_cost: 65_536,
+            t_cost: 3,
+            p_cost: 1
+        }
+    );
 
     for (label, text) in &checked_outputs {
         for (what, n) in &needles {
@@ -675,4 +754,83 @@ fn doctor_report_says_locked_without_statistics() {
         t.contains("items: unknown") && t.contains("schema_version: unknown"),
         "{t}"
     );
+}
+
+/// Descriptors 0, 1 and 2 are refused before anything is read.
+#[test]
+fn standard_descriptors_are_refused_as_passphrase_sources() {
+    let home = tempfile::tempdir().unwrap();
+    for flag in ["--passphrase-fd", "--new-passphrase-fd"] {
+        for fd in ["0", "1", "2"] {
+            let r = cli(
+                home.path(),
+                &[flag, fd, "vault", "status"],
+                Some("whatever\n"),
+                None,
+            );
+            assert_eq!(r.code(), 1, "{flag} {fd}: {}", r.text());
+            assert!(r.text().contains("descriptors 0, 1 and 2"), "{}", r.text());
+        }
+    }
+}
+
+/// A passphrase longer than the shared limit is refused, one at the limit is
+/// accepted (stdin, so it runs everywhere).
+#[test]
+fn passphrase_limit_is_1024_characters() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    make_media(lib.path());
+    let h = home.path();
+    json_of(&plain(h, &["--json", "scan", lib.path().to_str().unwrap()]));
+    let flags = [
+        "--passphrase-stdin",
+        "vault",
+        "enable",
+        "--i-understand-no-recovery",
+    ];
+    let long = format!("{}\n", "a".repeat(1025));
+    let r = cli(h, &flags, Some(&long), None);
+    assert_eq!(r.code(), 1, "{}", r.text());
+    assert!(r.text().contains("too long"));
+    assert!(plain(h, &["vault", "status"]).text().contains("vault: off"));
+    let ok = format!("{}\n", "a".repeat(1024));
+    let r = cli(h, &flags, Some(&ok), None);
+    assert_eq!(r.code(), 0, "{}", r.text());
+}
+
+/// Under a pseudo-terminal `--passphrase-stdin` cannot set a new passphrase:
+/// one silent entry without confirmation is refused with a fixed message and
+/// nothing is changed. Needs `script(1)` (util-linux); skipped without it.
+#[cfg(target_os = "linux")]
+#[test]
+fn passphrase_stdin_is_refused_on_a_terminal_for_enable() {
+    if Command::new("script").arg("--version").output().is_err() {
+        eprintln!("script(1) not available, skipped");
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    make_media(lib.path());
+    let h = home.path();
+    json_of(&plain(h, &["--json", "scan", lib.path().to_str().unwrap()]));
+    let exe = env!("CARGO_BIN_EXE_jizzcraft-cli");
+    for sub in [
+        "vault enable --i-understand-no-recovery",
+        "vault change-passphrase",
+    ] {
+        let line = format!("'{exe}' --home '{}' --passphrase-stdin {sub}", h.display());
+        let out = Command::new("script")
+            .args(["-qec", &line, "/dev/null"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(out.status.code(), Some(1), "{sub}: {text}");
+        assert!(
+            text.contains("use the interactive prompt instead"),
+            "{sub}: {text}"
+        );
+    }
+    assert!(plain(h, &["vault", "status"]).text().contains("vault: off"));
 }
