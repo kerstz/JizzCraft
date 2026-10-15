@@ -96,7 +96,7 @@ jobs:
             # curl.exe retries on dropped connections ("ResponseEnded"), which
             # Invoke-WebRequest -MaximumRetryCount does not; the MSIs are cached too.
             if (-not (Test-Path "gst-msi/$k.msi")) {
-              curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 -o "gst-msi/$k.msi" $u
+              curl.exe --fail --location --silent --show-error -C - --retry 20 --retry-all-errors --retry-delay 3 -o "gst-msi/$k.msi" $u
               if ($LASTEXITCODE -ne 0) { throw "download failed for $k" }
             }
             curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 -o "$k.msi.sha256sum" "$u.sha256sum"
