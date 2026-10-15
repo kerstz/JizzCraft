@@ -1,14 +1,27 @@
 name: Edition channels
 
 # `edition/offline` and `edition/online` are release channels, not code lines:
-# after a release is published they are fast-forwarded to the released commit.
-# Both usually point at the same commit; that is intended (one code base, two
-# builds). A person never pushes to them.
+# after a release they are fast-forwarded to the released commit. Both usually
+# point at the same commit; that is intended (one code base, two builds). A
+# person never pushes to them.
+#
+# release.yml advances them itself as its last job. This workflow covers a
+# release published by hand (`release: published`) and manual repair:
+#
+#   gh workflow run channels.yml                 # latest release
+#   gh workflow run channels.yml -f tag=v0.1.0   # a given release tag
+#
+# It always moves the channels to the commit of a release tag, never to HEAD.
 
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish on the channels (default, the latest release)
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -21,9 +34,20 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fast-forward both channel branches (never force)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -eu
-          sha=$(git rev-parse HEAD)
+          tag=${EVENT_TAG:-${INPUT_TAG:-}}
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --json tagName --jq .tagName)
+          fi
+          [ -n "$tag" ] || { echo "no release found"; exit 1; }
+          git fetch --tags --force origin
+          sha=$(git rev-parse --verify "refs/tags/$tag^{commit}")
+          echo "tag $tag -> $sha"
           for b in edition/offline edition/online; do
             git push origin "$sha:refs/heads/$b"
           done
