@@ -12,8 +12,8 @@ Your files stay where they are. Your history stays on your disk. Your browser hi
   <img alt="Alpha" src="https://img.shields.io/badge/status-alpha%200.2.0-d69e2e?style=flat-square">
 </p>
 
-<p align="center"><img src="docs/media/demo.gif" width="900" alt="Demo: library grid, filtering, rating, image viewer, video player with markers and A-B loop, inbox triage, and discreet mode. Every frame is rendered by the app from synthetic test media."></p>
-<p align="center"><sub>Every frame above was rendered by the app itself from synthetic test patterns (<a href="docs/media/make-demo.sh"><code>docs/media/make-demo.sh</code></a>). No real media was harmed, or used.</sub></p>
+<p align="center"><img src="docs/media/demo.gif" width="900" alt="Demo in seven captioned steps: library grid with the inspector, filter by name and by tab, star rating and favorite, image viewer, video player with markers, A-B loop and a timeline preview, inbox triage, and discreet mode behind the boss key. Every frame is rendered by the app from synthetic test media."></p>
+<p align="center"><sub>Every app frame above was rendered by JizzCraft itself from synthetic, procedurally drawn test media (<a href="docs/media/make-demo.sh"><code>docs/media/make-demo.sh</code></a>); only the captions are added around it. No real media was harmed, or used.</sub></p>
 
 <p align="center">
   <a href="#install">Install</a> · <a href="#why">Why</a> · <a href="#two-editions">Editions</a> · <a href="#privacy-guarantees-checked-by-tests">Privacy</a> · <a href="#status-020-alpha">Status</a> · <a href="#features">Features</a> · <a href="#built-for-agents">CLI</a> · <a href="#contributing-and-security">Contributing</a>
@@ -135,7 +135,7 @@ What changed in this version: [CHANGELOG.md](CHANGELOG.md).
   </tr>
 </table>
 
-Screenshots are rendered by the app itself (`cargo xtask screenshots`) from synthetic media.
+Screenshots are rendered by the app itself (`cargo xtask screenshots`, 1280×800, English) from synthetic media.
 
 ## Features
 
