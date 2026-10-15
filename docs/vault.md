@@ -4,9 +4,9 @@
 you turn the vault on (Settings > Privacy > *Encrypt library*, or
 `jizzcraft-cli vault enable`); otherwise the library database and the
 thumbnail cache are stored in clear, exactly as before. This page records the
-promise, the threat model and what each step has shipped. Step 8 (performance
-in vault mode, packaging smoke tests, troubleshooting) is still open, which is
-why the feature is called an alpha.
+promise, the threat model and what each step has shipped. All steps are now
+delivered; the feature stays labelled alpha until it has had real-world use on
+Windows and macOS (see the limits in each step).
 
 | Step | Content | State |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ why the feature is called an alpha.
 | 6 | CLI commands, canary test | done |
 | 7a | Lock screen, unlocking, locking, keyed opening in the app | done |
 | 7b | Settings (enable, disable, change), conversion as a job, auto-lock | done |
-| 8 | Perf in vault mode, packaging smoke tests | not started |
+| 8 | Perf in vault mode, packaging smoke test, close guard, M3U8 warning, troubleshooting | done |
 
 The desktop app and the command line can both enable, disable and change the
 passphrase (steps 7b and 6, below). Nothing is encrypted until you do.
@@ -58,8 +58,9 @@ the application is closed or locked.
 - **Weak passphrases, evil-maid attacks, coercion.**
 - **Rollback.** Replacing `library.db` with an older valid copy is not
   detected.
-- **JSON exports** remain in clear (the app asks for confirmation before
-  writing one while the vault is on; the CLI prints no warning).
+- **JSON exports and `.m3u8` playlists** remain in clear (the app asks for
+  confirmation before writing either while the vault is on; the CLI prints no
+  warning). A playlist file lists the paths of your media.
 
 ### Forgotten passphrase
 
@@ -394,9 +395,14 @@ Limits, honestly:
   were compiled and exercised through state-machine and app-level tests
   without a window; no human looked at them or at a real conversion with a
   large library and a playing video yet (step 8).
-- Quitting the window during a conversion kills the process; the engine is
-  crash-safe (`recover` finishes or undoes it at the next start), but nothing
-  warns before the close.
+- Closing the window during a conversion is held and a dialog asks first
+  ("A conversion is in progress. Closing interrupts the operation. This is
+  safe, but you will have to start it again."; *Close anyway* or *Keep
+  waiting*). Confirming ends the process; the engine is crash-safe (`recover`
+  finishes or undoes it at the next start) and the user restarts the
+  operation. A forced kill (task manager, power cut) takes the same recovery
+  path without the dialog. The logic (`Gate::on_close_request`) is
+  unit-tested without a window; the dialog itself was not seen on screen.
 - Conversion of a read-only library (made by a newer version) is refused.
 - Another JizzCraft process holding the library makes the conversion `Busy`;
   nothing changes.
@@ -458,7 +464,119 @@ Documented exceptions: `config/config.json`, and the media file (outside the
 home). Output of commands that print data on purpose (`search`, `tag create`)
 is only checked for the passphrase and the key.
 
-Limits: the test checks the database key, not the data key or thumbnail
-sub-keys (no accessor); it does not look at UTF-16 or compressed encodings of
-the names. `jizzcraft-cli thumbs` builds image thumbnails only (no GStreamer
-in the CLI).
+The test also searches for the data key (DEK) and the two thumbnail sub-keys,
+as raw bytes, hex and upper-case hex, through `#[doc(hidden)]`
+`bytes_for_tests()` accessors on `VaultKey`, `DbKey` and `ThumbKeys` in core
+(never called by product code). The test runs on every platform; only the
+`--passphrase-fd` case is Unix-only.
+
+Limits: it does not look at UTF-16 or compressed encodings of the names.
+`jizzcraft-cli thumbs` builds image thumbnails only (no GStreamer in the CLI).
+
+### `vault verify`
+
+Unlocks, then runs `PRAGMA cipher_integrity_check` (the HMAC of every page,
+exposed as `Db::cipher_integrity_check`), `quick_check` and a row count. Exit
+`0` and `vault: ok (N items)` when all hold; `3` for a wrong passphrase. It is
+read-only and can take a while on a big library.
+
+## Step 8: performance, packaging, finishing
+
+- **Performance.** `cargo xtask perf` measures every metric on a clear and an
+  encrypted 10k library, the timed conversion in both directions and an
+  unlock, with budgets in `perf/budgets.json`. Warm queries cost the same;
+  cold first queries cost 30 to 70 % more (sub-millisecond to 13 ms), a cold
+  scan +4 %, a 10k conversion about 0.14 s. Figures and method:
+  `docs/perf.md`.
+- **Packaging smoke test.** `packaging/smoke-install.sh` (the CI job
+  `install-e2e` and the release workflow's `smoke-install`) installs the
+  tarball, then on the installed `jizzcraft-cli`: scans a synthetic library,
+  `vault enable --passphrase-stdin --i-understand-no-recovery`,
+  `doctor --report` says `vault: on` and names no item, the same report
+  without a passphrase says `vault: locked`, `vault verify` passes and a wrong
+  passphrase fails, no name is left in clear under the home, `vault disable`
+  gives `vault: off`. The passphrase is random per run and goes through
+  `printf` into stdin: it is in no argument, no environment variable and no
+  log, and the script never prints the output of a command that handles it.
+- **Windows CI.** The `windows` job runs `cargo test --workspace`, which
+  includes `vault_db`, `vault_convert` (with its `kill -9` test, `child.kill()`
+  being portable) and the CLI `vault` tests. Only `--passphrase-fd` is
+  `cfg(unix)`. The Linux-side cross-check
+  `RUSTFLAGS='-D warnings' sh packaging/windows/cross-check.sh --workspace --all-targets`
+  (zig as C toolchain) compiles all of it for `x86_64-pc-windows-gnu`; it
+  proves compilation, not behaviour.
+
+## Troubleshooting
+
+**I forgot my passphrase.** The data is gone for good. There is no recovery,
+no hint, no master key and no key file, by design. Your media files are
+untouched: create a new library and import the folders again. Tags, ratings,
+history, markers and playlists that lived only in the database are lost. If
+you made a JSON export earlier, it is in clear and can be imported into the
+new library.
+
+**The header file `library.vault` is lost or damaged.** The header is the only
+envelope of the data key; without it the database cannot be opened even with
+the right passphrase (`jizzcraft-cli vault status` says `header missing` or
+`header damaged`, exit code 5; the app shows an error screen and never creates
+a new library next to it). Restore `library.vault` from a backup copy that was
+taken together with the database. A copy of an *older* header still works with
+the passphrase it had when it was made, so a copy taken before a passphrase
+change opens with the old passphrase. Without any copy, the situation is the
+same as a forgotten passphrase.
+
+**`HeaderOrphan`.** A valid `library.vault` exists but the database next to it
+is absent or in clear. Nothing is deleted: the application refuses to start
+over it. Usual causes: the database file was restored or deleted by hand, or
+an old clear copy was put back. Put the encrypted `library.db` back next to the
+header (check the `pre-vN` backups in the same directory if it is gone), or, if
+you really want to start over, move the header away yourself. If the clear
+database is the one you want and the header is stale, remove `library.vault`
+manually; the program will not do it without the `.vault.disabling` marker of
+an interrupted disable.
+
+**A correct backup is the database and its header together.** Copy
+`library.db` **and** `library.vault` (same directory, same moment). The
+in-app and CLI `backup` write `copy.db` and `copy.vault` side by side. A
+database copy without its header is unreadable. Do not copy `-wal` or
+`-journal` files by hand while the program runs; use `backup` instead, which
+produces one consistent encrypted file.
+
+**Restoring from `pre-vN` or `pre-remove`.** Before a schema migration the
+program writes `library.pre-vN.db` next to the database, and before removing a
+folder (or after a failed start-up integrity check) it writes
+`library.pre-remove-<time>.db` (or `pre-check`). In vault mode they are encrypted with
+the same key and need no header of their own. To restore: close the program,
+keep the current `library.db` aside, copy the backup over `library.db` (keep
+`library.vault` as it is; the backup keeps the file name you gave it, so
+rename the copy to `library.db`), start again and enter the same passphrase. A clear
+backup that predates the vault is deleted when the vault is turned on, so an
+encrypted library has no clear backup to go back to.
+
+**Windows and `--passphrase-stdin`.** `--passphrase-fd` is not available
+on Windows; use `--passphrase-stdin`. In PowerShell:
+`Get-Content pass.txt -Raw | jizzcraft-cli --passphrase-stdin vault verify`
+(one trailing line ending is removed, nothing else is trimmed, so a file with
+extra blank lines changes the passphrase). Piping with `echo` adds a line
+ending that is removed again; a console code page that is not UTF-8 may change
+non-ASCII characters, so prefer a UTF-8 file. Without stdin redirection the
+CLI asks on the terminal with no echo.
+
+**Wrong passphrase, but I am sure it is right.** Check the keyboard layout
+and caps lock; the passphrase is NFC-normalised, never trimmed. The app waits
+1, 2, 4 ... 30 s after three failures; the command line returns exit `3`
+immediately. A key that the header accepts but SQLCipher refuses means the
+database itself is damaged (run `vault verify` on a backup).
+
+**A conversion was interrupted.** Start the program or any CLI command again:
+`recover` finishes or undoes the operation and leaves either an all-clear or
+an all-encrypted library. Then run the conversion again.
+
+**Relation to full-disk encryption.** The vault protects the library
+database and its thumbnail cache. It does not protect your media files, the
+operating system's own traces (recent files, desktop search, thumbnails made by
+other programs), swap, hibernation images, or deleted clear data on SSD and
+copy-on-write storage. Full-disk encryption (LUKS, BitLocker, FileVault) covers
+those and is complementary: use both for a laptop that can be lost. The vault
+adds protection when the disk is mounted but the application is locked or
+closed (a shared or unlocked machine, a copied backup, a cloud-synced folder).

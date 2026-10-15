@@ -249,6 +249,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Includes the encrypted-library tests: core `vault_db` and
+      # `vault_convert` (kill -9 of a converting child included) and the CLI
+      # `vault` tests, whose canary and stdin round trip are portable. Only
+      # `--passphrase-fd` (a Unix descriptor) is `cfg(unix)`.
       - name: Test
         run: cargo test --workspace
       # The network build needs NASM for aws-lc; the first run settles whether
@@ -263,7 +267,7 @@ jobs:
           if (-not (Test-Path out.png)) { throw 'no screenshot' }
 
   install-e2e:
-    name: install · tarball → install.sh → doctor → uninstall
+    name: install · tarball → install.sh → doctor → vault → uninstall
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5

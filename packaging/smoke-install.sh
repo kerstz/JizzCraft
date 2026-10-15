@@ -1,7 +1,8 @@
 #!/bin/sh
 # End-to-end check of a release tarball: install it with install.sh into a
-# scratch prefix, make sure the program starts and `doctor` runs, then
-# uninstall and make sure nothing is left behind.
+# scratch prefix, make sure the program starts and `doctor` runs, turn the
+# encrypted vault on and off on the installed binary, then uninstall and make
+# sure nothing is left behind.
 #
 #   sh packaging/smoke-install.sh dist/jizzcraft-0.2.0-x86_64-linux.tar.xz [ONLINE_TARBALL]
 #
@@ -41,6 +42,43 @@ set +e
 rc=$?
 set -e
 [ "$rc" = 0 ] || [ "$rc" = 2 ] || die "doctor reported a required problem (exit $rc)"
+
+# ---- encrypted vault on the installed binary --------------------------------
+# enable -> doctor says "vault: on" and names nothing -> verify -> locked
+# without the passphrase -> disable. The passphrase is random, lives in a shell
+# variable only (printf is a builtin: it never reaches an argv), and no output
+# of a command that handles it is printed. `set -x` must never be turned on here.
+cli="$p/bin/jizzcraft-cli"
+vh="$d/vhome"
+vm="$d/vmedia"
+canary="smoke-canary-9f2c41"
+mkdir -p "$vm"
+: >"$vm/$canary.mp4"
+pw=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+[ "${#pw}" -ge 12 ] || die "could not make a passphrase"
+vcli() { "$cli" --home "$vh" "$@"; }
+vcli scan "$vm" >/dev/null 2>&1 || die "vault: scan of the synthetic library failed"
+printf '%s\n' "$pw" | vcli --passphrase-stdin vault enable --i-understand-no-recovery >/dev/null 2>&1 \
+    || die "vault enable failed"
+set +e
+rep=$(printf '%s\n' "$pw" | vcli --passphrase-stdin doctor --report 2>/dev/null)
+set -e
+printf '%s\n' "$rep" | grep -q 'vault: on' || die "doctor --report does not say 'vault: on'"
+case "$rep" in *"$canary"*) die "doctor --report names a library item" ;; esac
+case "$rep" in *"$pw"*) die "doctor --report shows the passphrase" ;; esac
+set +e
+rep=$(vcli doctor --report 2>/dev/null </dev/null)
+set -e
+printf '%s\n' "$rep" | grep -q 'vault: locked' || die "locked library is not reported as 'vault: locked'"
+printf '%s\n' "$pw" | vcli --passphrase-stdin vault verify >/dev/null 2>&1 || die "vault verify failed"
+if printf '%s\n' "not-the-passphrase-at-all" | vcli --passphrase-stdin vault verify >/dev/null 2>&1; then
+    die "vault verify accepted a wrong passphrase"
+fi
+# The clear name must not be on disk any more (database, wal, backups, caches).
+if grep -rqF "$canary" "$vh" 2>/dev/null; then die "library name found in clear under the home after enable"; fi
+printf '%s\n' "$pw" | vcli --passphrase-stdin vault disable >/dev/null 2>&1 || die "vault disable failed"
+vcli vault status 2>/dev/null | grep -q 'vault: off' || die "vault is not off after disable"
+unset pw rep
 
 # Update over an old manifest: a stale file it lists must disappear.
 mkdir -p "$p/share/applications"

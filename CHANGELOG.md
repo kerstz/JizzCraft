@@ -11,6 +11,23 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault, step 8 of issue #13: finishing. `cargo xtask perf` now
+  measures the clear and the encrypted 10k library side by side (`vault_`
+  budgets), the timed conversion in both directions and one unlock; measured
+  overhead: warm queries 0 %, cold first queries +30 to +70 %, cold scan +4 %,
+  a 10k conversion about 0.14 s (`docs/perf.md`). The package smoke test
+  (`install-e2e`, release `smoke-install`) enables the vault on the installed
+  CLI, checks `doctor --report` (`vault: on`, no name), `vault verify`, the
+  locked state and `vault disable`, without ever printing a secret. Closing
+  the window during a conversion is held behind a translated confirmation
+  (the engine is crash-safe; the operation has to be started again). Exporting
+  a playlist as `.m3u8` warns first while the vault is on, like the JSON
+  export, in the six languages. `vault verify` also runs
+  `cipher_integrity_check` (`Db::cipher_integrity_check`). The canary test
+  now also looks for the data key and the thumbnail sub-keys, and the CLI
+  vault tests run on Windows except the `--passphrase-fd` ones.
+  `docs/vault.md` gains a Troubleshooting section and the progress table is
+  complete.
 - Encrypted vault, step 7b of issue #13: Settings, conversion and auto-lock in
   the desktop app. The vault is now a feature, delivered as an **alpha** and
   off until you turn it on. New Settings page "Privacy": *Encrypt library*
