@@ -45,7 +45,12 @@ anything may change between minor versions.
   all-clear or all-encrypted state from disk alone. Tests inject a failure
   after every step and `kill -9` a converting process. New fixed-message
   `VaultError` variants: `Busy`, `AlreadyEncrypted`, `ConvertFailed`,
-  `VerifyFailed`.
+  `VerifyFailed`. `disable` writes an intent marker
+  (`library.vault.disabling`) before its commit point; `recover` deletes the
+  header, encrypted backups and `vault-thumbs` of a clear library only when
+  that marker exists. A valid header next to a clear or missing library
+  without it is `VaultError::HeaderOrphan`: nothing is deleted and `Db::open`
+  refuses to create a new library there.
 
 ### Tooling
 - Performance budgets (issue #17, engine part). `cargo xtask perf` builds a
@@ -139,28 +144,6 @@ anything may change between minor versions.
   files on disk are never touched, and the dialog and the toast say so.
   New command `library.remove {path}`. Refused while a scan is running.
 
-### Editions and packaging
-- Two named editions of one code base. Offline is `jizzcraft` (no network
-  code). Online is `jizzcraft-online` (cargo feature `online`, an alias of
-  `network`); it provides, conflicts with and replaces `jizzcraft`. Same app
-  ID, same binaries and data directories.
-- Online release tarballs are now `jizzcraft-online-<version>-<arch>-linux.tar.xz`
-  (was `jizzcraft-network-...`). The 0.1.0 `install.sh --with-network` looks
-  for the old name and cannot fetch 0.2 or later tarballs: use the current
-  `install.sh`. `--network` / `--with-network` stay accepted as deprecated
-  aliases of `--edition online`.
-- `install.sh`: `--edition offline|online`, `--with-browser` / `--no-browser`
-  (online only), `--purge-browser-data`. Re-running keeps the edition recorded
-  in the install manifest, so an online user is never downgraded; otherwise it
-  asks in a terminal and falls back to offline. Switching online to offline
-  removes the online-only files.
-- Optional built-in browser: separate `jizzcraft-browser-<version>-<arch>-linux.tar.xz`
-  (only when the binary is built), `jizzcraft-browser` deb, Arch optdepends and
-  a Fedora `-browser` subpackage placeholder. System packages come from
-  `assets/browser-packages.tsv` and are installed only after asking.
-- `cargo xtask dist --edition offline|online [--browser]` (`--network` kept as
-  an alias).
-
 ## [0.1.0] - 2026-10-14
 
 First public alpha.
@@ -179,6 +162,26 @@ Application ID is io.github.kerstz.JizzCraft.
 - One-handed key preset, six interface languages, playful messages (off in
   discreet modes).
 - `jizzcraft-cli` and `--cmd`: the same named commands as the menus.
+
+### Editions and packaging
+- Two named editions of one code base. Offline is `jizzcraft` (no network
+  code). Online is `jizzcraft-online` (cargo feature `online`, an alias of
+  `network`); it provides, conflicts with and replaces `jizzcraft`. Same app
+  ID, same binaries and data directories.
+- Online release tarballs are now `jizzcraft-online-<version>-<arch>-linux.tar.xz`
+  (was `jizzcraft-network-...`). `--network` / `--with-network` stay accepted
+  as deprecated aliases of `--edition online`.
+- `install.sh`: `--edition offline|online`, `--with-browser` / `--no-browser`
+  (online only), `--purge-browser-data`. Re-running keeps the edition recorded
+  in the install manifest, so an online user is never downgraded; otherwise it
+  asks in a terminal and falls back to offline. Switching online to offline
+  removes the online-only files.
+- Optional built-in browser: separate `jizzcraft-browser-<version>-<arch>-linux.tar.xz`
+  (only when the binary is built), `jizzcraft-browser` deb, Arch optdepends and
+  a Fedora `-browser` subpackage placeholder. System packages come from
+  `assets/browser-packages.tsv` and are installed only after asking.
+- `cargo xtask dist --edition offline|online [--browser]` (`--network` kept as
+  an alias).
 
 ### Linux install
 - One-line `install.sh` (checksum, per-user, uninstall that touches only its

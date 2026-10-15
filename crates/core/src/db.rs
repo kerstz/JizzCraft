@@ -487,6 +487,11 @@ impl Db {
         match (probe_format(path)?, key) {
             (FileFormat::Encrypted, None) => return Err(Error::Locked),
             (FileFormat::Plain, Some(_)) => return Err(Error::Vault(VaultError::NotEncrypted)),
+            // The header is the only envelope of the key: never start a new
+            // clear library next to one (a lost or replaced library.db).
+            (FileFormat::Absent, None) if crate::vault::valid_header_exists(path) => {
+                return Err(Error::Vault(VaultError::HeaderOrphan));
+            }
             _ => {}
         }
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
