@@ -49,7 +49,8 @@ the Windows equivalent of mode 0600.
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-# zig (any recent) as the C toolchain; nasm for the network feature
+# zig (any recent) as the C toolchain; nasm and perl for the vendored OpenSSL
+# (SQLCipher), which every build now compiles
 packaging/windows/cross-check.sh -p jizzcraft-core -p jizzcraft-fetch -p jizzcraft-media
 ```
 
@@ -60,3 +61,10 @@ This proves compilation, not behaviour. The CI `windows` job is the authority.
 `packaging\windows\build.ps1` builds the portable tree and, when Inno Setup's
 `ISCC.exe` is found, the installer. The GStreamer MSVC runtime and devel
 packages and `pkgconfiglite` are the prerequisites (the CI job shows how).
+
+**NASM and Perl are required by default**, not only for the network build: the
+library is encrypted with SQLCipher, and every build compiles its vendored
+OpenSSL, which needs NASM (assembly) and Perl (its configure step; Strawberry
+Perl, or the one bundled with Git for Windows, works). Install NASM
+(`choco install nasm`) and put it on `PATH` before `cargo build`; the CI job
+uses `ilammy/setup-nasm`.

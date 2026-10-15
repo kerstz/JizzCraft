@@ -218,6 +218,31 @@ install_deps() {
     fi
 }
 
+build_tools_hint() {
+    # build_tools_hint FAMILY: the command that installs a C compiler, make and
+    # perl (the vendored OpenSSL under SQLCipher is configured with perl).
+    case "$1" in
+        arch) echo "pacman -S --needed base-devel perl" ;;
+        debian) echo "apt-get install -y build-essential perl" ;;
+        fedora) echo "dnf install -y gcc make perl" ;;
+        suse) echo "zypper install gcc make perl" ;;
+        *) echo "install a C compiler (cc), make and perl with your package manager" ;;
+    esac
+}
+
+check_source_tools() {
+    # check_source_tools FAMILY: --from-source needs cargo and the C toolchain
+    # that SQLCipher's vendored OpenSSL is built with.
+    have cargo || die "--from-source needs cargo (https://rustup.rs)"
+    missing=""
+    if ! have "${CC:-cc}" && ! have gcc && ! have clang; then missing="$missing cc"; fi
+    have make || missing="$missing make"
+    have perl || missing="$missing perl"
+    if [ -n "$missing" ]; then
+        die "--from-source needs$missing (SQLCipher builds its own OpenSSL). Install them with: $(build_tools_hint "$1")"
+    fi
+}
+
 browser_fallback() {
     case "$1" in
         arch) echo "webkitgtk-6.0 bubblewrap" ;;
@@ -433,7 +458,7 @@ main() {
     if [ "$EDITION" = online ]; then variant=jizzcraft-online; fi
 
     if [ "$FROM_SOURCE" = 1 ]; then
-        have cargo || die "--from-source needs cargo (https://rustup.rs)"
+        check_source_tools "$fam"
         [ -n "$VERSION" ] || VERSION=$(latest_version)
         say "Building $VERSION from source"
         if [ "$DRY" != 1 ]; then
