@@ -332,6 +332,8 @@ fn verify(
 /// Result of the locked copy phase, used to decide cleanup.
 struct Staged {
     /// Connection that still holds the exclusive lock on the source.
+    /// Only read off Windows, where the lock is dropped before the rename.
+    #[cfg_attr(windows, allow(dead_code))]
     lock: Connection,
 }
 
