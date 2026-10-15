@@ -364,7 +364,7 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 - Ratings, hidden flags, history and markers live only in the library database. No sidecar files are written, and exports leave out names and history unless you ask.
 - Watch history can be paused, cleared (and truncated out of the WAL file) or hidden in the UI; the boss key hides it too.
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
-- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are **not encrypted** today. An encrypted vault is in progress (issue #13, [`docs/vault.md`](docs/vault.md)): the key wrapping, the conversion engine and crash recovery are written and tested, but nothing in the app calls them, so it is **not delivered**; until it ships, use full-disk encryption if the library must be protected.
+- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are **not encrypted** today. An encrypted vault is in progress (issue #13, [`docs/vault.md`](docs/vault.md)): the key wrapping, the conversion engine, crash recovery and the command line (`jizzcraft-cli vault enable|disable|change-passphrase|verify|status`) are written and tested, but the desktop app has no settings page or lock screen for it yet, so it is **not delivered** as a feature; until it ships in the app, use full-disk encryption if the library must be protected.
 
 ## The Online edition
 
@@ -406,7 +406,7 @@ What it exposes: your IP is visible to the indexers you configure, to BitTorrent
 
 ## Roadmap
 
-- Player and library: YUV to RGB in a shader, embedded subtitles and an audio-track picker for local files, perceptual-hash duplicates, file watching, encrypted vault (in progress, not delivered: the conversion engine exists but nothing in the app calls it), sandboxed decoding.
+- Player and library: YUV to RGB in a shader, embedded subtitles and an audio-track picker for local files, perceptual-hash duplicates, file watching, encrypted vault (in progress: usable from the CLI, no desktop UI yet), sandboxed decoding.
 - Distribution and validation: AUR packages, Flatpak, AppImage, and real-hardware runs on Windows and macOS.
 
 The full list, including what is explicitly not planned, is in [`ROADMAP.md`](ROADMAP.md).

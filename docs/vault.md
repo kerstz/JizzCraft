@@ -1,7 +1,8 @@
 # Encrypted vault (issue #13)
 
-**Status: in progress, not delivered.** Nothing is encrypted today. The library
-database and the thumbnail cache are stored in clear, exactly as before. This
+**Status: in progress, not delivered in the app.** A library is encrypted only
+if you run `jizzcraft-cli vault enable`; otherwise the library database and the
+thumbnail cache are stored in clear, exactly as before. This
 page describes the design being built so that the promise is written down
 before the code exists, and records what each step has actually shipped.
 
@@ -13,12 +14,13 @@ before the code exists, and records what each step has actually shipped.
 | 3 | Opening the database with a key | done |
 | 4 | Plain to encrypted conversion, crash recovery (engine only) | done |
 | 5 | Encrypted thumbnails and previews | done |
-| 6 | CLI commands | not started |
+| 6 | CLI commands, canary test | done |
 | 7 | Settings UI, lock screen, auto-lock | not started |
 | 8 | Perf in vault mode, packaging smoke tests | not started |
 
-Until steps 5 to 7 are done there is no way to turn the vault on, and no part of
-your library is protected by it.
+Until step 7 is done the desktop app has no way to turn the vault on. The
+command line can (step 6, below); nothing is encrypted unless you run
+`jizzcraft-cli vault enable`.
 
 ## Threat model
 
@@ -261,3 +263,59 @@ Limits and honest caveats:
 - Tests inject a fail point after every step and a `kill -9` of a converting
   child process; they check that only "all clear with every row" or "all
   encrypted with every row" can result, including the FTS content.
+
+## Step 6: command line
+
+```sh
+jizzcraft-cli vault status                       # never asks, works locked
+jizzcraft-cli vault enable                       # warning, passphrase twice
+jizzcraft-cli vault enable --passphrase-stdin --i-understand-no-recovery < pass.txt
+jizzcraft-cli vault change-passphrase --passphrase-fd 3 --new-passphrase-fd 4 3<old 4<new
+jizzcraft-cli vault disable
+jizzcraft-cli vault verify
+jizzcraft-cli --passphrase-stdin stats < pass.txt  # any command on an encrypted library
+```
+
+- **Secret input.** A terminal (no echo, asked twice for a new passphrase),
+  `--passphrase-fd N` or `--passphrase-stdin` (read to the end, exactly one
+  trailing `\n` or `\r\n` removed, nothing else trimmed, 4 KiB at most), and
+  `--new-passphrase-fd N` for `enable` and `change-passphrase` (`enable` also
+  accepts the primary source as the new passphrase). There is no argument and
+  no environment variable for a secret. A new passphrase has at least 12
+  characters.
+- **`enable`** prints the permanent-loss warning. Without a terminal it needs
+  `--i-understand-no-recovery`; on a terminal you type `YES`.
+- **Exit codes.** `3` wrong passphrase; `4` the library is encrypted and no
+  passphrase can be asked (not a terminal, no descriptor); `5` header missing,
+  damaged, unsupported or orphaned (`HeaderOrphan`); other failures are `1`.
+- **Every command** opens the library through `LibraryOpener` after
+  `vault_convert::recover`. In vault mode `thumbs` builds the cache through
+  `ThumbService::with_keys`, and `cache.prune` (`run cache.prune`) checks
+  `vault-thumbs` against keyed names with `prune_store` and `live_keys_for`.
+- **Registry.** Only `vault.status` and `vault.lock` exist and neither takes a
+  secret. Command arguments (`run`, `--cmd`) containing a field whose name has
+  `passphrase` or `password`, or is `secret` or `dek`, are refused with a fixed
+  message. In the one-shot CLI `vault.lock` answers `locked: false`: the
+  process ends after the command.
+- **`doctor --report`** prints `vault: on|off|locked`. An encrypted library
+  without `--passphrase-fd`/`--passphrase-stdin` is `locked` and the report
+  carries no schema version or counts.
+
+### Canary test
+
+`apps/jizzcraft-cli/tests/vault.rs` builds a library with a synthetic image
+`zz-canary-7f3a.png`, a tag, a category, a marker note and a playlist with
+unique names, scans it, builds thumbnails, runs `vault enable` with the
+passphrase `CANARY-pass-1234`, keeps working (late tag, rescan, backup,
+thumbnails, prune), then reads every file under the home directory (data,
+cache, state, `-wal`, `-journal`, backups) and every captured stdout and
+stderr for the names, the passphrase and the database key in hex and raw. A
+positive control proves the scanner finds the name in the clear library.
+Documented exceptions: `config/config.json`, and the media file (outside the
+home). Output of commands that print data on purpose (`search`, `tag create`)
+is only checked for the passphrase and the key.
+
+Limits: the test checks the database key, not the data key or thumbnail
+sub-keys (no accessor); it does not look at UTF-16 or compressed encodings of
+the names. `jizzcraft-cli thumbs` builds image thumbnails only (no GStreamer
+in the CLI).

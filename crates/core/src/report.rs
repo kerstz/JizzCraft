@@ -25,6 +25,15 @@ pub const CONFIG_FLAGS: &[&str] = &[
 /// Interface languages that may be reported verbatim.
 const LANGS: &[&str] = &["en", "fr", "es", "de", "it", "pt"];
 
+/// Vault state as the report may say it: a word, never a count or a name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultState {
+    Off,
+    On,
+    /// Encrypted and not opened: the report then carries no library statistics.
+    Locked,
+}
+
 /// What the caller collects. No field holds user text.
 #[derive(Clone, Debug, Default)]
 pub struct Input {
@@ -39,6 +48,8 @@ pub struct Input {
     pub schema_version: Option<i64>,
     pub items: Option<u64>,
     pub folders: Option<u64>,
+    /// `None` when unknown (printed as `unknown`).
+    pub vault: Option<VaultState>,
     /// Parsed `config.json`, if any. Only [`CONFIG_FLAGS`] and `language` are read.
     pub config: Option<Value>,
 }
@@ -102,6 +113,16 @@ pub fn render(i: &Input) -> String {
     line("schema_version", opt(i.schema_version));
     line("items", opt(i.items));
     line("folders", opt(i.folders));
+    line(
+        "vault",
+        match i.vault {
+            Some(VaultState::Off) => "off",
+            Some(VaultState::On) => "on",
+            Some(VaultState::Locked) => "locked",
+            None => "unknown",
+        }
+        .into(),
+    );
     let cfg = i.config.as_ref();
     for k in CONFIG_FLAGS {
         let v = cfg.and_then(|c| c.get(*k)).and_then(Value::as_bool);

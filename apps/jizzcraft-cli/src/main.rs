@@ -3,16 +3,22 @@
 //! Doc comments on the clap types below are `--help` text: keep jokes out of
 //! them, the terminal may be on a shared screen.
 
+mod vault_cli;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use jizzcraft_core::{Db, HasLibrary, Registry, paths, register_core};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use vault_cli::{Fail, Sources};
 
 /// Command context: the library, plus the network host in the opt-in build.
 // No mouse, no thumbnails, no judgement: the CLI only ever sees ids.
 struct CliCtx {
     db: Db,
+    /// Set when the library is open in vault mode.
+    thumb_keys: Option<Arc<jizzcraft_core::vault::ThumbKeys>>,
     #[cfg(feature = "network")]
     fetch: jizzcraft_fetch::commands::FetchHost,
 }
@@ -20,6 +26,10 @@ struct CliCtx {
 impl HasLibrary for CliCtx {
     fn db(&mut self) -> &mut Db {
         &mut self.db
+    }
+
+    fn thumb_keys(&self) -> Option<Arc<jizzcraft_core::vault::ThumbKeys>> {
+        self.thumb_keys.clone()
     }
 }
 
@@ -56,8 +66,30 @@ struct Cli {
     /// Keep database, config and cache under this directory (or $JIZZCRAFT_HOME).
     #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
+    /// Read the vault passphrase from this file descriptor (one trailing
+    /// newline is removed). Never an argument or an environment variable.
+    #[arg(long, global = true, value_name = "N")]
+    passphrase_fd: Option<i32>,
+    /// Read the vault passphrase from standard input (one trailing newline
+    /// is removed).
+    #[arg(long, global = true)]
+    passphrase_stdin: bool,
+    /// New passphrase for `vault enable` and `vault change-passphrase`, from
+    /// this file descriptor.
+    #[arg(long, global = true, value_name = "N")]
+    new_passphrase_fd: Option<i32>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+impl Cli {
+    fn sources(&self) -> Sources {
+        Sources {
+            passphrase_fd: self.passphrase_fd,
+            passphrase_stdin: self.passphrase_stdin,
+            new_passphrase_fd: self.new_passphrase_fd,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -69,12 +101,31 @@ enum GenWhat {
 }
 
 /// `doctor --report`: the redacted support report, from an allow-list.
-fn support_report(db_path: &std::path::Path) -> String {
-    use jizzcraft_core::report::Input;
+///
+/// An encrypted library that is not opened with `--passphrase-fd` or
+/// `--passphrase-stdin` is reported as `vault: locked`, without statistics.
+fn support_report(db_path: &std::path::Path, src: &Sources) -> String {
+    use jizzcraft_core::db::{FileFormat, probe_format};
+    use jizzcraft_core::report::{Input, VaultState};
     let r = jizzcraft_media::doctor::run();
-    let stats = Db::open(db_path)
-        .ok()
-        .map(|db| (db.schema_version().ok(), db.stats().ok()));
+    let encrypted = probe_format(db_path).ok() == Some(FileFormat::Encrypted);
+    let opened = if encrypted && !src.explicit() {
+        None
+    } else {
+        vault_cli::open_library(db_path, src).ok()
+    };
+    let vault = match (&opened, encrypted) {
+        (None, true) => Some(VaultState::Locked),
+        (Some(o), _) => Some(if o.db.is_encrypted() {
+            VaultState::On
+        } else {
+            VaultState::Off
+        }),
+        (None, false) => None,
+    };
+    let stats = opened
+        .as_ref()
+        .map(|o| (o.db.schema_version().ok(), o.db.stats().ok()));
     let input = Input {
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         os: std::env::consts::OS.to_owned(),
@@ -90,6 +141,7 @@ fn support_report(db_path: &std::path::Path) -> String {
         schema_version: stats.as_ref().and_then(|s| s.0),
         items: stats.as_ref().and_then(|s| s.1.as_ref()).map(|s| s.total),
         folders: stats.as_ref().and_then(|s| s.1.as_ref()).map(|s| s.folders),
+        vault,
         config: std::fs::read(paths::config_dir().join("config.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok()),
@@ -125,7 +177,7 @@ fn doctor(cli: &Cli, report: bool) -> ExitCode {
     jizzcraft_media::prepare_bundled_env();
     if report {
         let db = cli.db.clone().unwrap_or_else(paths::db_path);
-        print!("{}", support_report(&db));
+        print!("{}", support_report(&db, &cli.sources()));
         return ExitCode::SUCCESS;
     }
     let r = jizzcraft_media::doctor::run();
@@ -507,6 +559,13 @@ enum Cmd {
     Fav { id: i64 },
     /// Library counters.
     Stats,
+    /// Encrypted vault: status, enable, disable, change-passphrase, verify.
+    Vault {
+        #[command(subcommand)]
+        action: vault_cli::VaultCmd,
+    },
+    /// Build the thumbnail cache for every image (encrypted in vault mode).
+    Thumbs,
     /// List registered commands.
     Commands,
 }
@@ -557,16 +616,16 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             if cli.json {
-                println!("{}", json!({ "error": e }));
+                println!("{}", json!({ "error": e.msg, "code": e.code }));
             } else {
-                eprintln!("error: {e}");
+                eprintln!("error: {}", e.msg);
             }
-            ExitCode::FAILURE
+            ExitCode::from(e.code)
         }
     }
 }
 
-fn run(cli: &Cli) -> Result<(), String> {
+fn run(cli: &Cli) -> Result<(), Fail> {
     let mut reg: Registry<CliCtx> = Registry::new();
     register_core(&mut reg);
     jizzcraft_media::integrity::register_media(&mut reg);
@@ -599,8 +658,16 @@ fn run(cli: &Cli) -> Result<(), String> {
     }
 
     let db_path = cli.db.clone().unwrap_or_else(paths::db_path);
+    let sources = cli.sources();
+    if let Cmd::Vault { action } = &cli.cmd {
+        return vault_cli::run(action, &db_path, &sources, cli.json);
+    }
+    // Every library open goes through `LibraryOpener` with the vault key when
+    // the file is encrypted (see `vault_cli::open_library`).
+    let opened = vault_cli::open_library(&db_path, &sources)?;
     let mut db = CliCtx {
-        db: Db::open(&db_path).map_err(|e| e.to_string())?,
+        db: opened.db,
+        thumb_keys: opened.thumb_keys,
         #[cfg(feature = "network")]
         fetch: jizzcraft_fetch::commands::FetchHost::new(
             jizzcraft_fetch::FetchConfig::default_path(),
@@ -613,7 +680,19 @@ fn run(cli: &Cli) -> Result<(), String> {
             json!({ "path": dir.to_string_lossy() }),
         ),
         // Handled in `main` before the registry exists.
-        Cmd::Doctor { .. } | Cmd::Gen { .. } => return Ok(()),
+        Cmd::Doctor { .. } | Cmd::Gen { .. } | Cmd::Vault { .. } => return Ok(()),
+        Cmd::Thumbs => {
+            let v = build_thumbs(&mut db)?;
+            if cli.json {
+                println!("{v}");
+            } else {
+                println!(
+                    "thumbnails: {} images, {} built or cached, {} failed",
+                    v["images"], v["ok"], v["failed"]
+                );
+            }
+            return Ok(());
+        }
         Cmd::Rescan => ("library.rescan".to_owned(), json!({})),
         Cmd::Search {
             words,
@@ -650,7 +729,7 @@ fn run(cli: &Cli) -> Result<(), String> {
                 uncategorized,
             } = &**q;
             if sort == "position" && playlist.is_none() {
-                return Err("--sort position needs --playlist".to_owned());
+                return Err("--sort position needs --playlist".into());
             }
             let mut a = json!({});
             if let Some(v) = view {
@@ -847,6 +926,44 @@ fn run(cli: &Cli) -> Result<(), String> {
         print_human(&name, &out);
     }
     Ok(())
+}
+
+/// Build the thumbnails of every present image through `ThumbService`, keyed
+/// when the library is open in vault mode. Counts only, never names.
+fn build_thumbs(ctx: &mut CliCtx) -> Result<Value, Fail> {
+    use jizzcraft_core::{Filter, HiddenMode, MediaKind};
+    use jizzcraft_media::service::{Request, ThumbService};
+    let rows = ctx
+        .db
+        .query(&Filter {
+            hidden: HiddenMode::Include,
+            ..Default::default()
+        })
+        .map_err(|e| e.to_string())?;
+    let wanted: Vec<Request> = rows
+        .into_iter()
+        .filter(|m| m.kind == MediaKind::Image && !m.missing)
+        .map(|m| Request {
+            id: m.id,
+            path: m.path,
+            kind: m.kind,
+            size: m.size,
+            mtime: m.mtime,
+            need_meta: false,
+        })
+        .collect();
+    let n = wanted.len();
+    let svc = ThumbService::with_keys(paths::cache_dir(), ctx.thumb_keys.clone(), Arc::new(|| {}));
+    svc.set_wanted(wanted);
+    let (mut ok, mut failed) = (0u64, 0u64);
+    while (ok + failed) < n as u64 {
+        match svc.try_recv() {
+            Some(d) if d.thumb.is_ok() => ok += 1,
+            Some(_) => failed += 1,
+            None => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+    Ok(json!({ "images": n, "ok": ok, "failed": failed }))
 }
 
 fn playlist_call(a: &PlaylistCmd) -> (String, Value) {

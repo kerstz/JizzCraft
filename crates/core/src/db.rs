@@ -509,6 +509,16 @@ pub struct RemoveReport {
 const REMOVE_CHUNK: i64 = 500;
 
 impl Db {
+    /// True when this handle was opened with a vault key.
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    /// File this handle was opened from (`None` for in-memory databases).
+    pub fn file_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     /// Open (and migrate) the library. A database written by a newer build is
     /// refused with `Error::FutureSchema`; use `open_read_only` for that case.
     pub fn open(path: &Path) -> Result<Db> {
