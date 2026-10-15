@@ -66,6 +66,9 @@ pub enum Fail {
     TooLong,
     /// Header missing, damaged, unsupported or orphaned: no prompt helps.
     Header,
+    /// Encrypted, but the key file was not finalised: unlocking again
+    /// finishes the job. Nothing may be deleted.
+    Finish,
     /// Anything else (damaged database, busy, I/O).
     Other,
 }
@@ -79,6 +82,7 @@ impl Fail {
             | VaultError::HeaderOrphan
             | VaultError::UnsupportedVersion
             | VaultError::ParamsOutOfBounds => Fail::Header,
+            VaultError::FinishFailed => Fail::Finish,
             _ => Fail::Other,
         }
     }
@@ -92,6 +96,9 @@ impl Fail {
             Fail::Header => crate::i18n::tr(
                 "The vault header of this library is missing or damaged. \
                  The library cannot be opened and nothing was changed.",
+            ),
+            Fail::Finish => crate::i18n::tr(
+                "Library encrypted, but finalisation failed. Unlock it again; do not delete any file.",
             ),
             Fail::Other => crate::i18n::tr("The library could not be opened."),
         }
@@ -262,6 +269,9 @@ pub enum ConvertOutcome {
     WrongPassphrase,
     /// Another program holds the library: nothing changed.
     Busy,
+    /// Encrypted, but the key file was not finalised: the library is
+    /// encrypted on disk, unlock it again. Never "intact".
+    FinishFailed,
     Failed,
 }
 
@@ -271,6 +281,7 @@ impl ConvertOutcome {
             VaultError::Cancelled => ConvertOutcome::Cancelled,
             VaultError::WrongPassphrase => ConvertOutcome::WrongPassphrase,
             VaultError::Busy => ConvertOutcome::Busy,
+            VaultError::FinishFailed => ConvertOutcome::FinishFailed,
             _ => ConvertOutcome::Failed,
         }
     }
@@ -399,6 +410,8 @@ pub fn convert_blocking(
     };
     // The disk decides which way the library opens now.
     let lib = match (req.kind, ok) {
+        // Encrypted on disk, key not finalised: the lock screen, not a reopen.
+        _ if outcome == ConvertOutcome::FinishFailed => Err(Fail::Finish),
         (ConvertKind::Enable, true) => reopen_unlocked(db_path, &req.pass),
         (ConvertKind::Enable, false) | (ConvertKind::Disable, true) => reopen_plain(db_path),
         (ConvertKind::Change, true) => {
@@ -881,6 +894,11 @@ impl<A: Lockable> Gate<A> {
                 Err(_) => self.after_failed_reopen(),
             },
             Err(Fail::Header) => State::Failed(Fail::Header),
+            Err(Fail::Finish) => {
+                let mut ls = LockScreen::new();
+                ls.error = Some(Fail::Finish);
+                State::Locked(ls)
+            }
             Err(_) => self.after_failed_reopen(),
         };
         self.state = next;
@@ -1695,13 +1713,42 @@ mod tests {
 
     #[test]
     fn fail_text_carries_no_detail() {
-        for f in [Fail::Wrong, Fail::Header, Fail::Other] {
+        for f in [Fail::Wrong, Fail::Header, Fail::Finish, Fail::Other] {
             let t = f.text();
             assert!(!t.contains('/') && !t.contains("library.db"));
         }
         assert_eq!(Fail::from_vault(VaultError::WrongPassphrase), Fail::Wrong);
         assert_eq!(Fail::from_vault(VaultError::HeaderOrphan), Fail::Header);
         assert_eq!(Fail::from_vault(VaultError::DbCorrupt), Fail::Other);
+        assert_eq!(Fail::from_vault(VaultError::FinishFailed), Fail::Finish);
+        assert_eq!(
+            ConvertOutcome::from_vault(VaultError::FinishFailed),
+            ConvertOutcome::FinishFailed
+        );
+        assert!(!Fail::Finish.text().contains("intact"));
+    }
+
+    #[test]
+    fn a_failed_finish_goes_to_the_lock_screen_with_its_own_sentence() {
+        let (_d, path) = plain_library();
+        let mut g = Gate::open_plain(path, fake(false));
+        let (tx, rx) = channel();
+        tx.send(Converted {
+            outcome: ConvertOutcome::FinishFailed,
+            lib: Err(Fail::Finish),
+        })
+        .unwrap();
+        g.state = State::Converting(Converting {
+            phase: ConvPhase::Running(rx),
+            kind: ConvertKind::Enable,
+            cancel: Arc::new(AtomicBool::new(false)),
+            committed: Arc::new(AtomicBool::new(true)),
+        });
+        g.poll_convert(|_, _, _, _, _| unreachable!(), |_| Err("unused".into()));
+        match &g.state {
+            State::Locked(ls) => assert_eq!(ls.error(), Some(Fail::Finish)),
+            _ => panic!("expected the lock screen"),
+        }
     }
 
     // ---- conversion state machine -------------------------------------------

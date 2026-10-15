@@ -1184,6 +1184,10 @@ pub const TABLE: &[(&str, &str)] = &[
         "Die Bibliothek wird von einem anderen Programm verwendet. Nichts wurde geändert.",
     ),
     (
+        "Library encrypted, but finalisation failed. Unlock it again; do not delete any file.",
+        "Bibliothek verschlüsselt, aber der Abschluss ist fehlgeschlagen. Entsperren Sie sie erneut; löschen Sie keine Datei.",
+    ),
+    (
         "The operation failed. Your library is intact.",
         "Der Vorgang ist fehlgeschlagen. Ihre Bibliothek ist unversehrt.",
     ),

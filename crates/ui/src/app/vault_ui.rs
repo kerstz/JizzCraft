@@ -13,7 +13,7 @@
 use super::JizzApp;
 use crate::i18n::{tr, trf};
 use crate::root::{
-    ConvertKind, ConvertOutcome, ConvertRequest, MAX_PASSPHRASE_CHARS, MIN_PASSPHRASE_CHARS,
+    ConvertKind, ConvertOutcome, ConvertRequest, Fail, MAX_PASSPHRASE_CHARS, MIN_PASSPHRASE_CHARS,
     purge_edit_state, secret_buf, too_long,
 };
 use crate::theme::{DANGER, FAINT, MUTED};
@@ -206,6 +206,7 @@ pub fn finished_text(kind: ConvertKind, outcome: ConvertOutcome) -> &'static str
         (ConvertOutcome::Busy, _) => {
             tr("The library is in use by another program. Nothing was changed.")
         }
+        (ConvertOutcome::FinishFailed, _) => Fail::Finish.text(),
         (ConvertOutcome::Failed, _) => tr("The operation failed. Your library is intact."),
     }
 }
@@ -816,12 +817,22 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_finish_never_says_intact() {
+        for k in [Enable, Disable, Change] {
+            let t = finished_text(k, ConvertOutcome::FinishFailed);
+            assert!(!t.contains("intact"));
+            assert_ne!(t, finished_text(k, ConvertOutcome::Failed));
+        }
+    }
+
+    #[test]
     fn one_fixed_sentence_per_outcome() {
         let all = [
             ConvertOutcome::Done,
             ConvertOutcome::Cancelled,
             ConvertOutcome::WrongPassphrase,
             ConvertOutcome::Busy,
+            ConvertOutcome::FinishFailed,
             ConvertOutcome::Failed,
         ];
         for k in [Enable, Disable, Change] {

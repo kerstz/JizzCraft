@@ -22,6 +22,16 @@ fn settings_roundtrip_and_survive_garbage() {
     let back = Config::load();
     assert_eq!(back, c);
 
+    // Private by default on Unix: directory 0700, file 0600.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file = jizzcraft_ui::config::path();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode();
+        assert_eq!(mode(&file) & 0o077, 0);
+        assert_eq!(mode(file.parent().unwrap()) & 0o077, 0);
+    }
+
     // A corrupt file falls back to defaults instead of crashing the app.
     // Forgive, forget, re-default.
     std::fs::write(jizzcraft_ui::config::path(), b"\x00\x01 not json").unwrap();

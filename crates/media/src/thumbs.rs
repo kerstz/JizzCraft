@@ -38,7 +38,7 @@ pub fn load_cached(file: &Path) -> Option<RgbImage> {
 
 pub fn save_cached(file: &Path, img: &RgbImage) -> Result<(), String> {
     let dir = file.parent().ok_or("bad cache path")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("cache dir: {e}"))?;
+    jizzcraft_core::fsutil::create_private_dir_all(dir).map_err(|e| format!("cache dir: {e}"))?;
     let tmp = file.with_extension(format!("tmp{}", std::process::id()));
     {
         let mut out = std::fs::File::create(&tmp).map_err(|e| format!("cache write: {e}"))?;
@@ -169,7 +169,8 @@ impl ThumbStore {
                     .map_err(|e| format!("cache encode: {e}"))?;
                 let sealed = c.seal(id, &jpeg).map_err(|_| "cache encrypt".to_string())?;
                 let dir = file.parent().ok_or("bad cache path")?;
-                std::fs::create_dir_all(dir).map_err(|e| format!("cache dir: {e}"))?;
+                jizzcraft_core::fsutil::create_private_dir_all(dir)
+                    .map_err(|e| format!("cache dir: {e}"))?;
                 let tmp = file.with_extension(format!("tmp{}", std::process::id()));
                 std::fs::write(&tmp, sealed).map_err(|e| format!("cache write: {e}"))?;
                 jizzcraft_core::fsutil::replace(&tmp, file)
@@ -609,5 +610,23 @@ mod prune_tests {
             (1, 1, 2, 200)
         );
         assert!(!gone.exists() && !a.exists() && b.exists() && c.exists());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_dir_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn cache_directories_are_created_private() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("cache");
+        let f = thumb_file(&root, "aa000000000000000000000000000001");
+        save_cached(&f, &RgbImage::new(2, 2)).unwrap();
+        for dir in [f.parent().unwrap(), root.as_path()] {
+            let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{dir:?} is {mode:o}");
+        }
     }
 }

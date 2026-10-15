@@ -467,7 +467,10 @@ Open(app) --confirm--> Quiesce(app) --jobs ended, app dropped--> Running(worker)
 5. One toast at the end: "Library encrypted.", "Encryption turned off.",
    "Passphrase changed.", "Cancelled. Nothing was changed.", "Wrong passphrase.
    Nothing was changed.", "The library is in use by another program. Nothing
-   was changed." or "The operation failed. Your library is intact." No name, no
+   was changed.", "The operation failed. Your library is intact." or, when the
+   library is encrypted but its key file was not finalised (`FinishFailed`),
+   "Library encrypted, but finalisation failed. Unlock it again; do not delete
+   any file." (never "intact"; the root then shows the lock screen). No name, no
    path, no engine error text.
 6. If the library cannot be opened again the root shows the lock screen when the
    disk is encrypted (the passphrase may still work) and the error screen

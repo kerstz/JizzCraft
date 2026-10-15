@@ -1190,6 +1190,10 @@ pub const TABLE: &[(&str, &str)] = &[
         "La libreria è in uso da un altro programma. Non è stato modificato nulla.",
     ),
     (
+        "Library encrypted, but finalisation failed. Unlock it again; do not delete any file.",
+        "Libreria cifrata, ma la finalizzazione non è riuscita. Sbloccala di nuovo; non eliminare nessun file.",
+    ),
+    (
         "The operation failed. Your library is intact.",
         "Operazione non riuscita. La tua libreria è intatta.",
     ),

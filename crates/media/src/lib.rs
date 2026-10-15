@@ -97,7 +97,7 @@ pub fn prepare_bundled_env() {
         return;
     };
     let cache = jizzcraft_core::paths::cache_dir();
-    let _ = std::fs::create_dir_all(&cache);
+    let _ = jizzcraft_core::fsutil::create_private_dir_all(&cache);
     for (k, v) in bundled_env(&dir, &cache) {
         // SAFETY: called from `main` before any other thread exists.
         unsafe {

@@ -11,6 +11,10 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault: a conversion that ends encrypted but with the key file not
+  finalised (`FinishFailed`) now has its own sentence and returns to the lock
+  screen; the app no longer says "Your library is intact" then. Cache and
+  config directories are created 0700 and `config.json` 0600 on Unix.
 - Encrypted vault, audit round 2, desktop app. The thumbnail and preview
   workers were detached: a decode in flight could write a clear thumbnail
   after the encryption's cache clean-up, and their keys outlived the "Locked"

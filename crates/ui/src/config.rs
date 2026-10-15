@@ -119,15 +119,21 @@ impl Config {
     pub fn save(&self) {
         let p = path();
         if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            let _ = jizzcraft_core::fsutil::create_private_dir_all(dir);
         }
         // Temp file then rename: a crash mid-write must not reset settings
         // (including the age confirmation).
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
             let tmp = p.with_extension("json.tmp");
-            if std::fs::write(&tmp, bytes).is_ok()
-                && jizzcraft_core::fsutil::replace(&tmp, &p).is_err()
-            {
+            // 0600 on Unix: the file holds the age confirmation and paths.
+            let written = jizzcraft_core::fsutil::private_file_options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
+                .is_ok();
+            if written && jizzcraft_core::fsutil::replace(&tmp, &p).is_err() {
                 let _ = std::fs::remove_file(&tmp);
             }
         }
