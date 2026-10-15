@@ -41,6 +41,29 @@ and screenshots are synthetic (`cargo xtask fixtures`). Pull requests that add
 source, site or indexer presets, catalogs or scrapers will be closed. See
 [`LEGAL.md`](LEGAL.md) and the [code of conduct](CODE_OF_CONDUCT.md).
 
+## Your first contribution
+
+Look for issues labelled
+[`good first issue`](https://github.com/kerstz/JizzCraft/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22):
+each one says where to look and how to prove it works. Comment on the issue
+before you start so two people do not do the same work. Good places to begin
+without knowing the whole code base:
+
+- **Translations**: the interface strings for French, Spanish, German, Italian
+  and Portuguese live in `crates/ui/src/i18n.rs`; a native speaker's proofreading
+  is welcome.
+- **Packaging**: the Arch, Fedora, Flatpak and AppImage recipes in
+  `packaging/` are written but not built by CI. Building one on a real system
+  and reporting what broke is a contribution.
+- **Real hardware**: Windows and macOS builds have never run on a real
+  machine. A `jizzcraft-cli doctor --report` from one is useful (it contains
+  no names, paths or URLs).
+- **Docs**: anything in `docs/` that was unclear to you the first time.
+
+You do not need any real media to work on JizzCraft: `cargo xtask fixtures`
+generates gradients, patterns and test videos, and
+`cargo run --release -p jizzcraft -- --import fixtures` opens them.
+
 ## Before you open a pull request
 
 ```sh

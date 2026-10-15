@@ -1,0 +1,44 @@
+name: Good first issue (maintainers)
+description: A small, self-contained task for a first contribution. Maintainers use this to file starter tasks.
+title: "starter: "
+labels: ["good first issue", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A good first issue fits in one pull request, touches one area, and says how to check it.
+        No real media, file names, paths, URLs or keys here: use `cargo xtask fixtures`.
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Edition
+      options: ["Both", "Offline only", "Online only"]
+    validations: {required: true}
+  - type: textarea
+    id: task
+    attributes:
+      label: The task
+      description: What should change, in two or three sentences.
+    validations: {required: true}
+  - type: textarea
+    id: where
+    attributes:
+      label: Where to look
+      description: Files, functions or commands to start from (for example `crates/ui/src/keys.rs`, `library.rescan`).
+    validations: {required: true}
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The test to add or the command to run that proves it works.
+      placeholder: |
+        - `cargo test -p jizzcraft-core` passes with a new test for ...
+        - `cargo xtask screenshots` shows ...
+    validations: {required: true}
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Rules
+      options:
+        - label: The task needs no network code in the Offline edition, never writes to user media, and keeps the schema append-only (see AGENTS.md).
+          required: true
