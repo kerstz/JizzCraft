@@ -337,7 +337,19 @@ fn main() -> eframe::Result {
         .as_ref()
         .map(|c| c.disguise)
         .unwrap_or_else(|| Config::load().disguise);
-    let identity = jizzcraft_ui::identity::launch_identity(saved, disguise_flag);
+    // An encrypted library starts with a neutral window (title, icon, app ID):
+    // the lock screen must not carry the brand, and the app ID cannot change
+    // once the window exists. A header file next to the database counts too
+    // (a conversion may be pending; `Root` recovers it).
+    let db_for_probe = opts
+        .db_path
+        .clone()
+        .unwrap_or_else(jizzcraft_core::paths::db_path);
+    let encrypted = matches!(
+        jizzcraft_core::db::probe_format(&db_for_probe),
+        Ok(jizzcraft_core::db::FileFormat::Encrypted)
+    ) || jizzcraft_core::vault::header_path(&db_for_probe).exists();
+    let identity = jizzcraft_ui::identity::launch_identity_for(saved, disguise_flag, encrypted);
     opts.disguised = identity.disguised;
     set_taskbar_id(identity.app_id);
     // Flag wins over the environment; `auto` leaves wgpu's defaults alone.
@@ -402,7 +414,7 @@ fn set_taskbar_id(_: &str) {}
 
 fn egui_viewport(id: &jizzcraft_ui::identity::Identity) -> eframe::egui::ViewportBuilder {
     // Window and taskbar icon: the neutral one while disguised.
-    let png: &[u8] = if id.disguised {
+    let png: &[u8] = if id.disguised || id.neutral_shell {
         include_bytes!("../../../assets/icons/viewer-256.png")
     } else {
         include_bytes!("../../../assets/icons/jizzcraft-512.png")
