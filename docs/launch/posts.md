@@ -14,6 +14,14 @@ docs; keep it that way if you edit them. Before posting anywhere:
 - Stay in the thread for the first few hours and answer questions; that matters
   more than the wording.
 - Space the posts out (one or two a day), and do not ask for stars or upvotes.
+- Each sub gets one extra variant, written for its main audience:
+  **newcomer angle** (people who want to install and use it) links
+  [getting-started.md](../getting-started.md); **builder angle** (people who
+  judge the engineering) links [internals.md](../internals.md). Post the
+  original *or* the variant, not both. The variants are drafts of the same
+  facts; they claim nothing the originals do not.
+- Ready-made [first replies](#first-replies) to the five questions most
+  likely to come up are at the end.
 
 Repository: https://github.com/kerstz/JizzCraft
 
@@ -49,6 +57,26 @@ true and it is the joke.
 > work. The app itself, less so.
 >
 > https://github.com/kerstz/JizzCraft
+
+**Variant, newcomer angle** (the sub is Linux users, not necessarily
+developers; lead with "you can install this in one line"):
+
+> Follow-up to the "Not another one" thread: someone had to.
+>
+> JizzCraft is a desktop app for the *personal* folder. You point it at a
+> folder, it shows everything as a searchable grid, plays it, and never moves
+> or renames a single file. Install is one line in a terminal; it asks before
+> it installs anything with `sudo`, and `--uninstall` leaves your library
+> alone.
+>
+> - `Ctrl+Shift+H`: pause, mute, blur, retitle the window "Viewer", minimize
+> - left-hand mode: the whole thing works around WASD
+> - the default version has no internet code at all; a test fails the build
+>   if any gets in
+>
+> Alpha, Linux only for real. A step-by-step guide with a FAQ (where your
+> data is, how to uninstall, what to do if a video does not play):
+> https://github.com/kerstz/JizzCraft/blob/main/docs/getting-started.md
 
 ---
 
@@ -97,6 +125,33 @@ that week).
 > Code review of the threading and the guard is very welcome.
 > https://github.com/kerstz/JizzCraft
 
+**Variant, builder angle** (the sub judges code; lead with where to look and
+how to check it yourself):
+
+> JizzCraft 0.2 is a desktop media library and player for local adult
+> collections (18+; repo, fixtures and screenshots are synthetic and SFW).
+> If you only have ten minutes, these are the places worth reviewing:
+>
+> - `crates/core/tests/offline_deps.rs`: `cargo tree` on the default build
+>   must not contain an HTTP, TLS, async-runtime or BitTorrent crate; a
+>   positive control checks that the network build does link librqbit;
+>   `openssl-sys` is allowed only under `libsqlite3-sys` (SQLCipher).
+> - `crates/media/src/guard.rs` and `crates/media/tests/network.rs`: network
+>   elements removed from the process's GStreamer registry, every pipeline
+>   watched, and a local listener that must count zero connections from the
+>   player, thumbnailer, prober, previewer and integrity checker.
+> - `crates/core/src/commands.rs`: one registry of
+>   `fn(&mut C, Value) -> Result<Value>` commands behind the menus, the key
+>   table, the JSON CLI and `--cmd`.
+> - `crates/media/src/player.rs`: a control thread owns GStreamer, egui reads
+>   a one-slot mailbox; no async runtime outside the opt-in network crate.
+>
+> Everything CI runs can be run locally; the commands are in
+> `docs/internals.md`. Weak spots stated up front: CPU colour conversion
+> (3–6× `gst-play-1.0`), GStreamer parses imports without a sandbox, Linux
+> is the only platform anyone has run.
+> https://github.com/kerstz/JizzCraft/blob/main/docs/internals.md
+
 ---
 
 ## r/SideProject
@@ -123,6 +178,24 @@ that week).
 > Feedback on the first-run experience is what I need most.
 > https://github.com/kerstz/JizzCraft
 
+**Variant, newcomer angle** (the sub is makers and curious users; show the
+first five minutes):
+
+> What the first five minutes look like:
+>
+> 1. One line in a terminal installs it for your user only. It asks which
+>    edition (Enter = Offline, no internet code) and asks before installing
+>    the video codecs it needs.
+> 2. First start: an 18+ check, then a short tour you can skip: add a
+>    folder, pick privacy options (discreet mode, blur until hover, a
+>    neutral "Viewer" name), and a check that your machine can play video.
+> 3. Arrows to browse, `/` to search, `Alt+1`–`Alt+5` to rate, `V` to sort
+>    new imports one by one, `Ctrl+Shift+H` when someone walks in.
+>
+> Your files are never moved or changed; ratings and history live in one
+> local file. Alpha, Linux-tested. The guide I would like feedback on:
+> https://github.com/kerstz/JizzCraft/blob/main/docs/getting-started.md
+
 ---
 
 ## r/coolgithubprojects
@@ -138,6 +211,15 @@ language tag in the title.
 > files, full-text search, ratings, triage, markers and A-B loop, boss key and
 > discreet mode, JSON CLI. Alpha, Linux-tested; Windows/macOS experimental.
 > The GIF is rendered by the app from synthetic test media.
+
+**Variant, builder angle** (the sub browses repositories; one line on what
+makes this repo worth opening):
+
+> Native Rust app (egui + GStreamer + SQLite). "Offline" is a build property
+> checked by tests (`cargo tree` on the default build, zero-connection tests
+> on every decode path), and every guarantee in the README links the test
+> that enforces it. Alpha, Linux-tested. Architecture and how to run the CI
+> locally: `docs/internals.md`.
 
 ---
 
@@ -180,3 +262,109 @@ with the privacy engineering and be matter-of-fact about the subject.
 >
 > Written in Rust (egui/wgpu, GStreamer, SQLCipher). MIT/Apache-2.0. The demo
 > GIF is rendered by the app from synthetic test patterns.
+
+**Variant first comment, builder angle** (HN readers will want to verify, not
+be told; give them the files and the commands):
+
+> Author here. The claims in the README each link the test that enforces
+> them, so you do not have to take my word for any of it:
+>
+> - no network crate in the default build:
+>   `crates/core/tests/offline_deps.rs` (`cargo tree`, with a positive
+>   control on the network build);
+> - zero connections from every GStreamer path, fed disguised HLS/DASH
+>   playlists: `crates/media/tests/network.rs`;
+> - media never modified: `engine_never_touches_media` in
+>   `crates/core/tests/portability.rs`;
+> - in the opt-in network build, the proxy kill switch means zero
+>   connections: e2e scenario s14 in `tests/e2e/tests/scenarios.rs`.
+>
+> What is *not* covered is written down too (`docs/audit-untested.md`), and
+> every CI job has a local command in `docs/internals.md`. Known limits:
+> alpha, Linux only on real hardware, GStreamer parses imports unsandboxed,
+> CPU colour conversion. Questions about the threat model welcome.
+
+---
+
+## First replies
+
+Draft answers to the five questions most likely to come up, whatever the
+sub. Adapt the tone, keep the facts. Each one says what JizzCraft does, what
+it does not, and where to check. When comparing with another project, say
+what it is good at and do not guess at what it lacks; if you are not sure,
+link its docs instead.
+
+### "Why not Stash / Jellyfin?"
+
+> Both are good at what they do, and if they fit you, use them. They are
+> servers you run and then use through a web interface. Stash has scrapers
+> and plugins (installed from package sources) and can identify scenes
+> against stash-box for metadata; Jellyfin is a general media server with a
+> plugin catalog and metadata providers.
+>
+> JizzCraft is a different shape: one desktop app, no server, no web UI, no
+> account, and a default build that contains no network code at all (a test
+> checks the dependency tree). It does not fetch metadata and does not
+> stream to other devices; it indexes your folders in place, never writes to
+> them, and is keyboard-first with a boss key and discreet modes. If you
+> want metadata from the web or playback on other devices, it is the wrong
+> tool.
+
+Sources for the comparison: their own docs, summarised with dates in
+[research/turnkey-landscape-2026-10.md](../research/turnkey-landscape-2026-10.md).
+Do not add security comparisons; they age badly and read as dunking.
+
+### "Is it safe?"
+
+> Depends on safe from what, so here is the honest split.
+>
+> Checked by tests on every change: the default build has no network crate,
+> GStreamer paths open zero connections even on disguised playlists, and
+> the engine never modifies, moves or deletes your media (it hashes a tree
+> before and after every command). Logs carry opaque tags instead of file
+> names unless you set `JIZZCRAFT_DEBUG=1`.
+>
+> Not protected: the library database and thumbnails are in clear unless
+> you turn on the encrypted vault, which is alpha and has no recovery.
+> GStreamer parses imported videos without a sandbox, like any media
+> player. The age gate, boss key and discreet mode are conveniences, not
+> security boundaries. It is alpha software.
+>
+> Scope and private reporting: SECURITY.md. Guarantees with their tests:
+> docs/internals.md.
+
+### "Windows?"
+
+> It compiles, and CI builds, lints, tests and screenshots it with a
+> software renderer, but nobody has run it on a real Windows machine yet.
+> The portable zip and installer are experimental and can be missing from a
+> release when that job fails. If you try it, a `jizzcraft-cli doctor
+> --report` in issue #14 helps a lot (it contains no names, paths or URLs).
+> Notes: docs/windows.md.
+
+### "Why Rust?"
+
+> Mostly because of what it let me check rather than promise. The network
+> code sits behind a Cargo feature, so the Offline build does not contain
+> it at all, and `cargo tree` turns "no network" into a test. Threads and
+> channels keep GStreamer off the UI thread without an async runtime.
+>
+> To be fair about it: "written in Rust" covers this repository only. Video
+> decoding is the system's GStreamer and the database is SQLCipher with a
+> vendored OpenSSL, all C.
+
+### "Really no network at all?"
+
+> In the default (Offline) build: no HTTP, TLS, socket-library, async
+> runtime or BitTorrent crate in the dependency tree (test:
+> `crates/core/tests/offline_deps.rs`), GStreamer's network elements
+> removed from the app's registry, and a test that counts zero connections
+> from the player, thumbnails, probes, previews and integrity checks.
+> No update checks, no telemetry.
+>
+> The honest footnotes: the installer downloads from GitHub and your
+> package manager downloads codecs; files on a network mount are read
+> through your OS like any file; `--bench-gst-play` runs the external
+> `gst-play-1.0`, which the guard does not cover; the accessibility layer
+> talks to the local session bus (not the network). The separate Online
+> edition does connect, only after you act, to sources you configure.
