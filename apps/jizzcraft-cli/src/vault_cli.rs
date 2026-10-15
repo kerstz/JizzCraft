@@ -390,6 +390,12 @@ pub fn run(cmd: &VaultCmd, db_path: &Path, src: &Sources, json_out: bool) -> Res
             let pass = needed(src, db_path)?;
             let key = vault_convert::unlock_library(db_path, &pass).map_err(from_vault)?;
             let o = open_with_key(db_path, &key)?;
+            o.db.cipher_integrity_check().map_err(|_| {
+                Fail::new(
+                    1,
+                    "the encrypted library failed its page authentication check",
+                )
+            })?;
             o.db.quick_check()
                 .map_err(|_| Fail::new(1, "the encrypted library failed its integrity check"))?;
             let items = o.db.stats().map_err(from_core)?.total;

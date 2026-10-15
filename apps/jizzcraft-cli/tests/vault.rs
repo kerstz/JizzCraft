@@ -9,9 +9,12 @@
 //! home and the vault never touches media). Output of commands that print
 //! library data on purpose (`tag create`, `search`, ...) is not searched for
 //! names, only for the passphrase and the key.
-#![cfg(unix)]
+//!
+//! Runs on every platform. Only `--passphrase-fd` (a Unix descriptor) is
+//! exercised under `cfg(unix)`; everything else goes through stdin.
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -41,21 +44,10 @@ impl Run {
     }
 }
 
-/// Run the CLI with `stdin` bytes and optionally a pipe on fd 3.
-fn cli(home: &Path, args: &[&str], stdin: Option<&str>, fd3: Option<&str>) -> Run {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_jizzcraft-cli"));
-    c.arg("--home")
-        .arg(home)
-        .args(args)
-        .env_remove("JIZZCRAFT_DB")
-        .env_remove("JIZZCRAFT_HOME")
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+/// Give the child a pipe holding `data` on descriptor 3. Returns the read end
+/// to close in the parent after the spawn.
+#[cfg(unix)]
+fn pipe_on_fd3(c: &mut Command, fd3: Option<&str>) -> Option<i32> {
     let mut fd3_read = None;
     if let Some(data) = fd3 {
         let mut fds = [0i32; 2];
@@ -79,7 +71,30 @@ fn cli(home: &Path, args: &[&str], stdin: Option<&str>, fd3: Option<&str>) -> Ru
             });
         }
     }
+    fd3_read
+}
+
+/// Run the CLI with `stdin` bytes and optionally a pipe on fd 3.
+fn cli(home: &Path, args: &[&str], stdin: Option<&str>, fd3: Option<&str>) -> Run {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_jizzcraft-cli"));
+    c.arg("--home")
+        .arg(home)
+        .args(args)
+        .env_remove("JIZZCRAFT_DB")
+        .env_remove("JIZZCRAFT_HOME")
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    let fd3_read = pipe_on_fd3(&mut c, fd3);
+    #[cfg(not(unix))]
+    assert!(fd3.is_none(), "fd 3 is a Unix feature");
     let mut child = c.spawn().expect("spawn jizzcraft-cli");
+    #[cfg(unix)]
     if let Some(r) = fd3_read {
         // SAFETY: the parent's copy of the read end is no longer needed.
         unsafe { libc::close(r) };
@@ -157,7 +172,9 @@ fn json_of(r: &Run) -> serde_json::Value {
     serde_json::from_slice(&r.out.stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {}", r.text()))
 }
 
-fn db_key_hex(home: &Path) -> (String, Vec<u8>) {
+/// Every secret key of the library, as raw bytes and lowercase hex: the
+/// database key, the data key (DEK) and the two thumbnail sub-keys.
+fn all_keys(home: &Path) -> Vec<(&'static str, Vec<u8>)> {
     let db = home.join("data").join("library.db");
     let db = if db.exists() {
         db
@@ -170,15 +187,26 @@ fn db_key_hex(home: &Path) -> (String, Vec<u8>) {
             .expect("library.db under home")
     };
     let key = jizzcraft_core::vault_convert::unlock_library(&db, PASS).expect("unlock");
-    let pragma = key.db_key().pragma_value();
-    let hexs: String = pragma.chars().filter(char::is_ascii_hexdigit).collect();
-    // `"x'<64 hex>'"`: the quote/x/quote characters are not hex digits, but
-    // keep only the last 64 to be safe.
-    let hexs = hexs[hexs.len() - 64..].to_owned();
-    let raw: Vec<u8> = (0..32)
-        .map(|i| u8::from_str_radix(&hexs[2 * i..2 * i + 2], 16).unwrap())
-        .collect();
-    (hexs, raw)
+    let thumbs = key.thumb_keys().bytes_for_tests();
+    let raw: [(&'static str, [u8; 32]); 4] = [
+        ("db key", *key.db_key().bytes_for_tests()),
+        ("data key", *key.bytes_for_tests()),
+        ("thumb aead key", *thumbs[0]),
+        ("thumb name key", *thumbs[1]),
+    ];
+    let mut out = Vec::new();
+    for (label, b) in raw {
+        let hexs: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        out.push((label, b.to_vec()));
+        out.push((label, hexs.to_uppercase().into_bytes()));
+        out.push((label, hexs.into_bytes()));
+    }
+    // The keys are distinct, or the test would prove less than it says.
+    let mut seen: Vec<&Vec<u8>> = out.iter().step_by(3).map(|(_, b)| b).collect();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 4);
+    out
 }
 
 #[test]
@@ -306,6 +334,9 @@ fn canary_nothing_readable_after_enable() {
     ] {
         let r = cli(h, &args, Some(&format!("{PASS}\n")), None);
         assert_eq!(r.code(), 0, "{args:?}: {}", r.text());
+        if args.contains(&"doctor") {
+            assert!(r.text().contains("vault: on"), "{}", r.text());
+        }
         checked_outputs.push((args.join(" "), r.text()));
     }
     let backup = h.join("copy.db");
@@ -352,8 +383,7 @@ fn canary_nothing_readable_after_enable() {
     );
 
     // The scan of every byte.
-    let (key_hex, key_raw) = db_key_hex(h);
-    let needles: Vec<(&str, Vec<u8>)> = vec![
+    let mut needles: Vec<(&str, Vec<u8>)> = vec![
         ("file name", FILE.as_bytes().to_vec()),
         ("file stem", b"zz-canary".to_vec()),
         ("tag", TAG.as_bytes().to_vec()),
@@ -362,10 +392,8 @@ fn canary_nothing_readable_after_enable() {
         ("note", NOTE.as_bytes().to_vec()),
         ("playlist", PLAYLIST.as_bytes().to_vec()),
         ("passphrase", PASS.as_bytes().to_vec()),
-        ("key hex", key_hex.as_bytes().to_vec()),
-        ("key hex upper", key_hex.to_uppercase().as_bytes().to_vec()),
-        ("key bytes", key_raw),
     ];
+    needles.extend(all_keys(h));
     let found = leaks(h, &needles);
     assert!(found.is_empty(), "plaintext found on disk: {found:?}");
 
@@ -381,13 +409,66 @@ fn canary_nothing_readable_after_enable() {
     for (label, text) in checked_outputs.iter().chain(all_outputs.iter()) {
         for (what, n) in needles
             .iter()
-            .filter(|(w, _)| w.starts_with("pass") || w.starts_with("key"))
+            .filter(|(w, _)| *w == "passphrase" || w.contains("key"))
         {
             assert!(!contains(text.as_bytes(), n), "{what} leaked in `{label}`");
         }
     }
 }
 
+/// Portable: stdin only (no descriptors), so it runs on Windows too.
+#[test]
+fn stdin_roundtrip_and_exit_codes() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    make_media(lib.path());
+    let h = home.path();
+    json_of(&plain(h, &["--json", "scan", lib.path().to_str().unwrap()]));
+    let before = json_of(&plain(h, &["--json", "stats"]));
+    let pw = format!("{PASS}\n");
+    let flags = [
+        "--passphrase-stdin",
+        "vault",
+        "enable",
+        "--i-understand-no-recovery",
+    ];
+    let en = cli(h, &flags, Some(&pw), None);
+    assert_eq!(en.code(), 0, "{}", en.text());
+    assert_eq!(plain(h, &["stats"]).code(), 4);
+    let w = cli(
+        h,
+        &["--passphrase-stdin", "stats"],
+        Some("not the passphrase\n"),
+        None,
+    );
+    assert_eq!(w.code(), 3, "{}", w.text());
+    let v = cli(
+        h,
+        &["--passphrase-stdin", "vault", "verify"],
+        Some(&pw),
+        None,
+    );
+    assert_eq!(v.code(), 0, "{}", v.text());
+    let rep = cli(
+        h,
+        &["--passphrase-stdin", "doctor", "--report"],
+        Some(&pw),
+        None,
+    );
+    assert!(rep.text().contains("vault: on"), "{}", rep.text());
+    let dis = cli(
+        h,
+        &["--passphrase-stdin", "vault", "disable"],
+        Some(&pw),
+        None,
+    );
+    assert_eq!(dis.code(), 0, "{}", dis.text());
+    let after = json_of(&plain(h, &["--json", "stats"]));
+    assert_eq!(after["total"], before["total"]);
+    assert!(plain(h, &["vault", "status"]).text().contains("vault: off"));
+}
+
+#[cfg(unix)]
 #[test]
 fn enable_disable_roundtrip_and_exit_codes() {
     let home = tempfile::tempdir().unwrap();

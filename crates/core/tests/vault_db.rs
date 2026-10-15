@@ -320,3 +320,24 @@ fn pragmas_hold_in_both_modes() {
         assert!(!ver.is_empty());
     }
 }
+
+#[test]
+fn cipher_integrity_check_passes_and_catches_a_flipped_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let k = key(9);
+    let db = library(dir.path(), Some(&k));
+    db.cipher_integrity_check().expect("intact");
+    drop(db);
+    // Flip a byte deep inside the second page: a bad HMAC, not a bad header.
+    let p = dir.path().join("library.db");
+    let mut b = std::fs::read(&p).unwrap();
+    assert!(b.len() > 8192);
+    b[4096 + 2000] ^= 0xff;
+    std::fs::write(&p, &b).unwrap();
+    let db = LibraryOpener::new(&p, Some(Arc::new(key(9)))).open();
+    // Either opening notices (first page read) or the explicit check does.
+    match db {
+        Err(_) => {}
+        Ok(db) => assert!(db.cipher_integrity_check().is_err()),
+    }
+}

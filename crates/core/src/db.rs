@@ -654,6 +654,27 @@ impl Db {
         }
     }
 
+    /// `PRAGMA cipher_integrity_check`: verifies the HMAC of every page of an
+    /// encrypted database (`Ok` when none is wrong). Slow on a big library:
+    /// run it on a thread with a separate connection. On a clear database the
+    /// pragma reports nothing and this returns `Ok`; the caller decides
+    /// whether that is meaningful (`probe_format`).
+    pub fn cipher_integrity_check(&self) -> std::result::Result<(), String> {
+        let mut st = self
+            .conn
+            .prepare("PRAGMA cipher_integrity_check")
+            .map_err(|e| e.to_string())?;
+        let bad = st
+            .query_map([], |_| Ok(()))
+            .map_err(|e| e.to_string())?
+            .count();
+        if bad == 0 {
+            Ok(())
+        } else {
+            Err(format!("{bad} page(s) failed authentication"))
+        }
+    }
+
     fn migrate(&mut self, path: Option<&Path>) -> Result<()> {
         let current = self.schema_version()?;
         if current > SCHEMA_VERSION {

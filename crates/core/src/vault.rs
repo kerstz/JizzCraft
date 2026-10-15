@@ -162,6 +162,15 @@ impl fmt::Debug for ThumbKeys {
     }
 }
 
+impl ThumbKeys {
+    /// The two raw sub-keys (file encryption, file naming), so an integration
+    /// test can look for them on disk. Never call it in product code.
+    #[doc(hidden)]
+    pub fn bytes_for_tests(&self) -> [Zeroizing<[u8; 32]>; 2] {
+        [Zeroizing::new(self.aead), Zeroizing::new(self.name)]
+    }
+}
+
 impl VaultKey {
     pub fn db_key(&self) -> DbKey {
         DbKey(blake3::derive_key(CTX_DB, &self.0))
@@ -179,6 +188,13 @@ impl VaultKey {
         let mut k = [0u8; 32];
         getrandom::fill(&mut k).map_err(|_| VaultError::Random)?;
         Ok(VaultKey(k))
+    }
+
+    /// The raw data key, so an integration test can look for it on disk.
+    /// Never call it in product code: the key must not leave this module.
+    #[doc(hidden)]
+    pub fn bytes_for_tests(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.0)
     }
 
     /// A key from fixed bytes, for tests of other modules. Never use it for
@@ -202,6 +218,13 @@ impl DbKey {
         }
         s.push_str("'\"");
         s
+    }
+
+    /// The raw database key, so an integration test can look for it on disk.
+    /// Never call it in product code.
+    #[doc(hidden)]
+    pub fn bytes_for_tests(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.0)
     }
 
     #[cfg(test)]
