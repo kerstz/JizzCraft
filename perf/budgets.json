@@ -1,5 +1,5 @@
 {
-  "note": "Wall-clock budgets in milliseconds for a release build on the synthetic 10k library of crates/core/tests/perf.rs. About 10x what a mid laptop measures (floor 100 ms for sub-10 ms operations). Tighten only with data from CI.",
+  "note": "Wall-clock budgets in milliseconds for a release build on the synthetic 10k library of crates/core/tests/perf.rs, for a clear library and (vault_ prefix) an encrypted one. About 10x what a mid laptop measures (floor 100 ms for sub-10 ms operations); vault conversion and unlock budgets are about 10x the observed time. Tighten only with data from CI.",
   "budgets_ms": {
     "scan_cold_10k": 8000,
     "scan_rescan_10k": 1000,
@@ -13,6 +13,28 @@
     "query_name_filter": 100,
     "fts_two_words": 100,
     "fts_prefix_page": 100,
-    "fts_miss": 100
+    "fts_miss": 100,
+    "vault_scan_cold_10k": 3500,
+    "vault_scan_rescan_10k": 1000,
+    "vault_db_open_10k": 100,
+    "vault_migrate_v1_10k": 1000,
+    "vault_query_name_page": 100,
+    "vault_query_size_desc_page": 250,
+    "vault_query_added_page": 100,
+    "vault_query_random_page": 100,
+    "vault_count_all": 100,
+    "vault_query_name_filter": 100,
+    "vault_fts_two_words": 100,
+    "vault_fts_prefix_page": 100,
+    "vault_fts_miss": 100,
+    "vault_convert_enable_10k": 1500,
+    "vault_unlock": 1000,
+    "vault_convert_disable_10k": 1500,
+    "cold_query_name_page": 100,
+    "vault_cold_query_name_page": 100,
+    "cold_query_size_desc_page": 250,
+    "vault_cold_query_size_desc_page": 250,
+    "cold_fts_two_words": 100,
+    "vault_cold_fts_two_words": 100
   }
 }

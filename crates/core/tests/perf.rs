@@ -8,9 +8,17 @@
 //! measurement is the best of a few runs. Correctness counts are asserted
 //! exactly, since counting beats timing.
 //!
+//! The same measurements run twice: on a clear library and on an encrypted one
+//! (SQLCipher, keys prefixed `vault_` in the budgets), plus the timed
+//! conversion of a 10k library in both directions and one unlock (Argon2id at
+//! the default cost). Vault timings are budgeted against their own numbers,
+//! not as a ratio, so the budgets stay robust on noisy runners; the measured
+//! overhead is documented in `docs/perf.md`.
+//!
 //! Output lines: `PERF <name> <ms> <budget_ms>` (parsed by xtask).
 use jizzcraft_core::scan::{ScanControl, scan_folder, scan_folder_with};
-use jizzcraft_core::{Db, Filter, SortKey};
+use jizzcraft_core::vault::{DbKey, KdfParams, VaultKey};
+use jizzcraft_core::{Db, Filter, SortKey, vault_convert};
 use rusqlite::{Connection, params};
 use std::path::Path;
 use std::time::Instant;
@@ -97,43 +105,58 @@ fn old_schema_db(path: &Path) {
     c.pragma_update(None, "user_version", 1).unwrap();
 }
 
-#[test]
-#[ignore = "run through `cargo xtask perf` (release build)"]
-fn budgets_hold_on_10k_library() {
-    let mut rep = Report {
-        budgets: budgets(),
-        failed: vec![],
-    };
-    let lib = tempfile::tempdir().unwrap();
-    let media = tempfile::tempdir().unwrap();
-    make_tree(media.path());
-    let dbp = lib.path().join("library.db");
+/// Tag a metric name with the mode: `scan_cold_10k` or `vault_scan_cold_10k`.
+fn key_name(vault: bool, base: &str) -> String {
+    if vault {
+        format!("vault_{base}")
+    } else {
+        base.to_owned()
+    }
+}
+
+/// Every measurement of the 10k library in one mode. `key` is `None` for the
+/// clear library.
+fn suite(rep: &mut Report, lib: &Path, media: &Path, key: Option<&DbKey>) {
+    let v = key.is_some();
+    let k = |b: &str| key_name(v, b);
+    let dbp = lib.join("library.db");
 
     // Scan: cold, then unchanged rescan.
-    let mut db = Db::open(&dbp).unwrap();
-    let (id, _) = db.add_folder(media.path()).unwrap();
+    let mut db = Db::open_with(&dbp, key).unwrap();
+    let (id, _) = db.add_folder(media).unwrap();
     let t = Instant::now();
-    let r = scan_folder_with(&mut db, id, media.path(), &ScanControl::default()).unwrap();
-    rep.record("scan_cold_10k", t.elapsed().as_secs_f64() * 1000.0);
+    let r = scan_folder_with(&mut db, id, media, &ScanControl::default()).unwrap();
+    rep.record(&k("scan_cold_10k"), t.elapsed().as_secs_f64() * 1000.0);
     assert_eq!((r.added, r.errors), (N as u64, 0));
     let t = Instant::now();
-    let r = scan_folder(&mut db, id, media.path()).unwrap();
-    rep.record("scan_rescan_10k", t.elapsed().as_secs_f64() * 1000.0);
+    let r = scan_folder(&mut db, id, media).unwrap();
+    rep.record(&k("scan_rescan_10k"), t.elapsed().as_secs_f64() * 1000.0);
     assert_eq!((r.unchanged, r.added, r.marked_missing), (N as u64, 0, 0));
     drop(db);
 
     // Opening an existing, current-schema library.
-    let (ms, db) = best_of(5, || Db::open(&dbp).unwrap());
-    rep.record("db_open_10k", ms);
+    let (ms, db) = best_of(5, || Db::open_with(&dbp, key).unwrap());
+    rep.record(&k("db_open_10k"), ms);
 
-    // Migration chain v1 -> current on 10k rows.
-    let old = lib.path().join("old.db");
+    // Migration chain v1 -> current on 10k rows. In vault mode the v1
+    // database is converted first (not timed), then migrated under the key.
+    let old = lib.join("old.db");
     old_schema_db(&old);
-    let t = Instant::now();
-    let migrated = Db::open(&old).unwrap();
-    rep.record("migrate_v1_10k", t.elapsed().as_secs_f64() * 1000.0);
-    assert_eq!(migrated.count(&Filter::default()).unwrap(), N as u64);
-    drop(migrated);
+    let opened = if v {
+        let pass = "perf-passphrase-0123456789";
+        vault_convert::enable(&old, pass, KdfParams::default()).unwrap();
+        let dk = vault_convert::unlock_library(&old, pass).unwrap().db_key();
+        let t = Instant::now();
+        let m = Db::open_with(&old, Some(&dk)).unwrap();
+        (t.elapsed().as_secs_f64() * 1000.0, m)
+    } else {
+        let t = Instant::now();
+        let m = Db::open(&old).unwrap();
+        (t.elapsed().as_secs_f64() * 1000.0, m)
+    };
+    rep.record(&k("migrate_v1_10k"), opened.0);
+    assert_eq!(opened.1.count(&Filter::default()).unwrap(), N as u64);
+    drop(opened);
 
     // Queries: one grid page each.
     let page = |sort: SortKey, desc: bool| Filter {
@@ -142,19 +165,19 @@ fn budgets_hold_on_10k_library() {
         limit: Some(200),
         ..Default::default()
     };
-    for (key, f) in [
+    for (name, f) in [
         ("query_name_page", page(SortKey::Name, false)),
         ("query_size_desc_page", page(SortKey::Size, true)),
         ("query_added_page", page(SortKey::Added, true)),
         ("query_random_page", page(SortKey::Random, false)),
     ] {
         let (ms, rows) = best_of(5, || db.query(&f).unwrap());
-        assert_eq!(rows.len(), 200, "{key}");
-        rep.record(key, ms);
+        assert_eq!(rows.len(), 200, "{name}");
+        rep.record(&k(name), ms);
     }
     let (ms, n) = best_of(5, || db.count(&Filter::default()).unwrap());
     assert_eq!(n, N as u64);
-    rep.record("count_all", ms);
+    rep.record(&k("count_all"), ms);
     let (ms, rows) = best_of(5, || {
         db.query(&Filter {
             name: Some("harbor".into()),
@@ -164,18 +187,85 @@ fn budgets_hold_on_10k_library() {
         .unwrap()
     });
     assert_eq!(rows.len(), 200);
-    rep.record("query_name_filter", ms);
+    rep.record(&k("query_name_filter"), ms);
 
     // Full-text search. "amber harbor": adj index 0 and noun 7 -> 25 files.
     let (ms, rows) = best_of(5, || db.search("amber harbor", 100, 0).unwrap());
     assert_eq!(rows.len(), N / 400);
-    rep.record("fts_two_words", ms);
+    rep.record(&k("fts_two_words"), ms);
     let (ms, rows) = best_of(5, || db.search("amb", 100, 0).unwrap());
     assert_eq!(rows.len(), 100);
-    rep.record("fts_prefix_page", ms);
+    rep.record(&k("fts_prefix_page"), ms);
     let (ms, rows) = best_of(5, || db.search("zzzz", 100, 0).unwrap());
     assert!(rows.is_empty());
-    rep.record("fts_miss", ms);
+    rep.record(&k("fts_miss"), ms);
+    drop(db);
+
+    // Cold page cache: a fresh connection and its first query, which is what
+    // a user waits for after unlocking. This is where page decryption shows;
+    // the warm numbers above are served from SQLite's own (decrypted) cache.
+    let (ms, rows) = best_of(5, || {
+        let db = Db::open_with(&dbp, key).unwrap();
+        db.query(&page(SortKey::Name, false)).unwrap()
+    });
+    assert_eq!(rows.len(), 200);
+    rep.record(&k("cold_query_name_page"), ms);
+    let (ms, rows) = best_of(5, || {
+        let db = Db::open_with(&dbp, key).unwrap();
+        db.query(&page(SortKey::Size, true)).unwrap()
+    });
+    assert_eq!(rows.len(), 200);
+    rep.record(&k("cold_query_size_desc_page"), ms);
+    let (ms, rows) = best_of(5, || {
+        let db = Db::open_with(&dbp, key).unwrap();
+        db.search("amber harbor", 100, 0).unwrap()
+    });
+    assert_eq!(rows.len(), N / 400);
+    rep.record(&k("cold_fts_two_words"), ms);
+}
+
+#[test]
+#[ignore = "run through `cargo xtask perf` (release build)"]
+fn budgets_hold_on_10k_library() {
+    let mut rep = Report {
+        budgets: budgets(),
+        failed: vec![],
+    };
+    let media = tempfile::tempdir().unwrap();
+    make_tree(media.path());
+
+    // Clear library, then the same suite on an encrypted one.
+    let clear = tempfile::tempdir().unwrap();
+    suite(&mut rep, clear.path(), media.path(), None);
+    let enc = tempfile::tempdir().unwrap();
+    let dk = VaultKey::generate().unwrap().db_key();
+    suite(&mut rep, enc.path(), media.path(), Some(&dk));
+
+    // Conversion of the (clear) 10k library, both ways, and one unlock.
+    let conv = tempfile::tempdir().unwrap();
+    let cdb = conv.path().join("library.db");
+    std::fs::copy(clear.path().join("library.db"), &cdb).unwrap();
+    let pass = "perf-passphrase-0123456789";
+    let t = Instant::now();
+    vault_convert::enable(&cdb, pass, KdfParams::default()).unwrap();
+    rep.record(
+        "vault_convert_enable_10k",
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
+    let t = Instant::now();
+    let key = vault_convert::unlock_library(&cdb, pass).unwrap();
+    rep.record("vault_unlock", t.elapsed().as_secs_f64() * 1000.0);
+    let db = Db::open_with(&cdb, Some(&key.db_key())).unwrap();
+    assert_eq!(db.count(&Filter::default()).unwrap(), N as u64);
+    drop(db);
+    let t = Instant::now();
+    vault_convert::disable(&cdb, pass).unwrap();
+    rep.record(
+        "vault_convert_disable_10k",
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
+    let db = Db::open(&cdb).unwrap();
+    assert_eq!(db.count(&Filter::default()).unwrap(), N as u64);
 
     assert!(
         rep.failed.is_empty(),
