@@ -202,5 +202,5 @@ jobs:
             ```
 
             Verify with `SHA256SUMS`, or `gh attestation verify <file> --repo kerstz/JizzCraft`.
-            The `-network` tarball adds indexers, torrents and streaming from your own
+            The `jizzcraft-online-*` tarball adds indexers, torrents and streaming from your own
             sources; the default build makes no network connection at all.
