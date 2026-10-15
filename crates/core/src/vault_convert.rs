@@ -171,13 +171,19 @@ fn write_synced(dst: &Path, bytes: &[u8], torn: bool) -> Res<()> {
     Ok(())
 }
 
-/// `<stem>.pre-v<digits>.db` next to the database.
+/// Backups next to the database: `<stem>.pre-v<digits>.db` (migrations) and
+/// `<stem>.pre-remove-<digits>.db` / `<stem>.pre-check-<digits>.db` (folder
+/// removal, failed start-up check).
 fn pre_vn_backups(db_path: &Path) -> Vec<PathBuf> {
     let stem = db_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("library");
-    let prefix = format!("{stem}.pre-v");
+    let prefixes = [
+        format!("{stem}.pre-v"),
+        format!("{stem}.pre-remove-"),
+        format!("{stem}.pre-check-"),
+    ];
     let Ok(rd) = fs::read_dir(dir_of(db_path)) else {
         return Vec::new();
     };
@@ -185,12 +191,14 @@ fn pre_vn_backups(db_path: &Path) -> Vec<PathBuf> {
         .filter(|e| {
             let n = e.file_name();
             let n = n.to_string_lossy();
-            n.starts_with(&prefix)
-                && n.ends_with(".db")
-                && n.len() > prefix.len() + 3
-                && n[prefix.len()..n.len() - 3]
-                    .chars()
-                    .all(|c| c.is_ascii_digit())
+            prefixes.iter().any(|prefix| {
+                n.starts_with(prefix.as_str())
+                    && n.ends_with(".db")
+                    && n.len() > prefix.len() + 3
+                    && n[prefix.len()..n.len() - 3]
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+            })
         })
         .map(|e| e.path())
         .collect()
