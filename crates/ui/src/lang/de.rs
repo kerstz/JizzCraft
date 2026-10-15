@@ -1015,4 +1015,45 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("Subtitles earlier (0.1 s)", "Untertitel früher (0,1 s)"),
     ("Subtitles later (0.1 s)", "Untertitel später (0,1 s)"),
+    ("Cancel folder removal", "Entfernen des Ordners abbrechen"),
+    (
+        "Folder removal cancelled after {} items. A backup was kept.",
+        "Entfernen des Ordners nach {} Elementen abgebrochen. Eine Sicherung wurde behalten.",
+    ),
+    (
+        "Removing the folder failed. Files on disk were not touched.",
+        "Der Ordner konnte nicht entfernt werden. Dateien auf der Festplatte wurden nicht angetastet.",
+    ),
+    (
+        "Name this filter to find it in the sidebar.",
+        "Gib diesem Filter einen Namen, um ihn in der Seitenleiste wiederzufinden.",
+    ),
+    (
+        "Speed caps apply the next time the session starts.",
+        "Geschwindigkeitsbegrenzungen gelten ab dem nächsten Start der Sitzung.",
+    ),
+    (
+        "search, or paste a magnet link / .torrent / video address",
+        "suchen, oder einen Magnet-Link / .torrent / eine Videoadresse einfügen",
+    ),
+    (
+        "This application is for adults only and manages local media. Nothing leaves this machine. By continuing you confirm that you are at least 18 years old.",
+        "Diese Anwendung ist nur für Erwachsene und verwaltet lokale Medien. Nichts verlässt diesen Rechner. Mit dem Fortfahren bestätigst du, dass du mindestens 18 Jahre alt bist.",
+    ),
+    (
+        "Nothing is bundled. Use your own Jackett or Prowlarr (Torznab). Magnet links and .torrent files work without one.",
+        "Nichts ist mitgeliefert. Verwende dein eigenes Jackett oder Prowlarr (Torznab). Magnet-Links und .torrent-Dateien funktionieren auch ohne Indexer.",
+    ),
+    (
+        "Open in mpv or VLC. That program is not covered by JizzCraft's network protection.",
+        "In mpv oder VLC öffnen. Dieses Programm ist nicht vom Netzwerkschutz von JizzCraft abgedeckt.",
+    ),
+    (
+        "Connects only to the indexers you add and to BitTorrent peers. Your IP is visible to them.",
+        "Verbindet sich nur mit den Indexern, die du hinzufügst, und mit BitTorrent-Peers. Deine IP ist für sie sichtbar.",
+    ),
+    (
+        "The library database reported a problem. No backup could be made.",
+        "Die Bibliotheksdatenbank hat ein Problem gemeldet. Es konnte keine Sicherung erstellt werden.",
+    ),
 ];
