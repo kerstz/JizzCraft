@@ -36,6 +36,10 @@ pub const M_COST_RANGE: (u32, u32) = (19_456, 1_048_576);
 pub const T_COST_RANGE: (u32, u32) = (2, 10);
 pub const P_COST_RANGE: (u32, u32) = (1, 8);
 
+/// Longest passphrase accepted anywhere (GUI, CLI), in characters. A longer
+/// input is refused before any key derivation runs.
+pub const MAX_PASSPHRASE_CHARS: usize = 1024;
+
 /// Name of the header file that sits next to the database (`library.vault`).
 pub fn header_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("vault")
