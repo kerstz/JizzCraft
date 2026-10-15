@@ -26,7 +26,7 @@ embed-resource = "3"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_Console", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_Shell"] }
 
 [features]
 # Opt-in network build: Torznab indexers and a BitTorrent client.
