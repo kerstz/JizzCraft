@@ -3,6 +3,15 @@ name: Release
 # Builds installable artifacts for Linux, Windows and macOS when a version tag
 # is pushed (or by hand). The default (offline) build is what is published.
 # Tag responsibly: a `v` prefix is a promise, not a vibe.
+#
+# Dry run (builds everything, publishes nothing, moves no branch). Use it to
+# check SQLCipher + vendored OpenSSL on ubuntu-22.04 and Windows before tagging:
+#
+#   gh workflow run release.yml --ref <branch>
+#   gh run watch
+#
+# Only a pushed `v*` tag publishes: the publish and channel jobs refuse any
+# workflow_dispatch run, even when --ref names a tag.
 
 on:
   push:
@@ -72,17 +81,29 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
+      - name: Cache GStreamer MSIs
+        uses: actions/cache@v4
+        with:
+          path: gst-msi
+          key: gstreamer-msvc-1.26.11
       - name: GStreamer (MSVC runtime + devel)
         shell: pwsh
         run: |
           $v = '1.26.11'
+          New-Item -ItemType Directory -Force gst-msi | Out-Null
           foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
             $u = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
-            Invoke-WebRequest $u -OutFile "$k.msi" -MaximumRetryCount 5 -RetryIntervalSec 5
-            Invoke-WebRequest "$u.sha256sum" -OutFile "$k.msi.sha256sum" -MaximumRetryCount 5 -RetryIntervalSec 5
+            # curl.exe retries on dropped connections ("ResponseEnded"), which
+            # Invoke-WebRequest -MaximumRetryCount does not; the MSIs are cached too.
+            if (-not (Test-Path "gst-msi/$k.msi")) {
+              curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 -o "gst-msi/$k.msi" $u
+              if ($LASTEXITCODE -ne 0) { throw "download failed for $k" }
+            }
+            curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 -o "$k.msi.sha256sum" "$u.sha256sum"
+            if ($LASTEXITCODE -ne 0) { throw "checksum download failed for $k" }
             $want = ((Get-Content "$k.msi.sha256sum" -Raw).Trim() -split '\s+')[0].ToLower()
-            if ((Get-FileHash "$k.msi" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "checksum mismatch for $k" }
-            Start-Process msiexec -ArgumentList "/i $k.msi /qn ADDLOCAL=ALL" -Wait
+            if ((Get-FileHash "gst-msi/$k.msi" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "checksum mismatch for $k" }
+            Start-Process msiexec -ArgumentList "/i `"$PWD\gst-msi\$k.msi`" /qn ADDLOCAL=ALL" -Wait
           }
           choco install pkgconfiglite -y
       # glib-sys could not find glib-2.0.pc: locate the real install dir
@@ -143,7 +164,7 @@ jobs:
 
   publish:
     # Linux is the release. Windows files join it when that job succeeded.
-    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.linux.result == 'success'
+    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.linux.result == 'success'
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     steps:
@@ -177,3 +198,22 @@ jobs:
             Verify with `SHA256SUMS`, or `gh attestation verify <file> --repo kerstz/JizzCraft`.
             The `-network` tarball adds indexers, torrents and streaming from your own
             sources; the default build makes no network connection at all.
+
+  # Last task of a release: fast-forward the edition channel branches to the
+  # tagged commit. Done here because a release created with GITHUB_TOKEN does
+  # not trigger `release: published` (channels.yml is the manual fallback).
+  # Never forced: a non-fast-forward push fails loudly.
+  channels:
+    if: always() && github.event_name == 'push' && needs.publish.result == 'success'
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - name: Fast-forward edition/offline and edition/online to the tag commit
+        run: |
+          set -eu
+          for b in edition/offline edition/online; do
+            git push origin "${GITHUB_SHA}:refs/heads/$b"
+          done
