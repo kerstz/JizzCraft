@@ -27,7 +27,7 @@ pub mod vault_convert;
 pub mod view;
 
 pub use commands::{HasLibrary, Registry, register_core};
-pub use db::{Db, Filter, HiddenMode, Orientation, SortKey};
+pub use db::{Db, Filter, HiddenMode, Orientation, RemoveReport, SortKey};
 pub use error::{Error, Result};
 pub use history::{MediaPatch, UserState};
 pub use markers::Marker;

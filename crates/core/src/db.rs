@@ -471,6 +471,43 @@ pub fn now_secs() -> i64 {
 /// Pre-migration copies kept next to the database.
 const KEEP_BACKUPS: usize = 3;
 
+/// Keep the newest `KEEP_BACKUPS` files named `<prefix><tail>.db` in `dir`
+/// whose `tail` satisfies `tail_ok`; delete the others.
+fn rotate_backups(dir: &Path, prefix: &str, tail_ok: impl Fn(&str) -> bool) -> Result<()> {
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with(prefix)
+                && n.ends_with(".db")
+                && n.len() >= prefix.len() + 3
+                && tail_ok(&n[prefix.len()..n.len() - 3])
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for (_, old) in found.into_iter().skip(KEEP_BACKUPS) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
+}
+
+/// Outcome of [`Db::remove_folder_safely`]. Counts only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveReport {
+    /// Media rows dropped so far.
+    pub removed: u64,
+    /// The cancel flag stopped the job: the root is still imported and a
+    /// second run finishes the work.
+    pub cancelled: bool,
+    /// A `pre-remove` backup was written first (false for in-memory databases).
+    pub backed_up: bool,
+}
+
+/// Rows deleted per transaction, so the write lock is never held for long.
+const REMOVE_CHUNK: i64 = 500;
+
 impl Db {
     /// Open (and migrate) the library. A database written by a newer build is
     /// refused with `Error::FutureSchema`; use `open_read_only` for that case.
@@ -647,24 +684,9 @@ impl Db {
             .ok_or_else(|| Error::Invalid("database path is not UTF-8".into()))?;
         self.conn.execute("VACUUM INTO ?1", [target_str])?;
 
-        let prefix = format!("{stem}.pre-v");
-        let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)?
-            .flatten()
-            .filter(|e| {
-                let n = e.file_name();
-                let n = n.to_string_lossy();
-                n.starts_with(&prefix)
-                    && n.ends_with(".db")
-                    && n[prefix.len()..n.len() - 3]
-                        .chars()
-                        .all(|c| c.is_ascii_digit())
-            })
-            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-            .collect();
-        found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-        for (_, old) in found.into_iter().skip(KEEP_BACKUPS) {
-            let _ = std::fs::remove_file(old);
-        }
+        rotate_backups(dir, &format!("{stem}.pre-v"), |tail| {
+            tail.chars().all(|c| c.is_ascii_digit())
+        })?;
         Ok(())
     }
 
@@ -732,6 +754,111 @@ impl Db {
         tx.execute("DELETE FROM folders WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(Some(n as u64))
+    }
+
+    /// `VACUUM INTO <stem>.pre-remove-<ts>.db` beside the database (same key
+    /// as the library: the copy is made by this connection); keeps the newest
+    /// `KEEP_BACKUPS`. `None` for an in-memory database.
+    pub fn backup_before_remove(&self) -> Result<Option<PathBuf>> {
+        self.backup_tagged("pre-remove")
+    }
+
+    /// `VACUUM INTO <stem>.<tag>-<ts>.db` beside the database, newest
+    /// `KEEP_BACKUPS` per tag kept. Used for `pre-remove` and `pre-check`
+    /// (taken when the start-up integrity check fails). Works on a read-only
+    /// connection. `None` for an in-memory database.
+    pub fn backup_tagged(&self, tag: &str) -> Result<Option<PathBuf>> {
+        let Some(db_path) = self.path.as_deref() else {
+            return Ok(None);
+        };
+        let dir = db_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let stem = db_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("library");
+        let mut ts = now_secs();
+        let target = loop {
+            let t = dir.join(format!("{stem}.{tag}-{ts}.db"));
+            if !t.exists() {
+                break t;
+            }
+            ts += 1;
+        };
+        let target_str = target
+            .to_str()
+            .ok_or_else(|| Error::Invalid("database path is not UTF-8".into()))?;
+        // `query_only` (read-only handles) refuses VACUUM INTO although the
+        // source is only read; the file flag still guards the library itself.
+        let query_only: bool = self
+            .conn
+            .pragma_query_value(None, "query_only", |r| r.get(0))?;
+        if query_only {
+            self.conn.pragma_update(None, "query_only", false)?;
+        }
+        let r = self.conn.execute("VACUUM INTO ?1", [target_str]);
+        if query_only {
+            let _ = self.conn.pragma_update(None, "query_only", true);
+        }
+        r?;
+        rotate_backups(dir, &format!("{stem}.{tag}-"), |tail| {
+            !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit())
+        })?;
+        Ok(Some(target))
+    }
+
+    /// Like [`Db::remove_folder`], for jobs: writes a `pre-remove` backup
+    /// first (a failed backup aborts, nothing is deleted), then deletes the
+    /// media rows in bounded chunks, checking `cancel` between chunks, and
+    /// finally the root itself. `progress` gets the running count of dropped
+    /// rows. `None` when `path` is not an imported root (no backup made).
+    pub fn remove_folder_safely(
+        &mut self,
+        path: &Path,
+        cancel: &std::sync::atomic::AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<Option<RemoveReport>> {
+        use std::sync::atomic::Ordering;
+        let blob = path_to_blob(path);
+        let id: Option<i64> = self
+            .conn
+            .query_row("SELECT id FROM folders WHERE path = ?1", [&blob], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let backed_up = self.backup_before_remove()?.is_some();
+        let mut removed = 0u64;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(Some(RemoveReport {
+                    removed,
+                    cancelled: true,
+                    backed_up,
+                }));
+            }
+            let n = self.conn.execute(
+                "DELETE FROM media WHERE id IN \
+                 (SELECT id FROM media WHERE folder_id = ?1 LIMIT ?2)",
+                params![id, REMOVE_CHUNK],
+            )?;
+            if n == 0 {
+                break;
+            }
+            removed += n as u64;
+            progress(removed);
+        }
+        self.conn
+            .execute("DELETE FROM folders WHERE id = ?1", [id])?;
+        Ok(Some(RemoveReport {
+            removed,
+            cancelled: false,
+            backed_up,
+        }))
     }
 
     // ---- media ---------------------------------------------------------
