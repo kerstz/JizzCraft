@@ -3,8 +3,9 @@
 //! the XDG cache dir. Idle pipelines are torn down after a while.
 
 use crate::service::Rgba;
-use crate::thumbs;
+use crate::thumbs::{self, ThumbStore};
 use image::RgbImage;
+use jizzcraft_core::vault::ThumbKeys;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -35,7 +36,7 @@ pub fn preview_key(path: &Path, size: u64, mtime: i64) -> String {
     h.finalize().to_hex().as_str()[..32].to_owned()
 }
 
-fn preview_file(cache_root: &Path, key: &str, bucket: u32) -> PathBuf {
+pub(crate) fn preview_file(cache_root: &Path, key: &str, bucket: u32) -> PathBuf {
     cache_root
         .join("previews")
         .join(&key[..2])
@@ -71,13 +72,27 @@ impl PreviewService {
         cache_root: PathBuf,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
+        Self::with_keys(path, size, mtime, cache_root, None, wake)
+    }
+
+    /// Like `new`; with `keys`, frames are cached encrypted under
+    /// `vault-thumbs/` and never written in clear.
+    pub fn with_keys(
+        path: PathBuf,
+        size: u64,
+        mtime: i64,
+        cache_root: PathBuf,
+        keys: Option<Arc<ThumbKeys>>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let store = ThumbStore::new(cache_root, keys);
         let (tx, rx) = channel();
         let out = Arc::new(Mutex::new(None));
         let failed = Arc::new(AtomicBool::new(false));
         let (o, f) = (Arc::clone(&out), Arc::clone(&failed));
         std::thread::Builder::new()
             .name("jizzcraft-preview".into())
-            .spawn(move || worker(path, size, mtime, cache_root, rx, o, f, wake))
+            .spawn(move || worker(path, size, mtime, store, rx, o, f, wake))
             .expect("spawn preview thread");
         PreviewService { tx, out, failed }
     }
@@ -120,13 +135,12 @@ fn worker(
     path: PathBuf,
     size: u64,
     mtime: i64,
-    root: PathBuf,
+    store: ThumbStore,
     rx: Receiver<Msg>,
     out: Arc<Mutex<Option<PreviewFrame>>>,
     failed: Arc<AtomicBool>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
-    let key = preview_key(&path, size, mtime);
     let mut pipe: Option<thumbs::Paused> = None;
     let mut last_decode = Instant::now() - MIN_GAP;
     loop {
@@ -152,8 +166,8 @@ fn worker(
                 }
             }
         }
-        let file = preview_file(&root, &key, bucket);
-        let img = if let Some(img) = thumbs::load_cached(&file) {
+        let (id, file) = store.preview_slot(&path, size, mtime, bucket);
+        let img = if let Some(img) = store.load(&file, &id) {
             img
         } else {
             let gap = last_decode.elapsed();
@@ -173,7 +187,7 @@ fn worker(
             last_decode = Instant::now();
             match thumbs::frame_at(p, ns, 3) {
                 Ok(img) => {
-                    let _ = thumbs::save_cached(&file, &img);
+                    let _ = store.save(&file, &id, &img);
                     img
                 }
                 Err(_) => {

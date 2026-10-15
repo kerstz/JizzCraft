@@ -12,7 +12,7 @@ before the code exists, and records what each step has actually shipped.
 | 2 | Key derivation and header file (pure crypto, `core::vault`) | done |
 | 3 | Opening the database with a key | done |
 | 4 | Plain to encrypted conversion, crash recovery (engine only) | done |
-| 5 | Encrypted thumbnails and previews | not started |
+| 5 | Encrypted thumbnails and previews | done |
 | 6 | CLI commands | not started |
 | 7 | Settings UI, lock screen, auto-lock | not started |
 | 8 | Perf in vault mode, packaging smoke tests | not started |
@@ -158,6 +158,15 @@ passes in that mode. Notes:
 
 Code only; nothing in the application or the CLI calls it yet, so no library
 is encrypted by this build.
+
+Lot 5 (`jizzcraft_media::thumbs::ThumbStore`, `Plain | Vault`): thumbnails live
+in `cache/vault-thumbs/xx/<keyed name>.jzt` (`"JZT1" || nonce || ciphertext`,
+AAD `"JZT1" || name`), scrub previews in `.jzp` files of the same directory
+with names bound to the bucket. Writes go through a temporary file and
+`fsutil::replace`. A file that fails to authenticate or decode is deleted and
+treated as absent. In vault mode nothing is written under `thumbs/` or
+`previews/`. `ThumbService::with_keys` and `PreviewService::with_keys` take
+`Option<Arc<ThumbKeys>>`; `prune_store` and `clear_cache` cover `vault-thumbs`.
 
 - `jizzcraft_core::vault`: header encode/decode, Argon2id, key envelope, the
   three BLAKE3 sub-keys, `ThumbCipher`. The reference vector in its tests is

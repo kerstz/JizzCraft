@@ -1,7 +1,8 @@
 //! Background thumbnail service: std threads + a LIFO queue the UI re-ranks
 //! every frame, so scrolling never processes stale (off-screen) requests.
 
-use crate::thumbs;
+use crate::thumbs::{self, ThumbStore};
+use jizzcraft_core::vault::ThumbKeys;
 use jizzcraft_core::{MediaKind, MediaMeta};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -57,6 +58,17 @@ pub struct ThumbService {
 impl ThumbService {
     /// `wake` is called from worker threads whenever a result is ready.
     pub fn new(cache_root: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self::with_keys(cache_root, None, wake)
+    }
+
+    /// Like `new`; with `keys` (vault mode) the cache is encrypted under
+    /// `vault-thumbs/` and nothing is written in clear.
+    pub fn with_keys(
+        cache_root: PathBuf,
+        keys: Option<Arc<ThumbKeys>>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let store = ThumbStore::new(cache_root, keys);
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             cv: Condvar::new(),
@@ -65,10 +77,10 @@ impl ThumbService {
         let cpus = std::thread::available_parallelism().map_or(2, |n| n.get());
         let image_workers = cpus.saturating_sub(1).clamp(1, 6);
         for _ in 0..image_workers {
-            spawn_worker(&shared, &tx, &wake, &cache_root, MediaKind::Image);
+            spawn_worker(&shared, &tx, &wake, &store, MediaKind::Image);
         }
         for _ in 0..2 {
-            spawn_worker(&shared, &tx, &wake, &cache_root, MediaKind::Video);
+            spawn_worker(&shared, &tx, &wake, &store, MediaKind::Video);
         }
         ThumbService { shared, rx }
     }
@@ -108,14 +120,14 @@ fn spawn_worker(
     shared: &Arc<Shared>,
     tx: &Sender<Done>,
     wake: &Arc<dyn Fn() + Send + Sync>,
-    cache_root: &std::path::Path,
+    store: &ThumbStore,
     kind: MediaKind,
 ) {
-    let (shared, tx, wake, root) = (
+    let (shared, tx, wake, store) = (
         Arc::clone(shared),
         tx.clone(),
         Arc::clone(wake),
-        cache_root.to_path_buf(),
+        store.clone(),
     );
     std::thread::spawn(move || {
         loop {
@@ -133,7 +145,7 @@ fn spawn_worker(
                     st = shared.cv.wait(st).unwrap();
                 }
             };
-            let done = process(&root, &req);
+            let done = process(&store, &req);
             shared.state.lock().unwrap().inflight.remove(&req.id);
             if tx.send(done).is_err() {
                 return;
@@ -152,16 +164,16 @@ fn to_rgba(img: &image::RgbImage) -> Rgba {
     Rgba { w, h, data }
 }
 
-fn process(root: &std::path::Path, req: &Request) -> Done {
-    let key = thumbs::cache_key(&req.path, req.size, req.mtime);
-    let file = thumbs::thumb_file(root, &key);
+fn process(store: &ThumbStore, req: &Request) -> Done {
+    let id = store.thumb_id(&req.path, req.size, req.mtime);
+    let file = store.thumb_path(&id);
     let meta = if req.kind == MediaKind::Video && req.need_meta {
         crate::probe::probe(&req.path).ok()
     } else {
         None
     };
     let result = (|| {
-        if let Some(img) = thumbs::load_cached(&file) {
+        if let Some(img) = store.load(&file, &id) {
             return Ok(img);
         }
         let img = match req.kind {
@@ -169,7 +181,7 @@ fn process(root: &std::path::Path, req: &Request) -> Done {
             MediaKind::Video => thumbs::video_thumb(&req.path)?,
         };
         // A cache write failure must not hide a thumbnail we already have.
-        let _ = thumbs::save_cached(&file, &img);
+        let _ = store.save(&file, &id, &img);
         Ok::<_, String>(img)
     })();
     let thumb = result.map(|img| Thumb {

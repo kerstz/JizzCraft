@@ -8,7 +8,9 @@ use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use gstreamer_video::prelude::*;
 use image::{DynamicImage, ImageDecoder, RgbImage, imageops::FilterType};
+use jizzcraft_core::vault::{ThumbCipher, ThumbKeys};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const THUMB_MAX: u32 = 320;
 const BLUR_W: u32 = 10;
@@ -45,6 +47,159 @@ pub fn save_cached(file: &Path, img: &RgbImage) -> Result<(), String> {
             .map_err(|e| format!("cache encode: {e}"))?;
     }
     jizzcraft_core::fsutil::replace(&tmp, file).map_err(|e| format!("cache rename: {e}"))
+}
+
+/// Directory (under the cache root) holding the encrypted thumbnails and
+/// previews of a vault library.
+pub const VAULT_DIR: &str = "vault-thumbs";
+
+/// Where decoded thumbnails and previews are cached. In `Vault` mode every
+/// file is `"JZT1" || nonce || XChaCha20-Poly1305(JPEG)` under
+/// `vault-thumbs/xx/<keyed name>.jzt` (previews: `.jzp`), and nothing is ever
+/// written under `thumbs/` or `previews/`.
+#[derive(Clone, Debug)]
+pub enum ThumbStore {
+    Plain(PathBuf),
+    /// The cipher is built once from the `ThumbKeys` and shared by workers.
+    Vault(PathBuf, Arc<ThumbCipher>),
+}
+
+impl ThumbStore {
+    pub fn new(root: PathBuf, keys: Option<Arc<ThumbKeys>>) -> Self {
+        match keys {
+            None => ThumbStore::Plain(root),
+            Some(k) => ThumbStore::Vault(root, Arc::new(ThumbCipher::new(&k))),
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        match self {
+            ThumbStore::Plain(r) | ThumbStore::Vault(r, _) => r,
+        }
+    }
+
+    pub fn is_vault(&self) -> bool {
+        matches!(self, ThumbStore::Vault(..))
+    }
+
+    /// Cache name of a thumbnail: the clear hash, or the keyed vault name.
+    pub fn thumb_id(&self, path: &Path, size: u64, mtime: i64) -> String {
+        match self {
+            ThumbStore::Plain(_) => cache_key(path, size, mtime),
+            ThumbStore::Vault(_, c) => {
+                c.file_name(&jizzcraft_core::pathbytes::path_to_bytes(path), size, mtime)
+            }
+        }
+    }
+
+    /// File of a thumbnail named `id`.
+    pub fn thumb_path(&self, id: &str) -> PathBuf {
+        match self {
+            ThumbStore::Plain(r) => thumb_file(r, id),
+            ThumbStore::Vault(r, _) => vault_file(r, id, "jzt"),
+        }
+    }
+
+    /// Name and file of the preview of `bucket`. Vault names are keyed hashes
+    /// bound to the bucket, so no clear key or directory tree leaks.
+    pub(crate) fn preview_slot(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime: i64,
+        bucket: u32,
+    ) -> (String, PathBuf) {
+        match self {
+            ThumbStore::Plain(r) => {
+                let key = crate::preview::preview_key(path, size, mtime);
+                let file = crate::preview::preview_file(r, &key, bucket);
+                (key, file)
+            }
+            ThumbStore::Vault(r, c) => {
+                let mut b = jizzcraft_core::pathbytes::path_to_bytes(path);
+                b.extend_from_slice(b"\0jzpv\0");
+                b.extend_from_slice(&bucket.to_le_bytes());
+                let id = c.file_name(&b, size, mtime);
+                let file = vault_file(r, &id, "jzp");
+                (id, file)
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn preview_slot_for_tests(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime: i64,
+        bucket: u32,
+    ) -> (String, PathBuf) {
+        self.preview_slot(path, size, mtime, bucket)
+    }
+
+    /// The image cached at `file` (named `id`). In vault mode a file that
+    /// does not authenticate or decode is deleted and reported absent.
+    pub fn load(&self, file: &Path, id: &str) -> Option<RgbImage> {
+        match self {
+            ThumbStore::Plain(_) => load_cached(file),
+            ThumbStore::Vault(_, c) => {
+                let bytes = std::fs::read(file).ok()?;
+                let img = c
+                    .open(id, &bytes)
+                    .ok()
+                    .and_then(|jpeg| image::load_from_memory(&jpeg).ok());
+                match img {
+                    Some(i) => Some(i.to_rgb8()),
+                    None => {
+                        let _ = std::fs::remove_file(file);
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn save(&self, file: &Path, id: &str, img: &RgbImage) -> Result<(), String> {
+        match self {
+            ThumbStore::Plain(_) => save_cached(file, img),
+            ThumbStore::Vault(_, c) => {
+                let mut jpeg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+                    .encode_image(img)
+                    .map_err(|e| format!("cache encode: {e}"))?;
+                let sealed = c.seal(id, &jpeg).map_err(|_| "cache encrypt".to_string())?;
+                let dir = file.parent().ok_or("bad cache path")?;
+                std::fs::create_dir_all(dir).map_err(|e| format!("cache dir: {e}"))?;
+                let tmp = file.with_extension(format!("tmp{}", std::process::id()));
+                std::fs::write(&tmp, sealed).map_err(|e| format!("cache write: {e}"))?;
+                jizzcraft_core::fsutil::replace(&tmp, file)
+                    .map_err(|e| format!("cache rename: {e}"))
+            }
+        }
+    }
+
+    /// Cached thumbnail for a library row, if any.
+    pub fn load_thumb(&self, path: &Path, size: u64, mtime: i64) -> Option<RgbImage> {
+        let id = self.thumb_id(path, size, mtime);
+        self.load(&self.thumb_path(&id), &id)
+    }
+
+    pub fn save_thumb(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime: i64,
+        img: &RgbImage,
+    ) -> Result<(), String> {
+        let id = self.thumb_id(path, size, mtime);
+        self.save(&self.thumb_path(&id), &id, img)
+    }
+}
+
+fn vault_file(root: &Path, id: &str, ext: &str) -> PathBuf {
+    root.join(VAULT_DIR)
+        .join(&id[..2])
+        .join(format!("{id}.{ext}"))
 }
 
 /// Tiny version for discreet / screen-share-safe mode; the UI upscales it with
@@ -275,6 +430,14 @@ impl PruneReport {
 
 /// Cache keys of every thumbnail a library row can still ask for.
 pub fn live_keys(db: &jizzcraft_core::Db) -> Result<std::collections::HashSet<String>, String> {
+    live_keys_for(db, None)
+}
+
+/// Like `live_keys`, with the names `store` gives them (keyed names in vault mode).
+pub fn live_keys_for(
+    db: &jizzcraft_core::Db,
+    store: Option<&ThumbStore>,
+) -> Result<std::collections::HashSet<String>, String> {
     let rows = db
         .query(&jizzcraft_core::Filter {
             include_missing: true,
@@ -284,7 +447,10 @@ pub fn live_keys(db: &jizzcraft_core::Db) -> Result<std::collections::HashSet<St
         .map_err(|e| e.to_string())?;
     Ok(rows
         .iter()
-        .map(|m| cache_key(&m.path, m.size, m.mtime))
+        .map(|m| match store {
+            Some(st) => st.thumb_id(&m.path, m.size, m.mtime),
+            None => cache_key(&m.path, m.size, m.mtime),
+        })
         .collect())
 }
 
@@ -296,12 +462,25 @@ pub fn prune_cache(max_bytes: u64) -> PruneReport {
 
 /// Remove orphaned thumbnails (key not in `live`, when given), then evict the
 /// least recently used files (newest of atime/mtime) until the cache fits in
-/// `max_bytes`. Only regular files under `thumbs/` and `previews/` are touched.
+/// `max_bytes`. Only regular files under `thumbs/`, `previews/` and `vault-thumbs/` are touched.
 pub fn prune_cache_in(
     root: &Path,
     live: Option<&std::collections::HashSet<String>>,
     max_bytes: u64,
 ) -> PruneReport {
+    prune_store(&ThumbStore::Plain(root.to_path_buf()), live, max_bytes)
+}
+
+/// `prune_cache_in` for a store. `vault-thumbs/` is always subject to the size
+/// limit; its thumbnails (`.jzt`) are orphan-checked against `live` only in
+/// vault mode, where `live` holds keyed names (see `live_keys_for`).
+pub fn prune_store(
+    store: &ThumbStore,
+    live: Option<&std::collections::HashSet<String>>,
+    max_bytes: u64,
+) -> PruneReport {
+    let root = store.root();
+    let vault = store.is_vault();
     use std::time::SystemTime;
     fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -325,10 +504,12 @@ pub fn prune_cache_in(
     let mut thumbs = Vec::new();
     walk(&root.join("thumbs"), &mut thumbs);
     walk(&root.join("previews"), &mut files);
+    walk(&root.join(VAULT_DIR), &mut thumbs);
 
     for (p, len, t) in thumbs {
         let orphan = live.is_some_and(|l| {
-            p.extension().is_some_and(|x| x == "jpg")
+            p.extension()
+                .is_some_and(|x| x == "jpg" || (vault && x == "jzt"))
                 && p.file_stem()
                     .and_then(|s| s.to_str())
                     .is_some_and(|k| !l.contains(k))
