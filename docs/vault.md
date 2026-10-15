@@ -368,6 +368,29 @@ state machine, `Gate`, with `Locked`, `Unlocking`, `Open` and `Locking`
   service and previews go, and the last `Arc` to the key zeroes it. Then
   "Locked" appears. A file dialog left open inside a backup or import job
   therefore delays the end of the lock; the content is hidden meanwhile.
+  The decode threads (thumbnails, scrub previews) are part of that wait: a
+  shared `Workers` counter must reach zero, and every worker checks its stop
+  flag before each cache write, so a decode still running when the lock
+  starts is discarded and never written (not even in clear, before an
+  encryption cleans the cache). The same wait precedes a conversion, and the
+  thumbnail keys are freed before "Locked" is drawn.
+- **The lock does not need a frame.** `Gate::tick` tests the inactivity
+  deadline in `Root` before the app is drawn (the app is not drawn at the
+  deadline, and a click that wakes the window after the deadline does not
+  count), `Root::logic` runs it while the window is minimized or hidden
+  (eframe calls `App::logic` there), and a timer thread requests a pass at the
+  deadline. A lock asked for while the app draws (boss key, menu) covers the
+  window with an opaque layer in the same frame, so the last presented buffer
+  holds no library content.
+- **egui's edit state** (cursor, selection, undo history, which holds copies
+  of what was typed) is purged when the screen becomes Locking, Locked,
+  Unlocking or Converting, and when a dialog closes. The 1024-character limit
+  is checked in the window and again before the key derivation: an overlong
+  passphrase gets a message and is never truncated.
+- **Neutral shell.** When the library is encrypted at launch the window is
+  created with the neutral title, icon and app ID (`local.Viewer`) so the
+  lock screen and the first frame carry no brand; the app ID cannot change
+  afterwards, so the dock entry stays neutral for that session.
 - **Every open goes through `LibraryOpener`**: start-up, scans, jobs,
   folder removal, the start-up quick check. Thumbnails and scrub previews use
   `with_keys`. There is no `Db::open(path)` without a key in `crates/ui`.

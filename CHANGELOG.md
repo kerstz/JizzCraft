@@ -11,6 +11,20 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault, audit round 2, desktop app. The thumbnail and preview
+  workers were detached: a decode in flight could write a clear thumbnail
+  after the encryption's cache clean-up, and their keys outlived the "Locked"
+  screen. Workers now check a stop flag before every cache write, the app
+  waits for them (`Workers`, `quiesced()`) before it converts or shows
+  "Locked", and the thumbnail keys are freed first. The inactivity lock no
+  longer depends on drawing: `Gate::tick` runs before the app is drawn, in
+  `App::logic` while the window is hidden, and from a timer thread; a boss-key
+  or menu lock covers the frame it was asked in. egui's text edit history is
+  purged on every locked transition and dialog close. The passphrase limit is
+  1024 characters with a clear message instead of a silent cut; "Change
+  passphrase" says it does not regenerate the data key. The window, its title
+  and its app ID are neutral from the first frame when the library is
+  encrypted. UI tests no longer touch the real `~/.cache/jizzcraft`.
 - Encrypted vault, audit round 2 (issue #13). **Fixed a total-loss race:** a
   `recover` running in parallel with an `enable` could delete
   `library.vault.new` just after the commit rename, leaving an encrypted
