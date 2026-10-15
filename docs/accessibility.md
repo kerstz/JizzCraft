@@ -34,4 +34,4 @@ as unverified.
   assistive technology.
 - The OS reduced-motion preference and OS text scaling are not followed.
 - Video content has no captions beyond what the media itself carries.
-- Translations of the new Appearance strings fall back to English.
+- The Appearance strings (interface zoom, reduce motion) are translated in French, Spanish, German, Italian and Portuguese; the audio language setting and any string added after them may still fall back to English.

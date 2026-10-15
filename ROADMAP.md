@@ -9,24 +9,35 @@ client (librqbit), user-configured Torznab indexers (Jackett, Prowlarr), and
 streaming from sources you configure: direct video addresses, HLS and DASH on
 demand, resolvers, a quality chip and a buffered-ahead band on the timeline.
 
-Not done yet: live DASH, separate audio and video tracks, subtitles,
-saving a stream as a feature, tags and full-text search, multi-select, the
-encrypted vault, and validation on real Windows and macOS machines.
+Also shipped since: live HLS, separate fragmented-MP4 audio and video tracks
+with an audio-track chip and language preference, local `.srt` / `.vtt`
+subtitles, tags and categories with full-text search (FTS5), multi-select and
+bulk actions, folder removal from the library UI, and keys for triage, random
+pick, slideshow, markers and frame step.
+
+Not done yet: live DASH and low-latency HLS, audio in TS or WebM, subtitles
+for streams and embedded subtitles, saving a stream as a feature, the
+encrypted vault (issue #13: format, key wrap, database opening and conversion
+engine are written, nothing in the app calls them yet), and validation on real
+Windows and macOS machines (issues #14, #15).
 
 ## Next milestones (explicitly out of scope until the MVP is solid)
 
-- **Reachability**: buttons and shortcuts for what is only a command today
-  (triage, random pick, slideshow, frame step, adding and jumping between
-  markers); automatic fingerprinting of items that carry user data.
+- **Reachability**: on-screen buttons for what is a key or a command today
+  (triage, random pick, slideshow); automatic fingerprinting of items that
+  carry user data.
 - **Player**: NV12/I420 caps with YUV→RGB in a wgpu shader (skips the CPU
-  `videoconvert`); subtitle and audio-track pickers; seamless segment loops.
-- **Library**: tags, perceptual-hash duplicate detection, file watching instead
-  of manual rescan, per-folder removal from the library UI, a relink picker for
-  moved library roots, a restore-from-backup flow.
-- **Privacy**: encrypted vault for the library database and thumbnail cache.
+  `videoconvert`); embedded subtitles and an audio-track picker for local
+  files; seamless segment loops.
+- **Library**: perceptual-hash duplicate detection, file watching instead
+  of manual rescan, a relink picker for moved library roots, a
+  restore-from-backup flow.
+- **Privacy**: encrypted vault for the library database and thumbnail cache
+  (issue #13, in progress, not delivered).
 - **Hardening**: thumbnail, preview and probe decoding in a sandboxed worker
   process (GStreamer parses every imported video today).
-- **Distribution**: Flatpak, AppImage, installers; Windows and macOS packaging.
+- **Distribution**: published AUR packages (#16), Flatpak, AppImage; Windows installer and macOS bundle that embeds GStreamer (#15); real-hardware validation on Windows (#14).
+- **Quality**: an end-to-end harness with loopback servers and a swarm (#18); performance budgets as CI checks (#17).
 - **Agents**: MCP server (stdio) on top of the command registry; a local control
   channel over a Unix socket, never TCP.
 - **Assistance**: local, offline tagging (classification only; nothing is

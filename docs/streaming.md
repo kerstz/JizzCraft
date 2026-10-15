@@ -221,9 +221,8 @@ again; if that fails, you see "The link expired."
 
 ## Not done yet
 
-Choosing the audio track from the player (the preference is an option of the
-open call, not a control yet), separate audio that is not fragmented MP4,
-separate audio on a live stream, subtitles for streams, saving a stream while
+Separate audio that is not fragmented MP4, separate audio on a live stream,
+subtitles for streams, saving a stream while
 watching it, quality switching and seeking inside a live window, and a
 proxy-aware key fetch UI. Anything not listed above is refused with "This
 stream format is not supported."
