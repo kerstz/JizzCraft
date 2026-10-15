@@ -2,6 +2,7 @@
 
 use super::{FetchService, StreamReader, StreamTicket};
 use crate::config::{FetchConfig, ResumeOnStart};
+use crate::diskspace::{self, Fault, Verdict};
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ConnectionOptions, DhtSessionConfig,
     ListenerOptions, Session, SessionOptions, SessionPersistenceConfig, api::TorrentIdOrHash,
@@ -9,8 +10,8 @@ use librqbit::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 
@@ -33,13 +34,78 @@ pub struct TorrentStatus {
     pub down_bps: u64,
     pub up_bps: u64,
     pub eta_secs: Option<u64>,
-    /// `Some("disk full")` when the volume ran out of space (the torrent is
-    /// paused), `Some("error")` for any other failure. Never a raw message.
+    /// `Some("disk full")` when the volume ran out of space or is about to
+    /// (the torrent is paused), `Some("error")` for any other failure. Never
+    /// a raw message.
     pub error: Option<String>,
 }
 
 /// How long a magnet may take to turn into a file list.
 pub const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long a torrent may receive nothing after an engine panic before the
+/// watchdog gives up on it.
+pub const STALL_WINDOW: Duration = Duration::from_secs(20);
+
+/// Last engine panic seen by the hook below, and when.
+static FAULT: Mutex<Option<(Instant, Fault)>> = Mutex::new(None);
+static HOOK: Once = Once::new();
+
+/// The last engine panic, if it happened at or after `since`: a panic that
+/// predates the torrent's last byte (or its restart) says nothing about why
+/// it is quiet now.
+fn fault_since(since: Instant) -> Fault {
+    match FAULT.lock().ok().and_then(|g| *g) {
+        Some((at, f)) if at >= since => f,
+        _ => Fault::None,
+    }
+}
+
+/// Remember panics that come from the torrent engine and keep them off the
+/// terminal (its message carries a source path). tokio already contains such
+/// a panic to its task; what it cannot do is tell us that the torrent behind
+/// that task will never move again, which is what the watchdog needs.
+/// Every other panic goes to the previous hook untouched.
+fn install_fault_hook() {
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let file = info.location().map(|l| l.file()).unwrap_or("");
+            if file.contains("librqbit") {
+                let kind = if file.ends_with("file_ops.rs") {
+                    Fault::Write
+                } else {
+                    Fault::Other
+                };
+                if let Ok(mut g) = FAULT.lock() {
+                    *g = Some((Instant::now(), kind));
+                }
+                if std::env::var_os("JIZZCRAFT_DEBUG").is_some() {
+                    prev(info);
+                }
+            } else {
+                prev(info);
+            }
+        }));
+    });
+}
+
+/// Run `fut` as its own task and send its result; a panic inside it comes
+/// back as an error value instead of a hung-up channel.
+fn spawn_reply<T: Send + 'static>(
+    rt: &tokio::runtime::Runtime,
+    tx: Sender<Result<T, String>>,
+    fut: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) {
+    rt.spawn(async move {
+        let r = match tokio::spawn(fut).await {
+            Ok(r) => r,
+            Err(e) if e.is_panic() => Err("torrent engine fault".to_string()),
+            Err(_) => Err("cancelled".to_string()),
+        };
+        let _ = tx.send(r);
+    });
+}
 
 type FreeFn = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 
@@ -50,6 +116,14 @@ struct SharedInner {
     free_fn: Mutex<Option<FreeFn>>,
     /// Restored torrents still to be put to sleep (see `session`).
     settle: Mutex<HashSet<usize>>,
+    /// Torrents paused by the watchdog, with the status label to show.
+    halted: Mutex<HashMap<usize, &'static str>>,
+    /// Last progress value seen per torrent and when it last changed.
+    progress: Mutex<HashMap<usize, (u64, Instant)>>,
+    stall_window: Mutex<Option<Duration>>,
+    run_margin: Mutex<Option<u64>>,
+    /// Peers given at add time, to feed a torrent that is started again.
+    peers: Mutex<HashMap<usize, Vec<std::net::SocketAddr>>>,
 }
 
 /// State shared between the service and its spawned tasks.
@@ -69,6 +143,51 @@ impl TorrentShared {
             .ok()
             .and_then(|g| *g)
             .unwrap_or(METADATA_TIMEOUT)
+    }
+    fn window(&self) -> Duration {
+        self.0
+            .stall_window
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .unwrap_or(STALL_WINDOW)
+    }
+    fn margin(&self) -> u64 {
+        self.0
+            .run_margin
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .unwrap_or(diskspace::RUN_MARGIN)
+    }
+    fn halted(&self, id: usize) -> Option<&'static str> {
+        self.0.halted.lock().ok().and_then(|g| g.get(&id).copied())
+    }
+    fn halt(&self, id: usize, label: &'static str) {
+        if let Ok(mut g) = self.0.halted.lock() {
+            g.insert(id, label);
+        }
+    }
+    /// Forget the watchdog's memory of `id` (resumed, or not running).
+    fn clear(&self, id: usize) {
+        if let Ok(mut g) = self.0.halted.lock() {
+            g.remove(&id);
+        }
+        if let Ok(mut g) = self.0.progress.lock() {
+            g.remove(&id);
+        }
+    }
+    /// When the progress of `id` last changed (or was first seen).
+    fn changed_at(&self, id: usize, bytes: u64) -> Instant {
+        let now = Instant::now();
+        let Ok(mut g) = self.0.progress.lock() else {
+            return now;
+        };
+        let e = g.entry(id).or_insert((bytes, now));
+        if e.0 != bytes {
+            *e = (bytes, now);
+        }
+        e.1
     }
     fn free(&self, p: &Path) -> Option<u64> {
         let f = self.0.free_fn.lock().ok().and_then(|g| g.clone());
@@ -109,6 +228,17 @@ impl TorrentProbe {
     }
     fn set(&self, s: ProbeState) {
         self.state.store(s as u8, Ordering::Relaxed);
+    }
+}
+
+/// Marks a probe `Failed` when dropped while still `Resolving`.
+struct ProbeGuard(Arc<TorrentProbe>);
+
+impl Drop for ProbeGuard {
+    fn drop(&mut self) {
+        if self.0.state() == ProbeState::Resolving {
+            self.0.set(ProbeState::Failed);
+        }
     }
 }
 
@@ -180,12 +310,15 @@ impl std::io::Read for TorrentReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use tokio::io::AsyncReadExt;
         let fut = self.stream.as_mut().read(buf);
-        match self
-            .handle
-            .block_on(async { tokio::time::timeout(Duration::from_millis(100), fut).await })
-        {
-            Ok(r) => r,
-            Err(_) => Err(std::io::ErrorKind::WouldBlock.into()),
+        // A panic of the engine must not unwind into the player thread.
+        let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.handle
+                .block_on(async { tokio::time::timeout(Duration::from_millis(100), fut).await })
+        }));
+        match polled {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Err(std::io::ErrorKind::WouldBlock.into()),
+            Err(_) => Err(std::io::Error::other("torrent engine fault")),
         }
     }
 }
@@ -194,12 +327,14 @@ impl std::io::Seek for TorrentReader {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use tokio::io::AsyncSeekExt;
         let fut = self.stream.as_mut().seek(pos);
-        match self
-            .handle
-            .block_on(async { tokio::time::timeout(Duration::from_secs(5), fut).await })
-        {
-            Ok(r) => r,
-            Err(_) => Err(std::io::ErrorKind::TimedOut.into()),
+        let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.handle
+                .block_on(async { tokio::time::timeout(Duration::from_secs(5), fut).await })
+        }));
+        match polled {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Err(std::io::ErrorKind::TimedOut.into()),
+            Err(_) => Err(std::io::Error::other("torrent engine fault")),
         }
     }
 }
@@ -266,6 +401,7 @@ impl FetchService {
     ) -> Result<Arc<Session>, String> {
         let dir = cfg.effective_download_dir();
         cell.get_or_try_init(|| async {
+            install_fault_hook();
             if cfg.require_proxy && cfg.proxy.as_ref().is_none_or(|p| p.is_empty()) {
                 return Err("proxy required".to_string());
             }
@@ -342,30 +478,174 @@ impl FetchService {
                     }
                 });
             }
+            tokio::spawn(Self::watchdog(
+                session.clone(),
+                cfg.effective_download_dir(),
+                shared.clone(),
+            ));
             Ok(session)
         })
         .await
         .cloned()
     }
 
+    /// Once a second: pause running torrents the volume cannot hold, and
+    /// torrents that the engine left stuck after a panic. Every tick is its
+    /// own task, so a panic in one cannot end the loop.
+    async fn watchdog(session: Arc<Session>, dir: PathBuf, shared: TorrentShared) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let (s, d, sh) = (session.clone(), dir.clone(), shared.clone());
+            let _ = tokio::spawn(async move { Self::watch_tick(&s, &d, &sh).await }).await;
+        }
+    }
+
+    async fn watch_tick(session: &Arc<Session>, dir: &Path, shared: &TorrentShared) {
+        let items: Vec<_> = session.with_torrents(|it| it.map(|(id, h)| (id, h.clone())).collect());
+        let mut running = Vec::new();
+        for (id, h) in items {
+            let st = h.stats();
+            if matches!(st.state, librqbit::TorrentStatsState::Live) && !st.finished {
+                running.push((id, h, st.progress_bytes, st.total_bytes));
+            } else if st.error.as_deref().is_some_and(is_enospc) {
+                shared.halt(id, "disk full");
+            } else if !matches!(st.state, librqbit::TorrentStatsState::Initializing { .. })
+                && let Ok(mut g) = shared.0.progress.lock()
+            {
+                g.remove(&id);
+            }
+        }
+        if running.is_empty() {
+            return;
+        }
+        let remaining = running
+            .iter()
+            .map(|(_, _, p, t)| t.saturating_sub(*p))
+            .fold(0u64, u64::saturating_add);
+        let free = shared.free(dir);
+        let window = shared.window();
+        for (id, h, progress, _) in running {
+            let since = shared.changed_at(id, progress);
+            let (idle, fault) = (since.elapsed(), fault_since(since));
+            let label =
+                match diskspace::judge(free, remaining, idle, window, fault, shared.margin()) {
+                    Verdict::Ok => continue,
+                    Verdict::DiskFull => "disk full",
+                    Verdict::Error => "error",
+                };
+            shared.halt(id, label);
+            let _ = session.pause(&h).await;
+        }
+    }
+
+    /// Start a stopped torrent again; returns the id it runs under.
+    ///
+    /// A torrent that librqbit moved to its error state (a fatal write
+    /// error, which is what a real ENOSPC usually is) cannot be started from
+    /// there: it tries to create its files anew and refuses because they
+    /// exist. It is then forgotten (files stay) and added again over its own
+    /// partial files, with the same file selection and peers. The id changes.
+    /// Only torrents this session added get here, so the files are its own.
+    async fn start_again(
+        session: &Arc<Session>,
+        shared: &TorrentShared,
+        dir: &Path,
+        id: usize,
+        h: &Arc<librqbit::ManagedTorrent>,
+    ) -> Result<usize, String> {
+        if !matches!(h.stats().state, librqbit::TorrentStatsState::Error) {
+            session.unpause(h).await.map_err(|e| e.to_string())?;
+            return Ok(id);
+        }
+        let bytes = h
+            .with_metadata(|m| m.torrent_bytes.clone())
+            .map_err(|e| e.to_string())?;
+        let only = h.only_files();
+        let peers = shared
+            .0
+            .peers
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&id).cloned())
+            .unwrap_or_default();
+        session
+            .delete(TorrentIdOrHash::Id(id), false)
+            .await
+            .map_err(|e| e.to_string())?;
+        shared.clear(id);
+        let added = session
+            .add_torrent(
+                AddTorrent::from_bytes(bytes),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    output_folder: Some(dir.to_string_lossy().into_owned()),
+                    only_files: only,
+                    initial_peers: (!peers.is_empty()).then(|| peers.clone()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let new = added
+            .into_handle()
+            .map(|h| h.id())
+            .ok_or_else(|| "torrent was not added".to_string())?;
+        if let Ok(mut g) = shared.0.peers.lock() {
+            g.remove(&id);
+            if !peers.is_empty() {
+                g.insert(new, peers);
+            }
+        }
+        Ok(new)
+    }
+
+    /// Room check before a paused torrent is started again. False (and the
+    /// torrent keeps its typed "disk full" status) when it would not fit.
+    fn may_start(
+        shared: &TorrentShared,
+        dir: &Path,
+        id: usize,
+        h: &librqbit::ManagedTorrent,
+    ) -> bool {
+        let st = h.stats();
+        let remaining = st.total_bytes.saturating_sub(st.progress_bytes);
+        if diskspace::is_low(shared.free(dir), remaining, shared.margin()) {
+            shared.halt(id, "disk full");
+            return false;
+        }
+        shared.clear(id);
+        true
+    }
+
+    /// Test hook: room kept free on top of what a running torrent still
+    /// has to write (default [`diskspace::RUN_MARGIN`], 64 MiB).
+    pub fn set_run_margin(&self, bytes: u64) {
+        if let Ok(mut g) = self.tor.0.run_margin.lock() {
+            *g = Some(bytes);
+        }
+    }
+
+    /// Test hook: how long a torrent may sit still after an engine panic.
+    pub fn set_stall_window(&self, d: Duration) {
+        if let Ok(mut g) = self.tor.0.stall_window.lock() {
+            *g = Some(d);
+        }
+    }
+
     /// File names and lengths of an already added torrent.
     pub fn torrent_files(&self, id: usize) -> Receiver<Result<Vec<(String, u64)>, String>> {
         let (tx, rx) = channel();
         let session = self.session.clone();
-        self.rt().spawn(async move {
-            let r = async {
-                let s = session.get().cloned().ok_or("no session")?;
-                let h = s.get(TorrentIdOrHash::Id(id)).ok_or("torrent not found")?;
-                h.with_metadata(|m| {
-                    m.file_infos
-                        .iter()
-                        .map(|f| (f.relative_filename.to_string_lossy().into_owned(), f.len))
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| e.to_string())
-            }
-            .await;
-            let _ = tx.send(r);
+        spawn_reply(self.rt(), tx, async move {
+            let s = session.get().cloned().ok_or("no session")?;
+            let h = s.get(TorrentIdOrHash::Id(id)).ok_or("torrent not found")?;
+            h.with_metadata(|m| {
+                m.file_infos
+                    .iter()
+                    .map(|f| (f.relative_filename.to_string_lossy().into_owned(), f.len))
+                    .collect::<Vec<_>>()
+            })
+            .map_err(|e| e.to_string())
         });
         rx
     }
@@ -410,12 +690,10 @@ impl FetchService {
         let state = self.state_dir.clone();
         let cell = self.session.clone();
         let shared = self.tor.clone();
-        self.rt().spawn(async move {
-            let _ = tx.send(
-                Self::session(&cfg, &state, &cell, &shared)
-                    .await
-                    .map(|_| ()),
-            );
+        spawn_reply(self.rt(), tx, async move {
+            Self::session(&cfg, &state, &cell, &shared)
+                .await
+                .map(|_| ())
         });
         rx
     }
@@ -436,17 +714,13 @@ impl FetchService {
         let state = self.state_dir.clone();
         let cell = self.session.clone();
         let (shared, tok) = (self.tor.clone(), self.torrent_cancel());
-        self.rt().spawn(async move {
-            let r = async {
-                let prepared = Self::prepare(source).await?;
-                let probe = Arc::new(TorrentProbe::default());
-                Self::add_prepared(
-                    &cfg, &state, &cell, prepared, None, peers, &shared, &probe, tok,
-                )
-                .await
-            }
-            .await;
-            let _ = tx.send(r);
+        spawn_reply(self.rt(), tx, async move {
+            let prepared = Self::prepare(source).await?;
+            let probe = Arc::new(TorrentProbe::default());
+            Self::add_prepared(
+                &cfg, &state, &cell, prepared, None, peers, &shared, &probe, tok,
+            )
+            .await
         });
         rx
     }
@@ -481,26 +755,20 @@ impl FetchService {
         let (shared, tok) = (self.tor.clone(), self.torrent_cancel());
         let probe = Arc::new(TorrentProbe::default());
         let p2 = probe.clone();
-        self.rt().spawn(async move {
-            let r = async {
-                let prepared = Self::prepare(source).await?;
-                let session = Self::session(&cfg, &state, &cell, &shared).await?;
-                let files =
-                    Self::list_prepared(&session, &prepared, &peers, &p2, shared.timeout(), tok)
-                        .await?;
-                Ok(Listed {
-                    files,
-                    prepared,
-                    peers,
-                })
-            }
-            .await;
-            p2.set(if r.is_ok() {
-                ProbeState::Ready
-            } else {
-                ProbeState::Failed
-            });
-            let _ = tx.send(r);
+        spawn_reply(self.rt(), tx, async move {
+            // Failed unless it completes; also when the task panics.
+            let _g = ProbeGuard(p2.clone());
+            let prepared = Self::prepare(source).await?;
+            let session = Self::session(&cfg, &state, &cell, &shared).await?;
+            let files =
+                Self::list_prepared(&session, &prepared, &peers, &p2, shared.timeout(), tok)
+                    .await?;
+            p2.set(ProbeState::Ready);
+            Ok(Listed {
+                files,
+                prepared,
+                peers,
+            })
         });
         (rx, probe)
     }
@@ -517,9 +785,9 @@ impl FetchService {
         let state = self.state_dir.clone();
         let cell = self.session.clone();
         let (shared, tok) = (self.tor.clone(), self.torrent_cancel());
-        self.rt().spawn(async move {
+        spawn_reply(self.rt(), tx, async move {
             let probe = Arc::new(TorrentProbe::default());
-            let r = Self::add_prepared(
+            Self::add_prepared(
                 &cfg,
                 &state,
                 &cell,
@@ -530,8 +798,7 @@ impl FetchService {
                 &probe,
                 tok,
             )
-            .await;
-            let _ = tx.send(r);
+            .await
         });
         rx
     }
@@ -650,6 +917,7 @@ impl FetchService {
         if crate::diskspace::is_full(shared.free(&dir), needed) {
             return Err("disk full".into());
         }
+        let given = peers.clone();
         let added = session
             .add_torrent(
                 Self::to_add(&prepared),
@@ -663,10 +931,16 @@ impl FetchService {
             )
             .await
             .map_err(|e| e.to_string())?;
-        added
+        let id = added
             .into_handle()
             .map(|h| h.id())
-            .ok_or_else(|| "torrent was not added".into())
+            .ok_or_else(|| "torrent was not added".to_string())?;
+        if !given.is_empty()
+            && let Ok(mut g) = shared.0.peers.lock()
+        {
+            g.insert(id, given);
+        }
+        Ok(id)
     }
 
     /// Something to play for file `file` of torrent `id`: the finished file
@@ -677,75 +951,82 @@ impl FetchService {
         let (tx, rx) = channel();
         let session = self.session.clone();
         let handle = self.rt().handle().clone();
-        self.rt().spawn(async move {
-            let r = async {
-                let session = session.get().cloned().ok_or("no session")?;
-                let h = session
-                    .get(TorrentIdOrHash::Id(id))
-                    .ok_or("torrent not found")?;
-                // Metadata and state may take a moment after an add.
-                let t0 = std::time::Instant::now();
-                let (len, rel) = loop {
-                    if let Ok(v) = h.with_metadata(|m| {
-                        m.file_infos
-                            .get(file)
-                            .map(|f| (f.len, f.relative_filename.clone()))
-                    }) && let Some(v) = v
-                    {
-                        break v;
-                    }
-                    if t0.elapsed() > Duration::from_secs(60) {
-                        return Err("could not read the torrent metadata".to_string());
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                };
-                let path = h.output_folder().join(&rel);
-                if !path_is_safe(&rel) {
-                    return Err("unsafe file path".to_string());
+        let (shared, dir) = (self.tor.clone(), self.cfg.effective_download_dir());
+        spawn_reply(self.rt(), tx, async move {
+            let session = session.get().cloned().ok_or("no session")?;
+            let mut id = id;
+            let mut h = session
+                .get(TorrentIdOrHash::Id(id))
+                .ok_or("torrent not found")?;
+            // Metadata and state may take a moment after an add.
+            let t0 = std::time::Instant::now();
+            let (len, rel) = loop {
+                if let Ok(v) = h.with_metadata(|m| {
+                    m.file_infos
+                        .get(file)
+                        .map(|f| (f.len, f.relative_filename.clone()))
+                }) && let Some(v) = v
+                {
+                    break v;
                 }
-                let done = h.stats().file_progress.get(file).is_some_and(|&p| p >= len);
-                if done && path.is_file() {
-                    return Ok(StreamTicket::Done(path));
+                if t0.elapsed() > Duration::from_secs(60) {
+                    return Err("could not read the torrent metadata".to_string());
                 }
-                // A paused torrent never receives pieces: the user asked to play.
-                // "Play" is not a suggestion.
-                if h.is_paused() {
-                    let _ = session.unpause(&h).await;
-                }
-                let stream = loop {
-                    match h.clone().stream(file).await {
-                        Ok(s) => break s,
-                        Err(_) if t0.elapsed() < Duration::from_secs(60) => {
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                        }
-                        Err(_) => return Err("could not start streaming".to_string()),
-                    }
-                };
-                let status = Arc::new(StreamStatus::default());
-                refresh_status(&h, &status);
-                let (st, hh) = (status.clone(), h.clone());
-                tokio::spawn(async move {
-                    // Ends when the player drops its handle (we hold the other one).
-                    while Arc::strong_count(&st) > 1 {
-                        refresh_status(&hh, &st);
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    }
-                });
-                Ok(StreamTicket::Live {
-                    reader: StreamReader(Box::new(TorrentReader {
-                        handle,
-                        stream: Box::new(stream),
-                    })),
-                    len,
-                    name: rel
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    status: Some(status),
-                })
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+            let path = h.output_folder().join(&rel);
+            if !path_is_safe(&rel) {
+                return Err("unsafe file path".to_string());
             }
-            .await;
-            let _ = tx.send(r);
+            let done = h.stats().file_progress.get(file).is_some_and(|&p| p >= len);
+            if done && path.is_file() {
+                return Ok(StreamTicket::Done(path));
+            }
+            // A paused torrent never receives pieces: the user asked to play.
+            // "Play" is not a suggestion.
+            if h.is_paused() || h.stats().error.is_some() {
+                // ... unless the volume cannot hold it: say so, typed.
+                if !FetchService::may_start(&shared, &dir, id, &h) {
+                    return Err("disk full".to_string());
+                }
+                if let Ok(new) = FetchService::start_again(&session, &shared, &dir, id, &h).await {
+                    id = new;
+                    h = session
+                        .get(TorrentIdOrHash::Id(id))
+                        .ok_or("torrent not found")?;
+                }
+            }
+            let stream = loop {
+                match h.clone().stream(file).await {
+                    Ok(s) => break s,
+                    Err(_) if t0.elapsed() < Duration::from_secs(60) => {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    Err(_) => return Err("could not start streaming".to_string()),
+                }
+            };
+            let status = Arc::new(StreamStatus::default());
+            refresh_status(&h, &status, shared.halted(id));
+            let (st, hh) = (status.clone(), h.clone());
+            tokio::spawn(async move {
+                // Ends when the player drops its handle (we hold the other one).
+                while Arc::strong_count(&st) > 1 {
+                    refresh_status(&hh, &st, shared.halted(id));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            });
+            Ok(StreamTicket::Live {
+                reader: StreamReader(Box::new(TorrentReader {
+                    handle,
+                    stream: Box::new(stream),
+                })),
+                len,
+                name: rel
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                status: Some(status),
+            })
         });
         rx
     }
@@ -766,7 +1047,18 @@ impl FetchService {
                 for (id, h) in items {
                     let s = h.stats();
                     let disk_full = s.error.as_deref().is_some_and(is_enospc);
+                    // Paused by the watchdog: typed status until it runs again.
+                    let halted = shared.halted(id).filter(|_| {
+                        let paused = matches!(s.state, librqbit::TorrentStatsState::Paused);
+                        if !paused && matches!(s.state, librqbit::TorrentStatsState::Live) {
+                            shared.clear(id);
+                        }
+                        paused
+                    });
                     let state = match (&s.state, s.error.is_some(), s.finished) {
+                        // A full disk is a pause, not a failure: it starts
+                        // again from this state once there is room.
+                        (_, true, _) if disk_full => TorrentState::Paused,
                         (_, true, _) => TorrentState::Error,
                         (librqbit::TorrentStatsState::Paused, _, _) => TorrentState::Paused,
                         (librqbit::TorrentStatsState::Initializing { paused: true }, _, _) => {
@@ -815,7 +1107,9 @@ impl FetchService {
                         error: s
                             .error
                             .as_ref()
-                            .map(|_| if disk_full { "disk full" } else { "error" }.to_string()),
+                            .map(|_| if disk_full { "disk full" } else { "error" })
+                            .or(halted)
+                            .map(str::to_string),
                     });
                 }
                 for h in stop {
@@ -842,6 +1136,7 @@ impl FetchService {
     pub fn resume(&self, id: usize) {
         if let Some(s) = self.session.get().cloned() {
             let shared = self.tor.clone();
+            let dir = self.cfg.effective_download_dir();
             self.rt().spawn(async move {
                 if let Some(h) = s.get(TorrentIdOrHash::Id(id)) {
                     // A manual resume restarts the seeding clock.
@@ -849,7 +1144,11 @@ impl FetchService {
                         g.remove(&id);
                     }
                     shared.settled(id);
-                    let _ = s.unpause(&h).await;
+                    // Still no room: stay paused, keep the typed status.
+                    if !h.stats().finished && !Self::may_start(&shared, &dir, id, &h) {
+                        return;
+                    }
+                    let _ = Self::start_again(&s, &shared, &dir, id, &h).await;
                 }
             });
         }
@@ -861,13 +1160,20 @@ impl FetchService {
         let (tx, rx) = channel();
         let session = self.session.clone();
         let shared = self.tor.clone();
+        let dir = self.cfg.effective_download_dir();
         self.rt().spawn(async move {
             let mut n = 0;
             if let Some(s) = session.get().cloned() {
                 let hs: Vec<_> = s.with_torrents(|it| it.map(|(id, h)| (id, h.clone())).collect());
                 for (id, h) in hs {
                     shared.settled(id);
-                    if h.is_paused() && !h.stats().finished && s.unpause(&h).await.is_ok() {
+                    let st = h.stats();
+                    let stopped = h.is_paused() || st.error.as_deref().is_some_and(is_enospc);
+                    if stopped
+                        && !st.finished
+                        && Self::may_start(&shared, &dir, id, &h)
+                        && Self::start_again(&s, &shared, &dir, id, &h).await.is_ok()
+                    {
                         n += 1;
                     }
                 }
@@ -912,7 +1218,11 @@ fn seed_goal_reached(
     false
 }
 
-fn refresh_status(h: &Arc<librqbit::ManagedTorrent>, st: &StreamStatus) {
+fn refresh_status(
+    h: &Arc<librqbit::ManagedTorrent>,
+    st: &StreamStatus,
+    halted: Option<&'static str>,
+) {
     let s = h.stats();
     let paused = h.is_paused() || matches!(s.state, librqbit::TorrentStatsState::Paused);
     st.paused.store(paused, Ordering::Relaxed);
@@ -935,6 +1245,7 @@ fn refresh_status(h: &Arc<librqbit::ManagedTorrent>, st: &StreamStatus) {
         *g = s
             .error
             .as_deref()
-            .map(|e| if is_enospc(e) { "disk full" } else { "error" }.to_string());
+            .map(|e| if is_enospc(e) { "disk full" } else { "error" }.to_string())
+            .or_else(|| halted.map(str::to_string));
     }
 }

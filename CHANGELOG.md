@@ -7,6 +7,18 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Fixed
+- Torrents on a full disk (issue #21): librqbit panics on the partial write of
+  a real ENOSPC and the torrent used to stay "downloading" forever. The fetch
+  service now checks free space while torrents run (remaining bytes plus
+  64 MiB, every second) and before a resume, pauses with the translated
+  "Disk full. Downloads paused." status, detects a torrent left stuck by an
+  engine panic, keeps engine panics out of the player thread and every
+  service reply, and resumes once space is back (a torrent that librqbit
+  left in its error state is added again over its own partial files). A disk-full torrent shows as
+  paused, not as an error. s15 now covers the torrent case; the known limit
+  is removed from `docs/e2e.md`, which lists what is and is not guaranteed.
+
 ### Tests
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 

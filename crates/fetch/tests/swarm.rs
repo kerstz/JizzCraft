@@ -344,3 +344,46 @@ fn disk_preflight_refuses_before_anything_is_written() {
         .unwrap()
         .expect("added");
 }
+
+#[test]
+fn monitor_pauses_a_running_torrent_before_the_disk_is_full() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    let sw = swarm(1, 64 * 1024);
+    let (dl, st) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let svc = service(dl.path(), st.path(), ResumeOnStart::Ask);
+    let free = Arc::new(AtomicU64::new(10 * 1024 * 1024 * 1024));
+    let f2 = free.clone();
+    svc.set_free_space_fn(move |_| Some(f2.load(Ordering::Relaxed)));
+    let id = svc
+        .add_with_peers(file_in(st.path(), &sw.torrent), sw.peers.clone())
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .expect("added");
+    wait_for(30, "first bytes", || {
+        svc.list().iter().any(|t| t.progress_bytes > 0)
+    });
+    // Less than what is left plus the 64 MiB margin: pause, typed, no path.
+    free.store(1024 * 1024, Ordering::Relaxed);
+    wait_for(15, "paused with a typed status", || {
+        svc.list().iter().any(|t| {
+            t.id == id && t.state == TorrentState::Paused && t.error.as_deref() == Some("disk full")
+        })
+    });
+    // Resuming without room changes nothing.
+    svc.resume(id);
+    std::thread::sleep(Duration::from_secs(2));
+    svc.list();
+    std::thread::sleep(Duration::from_millis(300));
+    let t = svc.list().into_iter().find(|t| t.id == id).unwrap();
+    assert_eq!(t.state, TorrentState::Paused);
+    assert_eq!(t.error.as_deref(), Some("disk full"));
+    // Room is back: it runs again and the status is clean.
+    free.store(10 * 1024 * 1024 * 1024, Ordering::Relaxed);
+    svc.resume(id);
+    wait_for(15, "running again", || {
+        svc.list()
+            .iter()
+            .any(|t| t.id == id && t.state != TorrentState::Paused && t.error.is_none())
+    });
+}

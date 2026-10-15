@@ -58,14 +58,38 @@ about three minutes in a debug build; CI runs it in its own `e2e` job, which is 
 | `s12_magnet_with_no_peers_gives_a_sentence_soon` | A magnet nobody has ends in the "no peers" or "details in time" sentence within the configured metadata timeout, without the info hash. |
 | `s13_restart_keeps_the_torrent_and_ask_does_not_resume_it` | After dropping and recreating the service, the torrent is back and paused; policy Ask does not wake it. |
 | `s14_kill_switch_means_zero_connections` | With `require_proxy` and no proxy, none of `open_any`, `stream_url`, `play_http`, a resolver run, `search`, a torrent listing or a magnet opens a single connection (counted at the server) or starts the resolver. |
-| `s15_disk_full_is_a_sentence_and_leaves_nothing_behind` | Linux only. The test re-executes itself in an unprivileged user+mount namespace (`unshare -Urm`) with a 4 MiB tmpfs. A ranged-less HTTP download that does not fit ends in "Disk full. Downloads paused." (no path, no address), the `.part` file is removed, and once space is freed the same address downloads byte for byte. A SQLite database on the same volume fails the write, passes `quick_check`, and writes again after the space returns. Skips with a printed reason where user namespaces are unavailable; `JIZZCRAFT_REQUIRE_NAMESPACE=1` (CI) makes that a failure. |
+| `s15_disk_full_is_a_sentence_and_leaves_nothing_behind` | Linux only. The test re-executes itself in an unprivileged user+mount namespace (`unshare -Urm`) with a 4 MiB tmpfs. A ranged-less HTTP download that does not fit ends in "Disk full. Downloads paused." (no path, no address), the `.part` file is removed, and once space is freed the same address downloads byte for byte. A SQLite database on the same volume fails the write, passes `quick_check`, and writes again after the space returns. A torrent on the same volume, with the free-space query made to lie so that it runs into a real ENOSPC (the engine asserts on the partial write), ends paused with the typed "disk full" status, refuses to start while there is no room, and completes byte for byte once space is freed; the process never panics. Skips with a printed reason where user namespaces are unavailable; `JIZZCRAFT_REQUIRE_NAMESPACE=1` (CI) makes that a failure. |
 
-### Known limit of s15
+### What s15 guarantees for torrents
 
-The torrent path is not covered: librqbit 9.0.1 panics (`file_ops.rs`,
-`assertion left == right`) on the partial write that a real ENOSPC produces,
-so the torrent never reaches the "disk full" status. The preflight and the
-status mapping are unit tested; the runtime case needs an upstream fix.
+librqbit 9.0.1 asserts (`file_ops.rs`, `debug_assert_eq!` on the written
+length) when a write is partial, which is what a real ENOSPC produces. That
+assertion only exists in builds with debug assertions (dev profile, tests);
+in a release build the partial write is accepted silently and the piece fails
+its hash check. Both leave the torrent alive but not moving. JizzCraft does
+not patch librqbit; it guarantees, on the paths it controls:
+
+- the application stays alive: engine tasks run under tokio (a panic ends
+  that task only), every service call runs in its own task and answers with a
+  typed error on a panic, and the player's reader catches an engine panic;
+- the state is typed: free space is checked before adding, before resuming
+  and every second while downloading (remaining bytes + 64 MiB margin); below
+  that the torrent is paused with "Disk full. Downloads paused.". A torrent
+  that is stuck after an engine panic (no byte for 20 s) is paused too, as
+  "disk full" for a write fault, "error" otherwise;
+- resuming works once there is room; without room it stays paused. A torrent
+  that librqbit moved to its error state (a fatal ENOSPC) cannot be started
+  from there (it refuses to "create" files that exist), so it is forgotten
+  (files kept) and added again over its own partial files with the same file
+  selection and peers; its id changes. This is the one place where a torrent
+  is added with `overwrite: true`, and only for a torrent this session added.
+
+Not guaranteed: a disk that fills between two checks (another program
+writing fast) can still hit ENOSPC, and then the engine's own panic or fatal
+error happens first; the typed state follows within a second or twenty, not
+instantly. Windows has no free-space query yet (`diskspace.rs`), so only the
+runtime path (ENOSPC error, stuck watchdog after a write fault) applies there.
+A quiet swarm without any panic is never paused by the watchdog.
 
 ## Adding one
 

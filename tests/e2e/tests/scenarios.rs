@@ -1169,6 +1169,15 @@ fn fill_all_but(dir: &std::path::Path, left: u64) -> std::path::PathBuf {
     p
 }
 
+/// The raw status label of torrent `id` (`"disk full"`, `"error"`, or empty).
+fn t_err(svc: &FetchService, id: usize) -> String {
+    svc.list()
+        .into_iter()
+        .find(|t| t.id == id)
+        .and_then(|t| t.error)
+        .unwrap_or_default()
+}
+
 fn tree_files(p: &std::path::Path) -> Vec<String> {
     let mut v = Vec::new();
     if let Ok(d) = std::fs::read_dir(p) {
@@ -1308,6 +1317,104 @@ fn disk_full_body(dir: &std::path::Path) {
         c.execute("INSERT INTO pad VALUES (?1)", [&blob])
             .expect("write after freeing space");
         db.quick_check().expect("database damaged after recovery");
+    }
+    for f in tree_files(dir) {
+        if !f.starts_with(&*dl.display().to_string()) {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    // 3. A torrent on the same volume. The free-space query is made to lie
+    // (plenty of room) so that the preflight and the monitor let the download
+    // run into a real ENOSPC: the engine then asserts on the partial write.
+    // That must not take the process down, and the torrent must end up
+    // paused with the typed "disk full" status, then finish once space is
+    // back.
+    {
+        use std::sync::atomic::AtomicBool;
+        let clip = big_clip();
+        let sw = jizzcraft_e2e::swarm::swarm(2, 100 * 1024, clip.clone());
+        let st = tempfile::tempdir().unwrap();
+        let svc = FetchService::new(
+            FetchConfig {
+                download_dir: Some(dl.clone()),
+                dht: false,
+                ..Default::default()
+            },
+            st.path().join("state"),
+        )
+        .unwrap();
+        svc.set_stall_window(Duration::from_secs(3));
+        // The volume is smaller than the usual 64 MiB margin.
+        svc.set_run_margin(0);
+        let lie = Arc::new(AtomicBool::new(true));
+        let l2 = lie.clone();
+        svc.set_free_space_fn(move |p| {
+            if l2.load(Ordering::Relaxed) {
+                Some(u64::MAX / 2)
+            } else {
+                jizzcraft_fetch::diskspace::free_bytes(p)
+            }
+        });
+        let listed = svc
+            .list_files_with_peers(file_in(st.path(), &sw.torrent), sw.peers.clone())
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .expect("list");
+        let filler = fill_all_but(dir, 300 * 1024);
+        let id = svc
+            .add_listed(listed, None)
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .expect("add");
+        // The volume really fills up under the running torrent.
+        wait_for(60, "ENOSPC reached", || {
+            jizzcraft_fetch::diskspace::free_bytes(dir).is_some_and(|f| f < 32 * 1024)
+        });
+        svc.list();
+        std::thread::sleep(Duration::from_secs(1));
+        let t = svc.list().into_iter().find(|t| t.id == id).unwrap();
+        assert!(
+            t.progress_bytes < t.total_bytes,
+            "it finished on a full disk"
+        );
+
+        // The engine is told the truth; the watchdog does the rest.
+        lie.store(false, Ordering::Relaxed);
+        wait_for(30, "typed disk full", || {
+            svc.list().iter().any(|t| {
+                t.id == id
+                    && t.state == jizzcraft_fetch::service::TorrentState::Paused
+                    && t.error.as_deref() == Some("disk full")
+            })
+        });
+        assert_sentence(t_err(&svc, id).as_str(), errors::DISK_FULL);
+        // With no room it refuses to start again, and says why.
+        svc.resume(id);
+        std::thread::sleep(Duration::from_millis(1500));
+        svc.list();
+        std::thread::sleep(Duration::from_millis(300));
+        let t = svc.list().into_iter().find(|t| t.id == id).unwrap();
+        assert_eq!(t.error.as_deref(), Some("disk full"));
+        assert_eq!(t.state, jizzcraft_fetch::service::TorrentState::Paused);
+
+        // Space comes back: it resumes and completes.
+        std::fs::remove_file(&filler).unwrap();
+        svc.resume(id);
+        wait_for(90, "torrent complete after freeing space", || {
+            svc.list()
+                .iter()
+                .any(|t| t.total_bytes > 0 && t.progress_bytes == t.total_bytes)
+        });
+        // (A torrent that the engine had put in its error state is added
+        // again over its own files, so its id may have changed.)
+        let t = svc.list().into_iter().next().unwrap();
+        assert!(t.error.is_none(), "{:?}", t.error);
+        assert_eq!(
+            std::fs::read(dl.join(jizzcraft_e2e::swarm::FILE_NAME)).unwrap(),
+            *clip,
+            "resumed torrent differs"
+        );
     }
 }
 
