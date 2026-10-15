@@ -34,6 +34,12 @@ anything may change between minor versions.
   `portability::backup` stay encrypted (the backup also copies the header).
   Migration, FTS and crash tests now run in clear and encrypted mode.
 
+- Encrypted vault, step 5 of issue #13 (engine only, still not wired to the
+  app or CLI). `jizzcraft_media::thumbs::ThumbStore` caches thumbnails and
+  scrub previews as XChaCha20-Poly1305 files under `cache/vault-thumbs/`
+  with keyed names; nothing is written to `thumbs/` or `previews/` in vault
+  mode. Pruning and `cache.clear` cover the encrypted cache.
+
 - Encrypted vault, step 4 of issue #13 (engine only, **still nothing is
   encrypted** by any shipped path: no UI or CLI calls it yet).
   `jizzcraft_core::vault_convert` converts a library in place:

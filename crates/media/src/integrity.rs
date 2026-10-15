@@ -257,7 +257,7 @@ pub enum CacheKind {
     All,
 }
 
-/// Remove cached derivatives. Only ever touches `previews`/`thumbs` under the
+/// Remove cached derivatives. Only ever touches `previews`/`thumbs`/`vault-thumbs` under the
 /// cache directory, never anything else.
 pub fn clear_cache(root: &Path, what: CacheKind) -> Result<u64, String> {
     let dirs: &[&str] = match what {
@@ -266,6 +266,17 @@ pub fn clear_cache(root: &Path, what: CacheKind) -> Result<u64, String> {
         CacheKind::All => &["previews", "thumbs"],
     };
     let mut bytes = 0u64;
+    // Encrypted cache: thumbnails are `.jzt`, previews `.jzp`.
+    let vault = root.join(crate::thumbs::VAULT_DIR);
+    let vault_exts: &[&str] = match what {
+        CacheKind::Previews => &["jzp"],
+        CacheKind::Thumbs => &["jzt"],
+        CacheKind::All => &["jzt", "jzp"],
+    };
+    bytes += remove_vault_files(&vault, vault_exts)?;
+    if what == CacheKind::All {
+        let _ = std::fs::remove_dir_all(&vault);
+    }
     for d in dirs {
         let dir = root.join(d);
         if !dir.is_dir() {
@@ -273,6 +284,27 @@ pub fn clear_cache(root: &Path, what: CacheKind) -> Result<u64, String> {
         }
         bytes += dir_size(&dir);
         std::fs::remove_dir_all(&dir).map_err(|e| format!("cannot clear cache: {e}"))?;
+    }
+    Ok(bytes)
+}
+
+/// Delete files of `exts` under `dir`, then empty subdirectories.
+fn remove_vault_files(dir: &Path, exts: &[&str]) -> Result<u64, String> {
+    let mut bytes = 0u64;
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(md) = e.metadata() else { continue };
+        let p = e.path();
+        if md.is_dir() {
+            bytes += remove_vault_files(&p, exts)?;
+            let _ = std::fs::remove_dir(&p); // only succeeds when empty
+        } else if md.is_file()
+            && p.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| exts.contains(&x))
+        {
+            std::fs::remove_file(&p).map_err(|e| format!("cannot clear cache: {e}"))?;
+            bytes += md.len();
+        }
     }
     Ok(bytes)
 }
