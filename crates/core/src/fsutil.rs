@@ -44,6 +44,7 @@ pub fn create_private_dir_all(dir: &Path) -> io::Result<()> {
 /// `OpenOptions` that create files readable by their owner only (0600 on
 /// Unix, the default elsewhere).
 pub fn private_file_options() -> std::fs::OpenOptions {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut o = std::fs::OpenOptions::new();
     #[cfg(unix)]
     {
