@@ -37,13 +37,50 @@ pub(crate) fn check_dest(dest: &Path) -> Result<()> {
 }
 
 /// Consistent online copy of the library (`VACUUM INTO`). Returns bytes written.
+///
+/// From an encrypted library the copy is encrypted with the same key (checked
+/// by `tests/vault_db.rs`), and the vault header is copied next to it as
+/// `dest` with the extension `vault` (so `copy.db` gets `copy.vault`, which is
+/// where `Db::open_with` and the vault tools look for it). The size returned
+/// is the database only.
 pub fn backup(db: &Db, dest: &Path) -> Result<u64> {
+    use crate::vault::{VaultError, header_path};
     check_dest(dest)?;
     let d = dest
         .to_str()
         .ok_or_else(|| Error::Invalid("destination path is not valid UTF-8".into()))?;
+    let header = if db.encrypted {
+        let src = db
+            .path
+            .as_deref()
+            .map(header_path)
+            .ok_or(Error::Vault(VaultError::HeaderMissing))?;
+        let dst = header_path(dest);
+        if dst.exists() {
+            return Err(Error::Invalid("destination already exists".into()));
+        }
+        // Read it first: a backup nobody can open is worse than none.
+        let bytes = std::fs::read(&src).map_err(|_| Error::Vault(VaultError::HeaderMissing))?;
+        crate::vault::validate_header(&bytes)?;
+        Some((dst, bytes))
+    } else {
+        None
+    };
     db.conn.execute("VACUUM INTO ?1", [d])?;
-    Ok(std::fs::metadata(dest)?.len())
+    let len = std::fs::metadata(dest)?.len();
+    if let Some((dst, bytes)) = header {
+        let write = || -> std::io::Result<()> {
+            let mut f = OpenOptions::new().write(true).create_new(true).open(&dst)?;
+            f.write_all(&bytes)?;
+            f.sync_all()
+        };
+        if let Err(e) = write() {
+            let _ = std::fs::remove_file(dest);
+            let _ = std::fs::remove_file(&dst);
+            return Err(e.into());
+        }
+    }
+    Ok(len)
 }
 
 #[derive(Debug, Clone, Default)]

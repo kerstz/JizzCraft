@@ -144,8 +144,10 @@ impl VaultKey {
         Ok(VaultKey(k))
     }
 
-    #[cfg(test)]
-    fn from_bytes(b: [u8; 32]) -> VaultKey {
+    /// A key from fixed bytes, for tests of other modules. Never use it for
+    /// real data: real keys come from `create` / `unlock`.
+    #[doc(hidden)]
+    pub fn from_bytes_for_tests(b: [u8; 32]) -> VaultKey {
         VaultKey(b)
     }
 }
@@ -456,7 +458,7 @@ mod tests {
     };
 
     fn dek() -> VaultKey {
-        VaultKey::from_bytes(std::array::from_fn(|i| i as u8))
+        VaultKey::from_bytes_for_tests(std::array::from_fn(|i| i as u8))
     }
 
     fn fixed_header(pass: &str) -> [u8; HEADER_LEN] {
@@ -687,7 +689,7 @@ mod tests {
         }
         assert!(c.open(&name, &s1[..s1.len() - 1]).is_err());
         assert!(c.open(&name, &[]).is_err());
-        let other = ThumbCipher::new(&VaultKey::from_bytes([9; 32]).thumb_keys());
+        let other = ThumbCipher::new(&VaultKey::from_bytes_for_tests([9; 32]).thumb_keys());
         assert!(other.open(&name, &s1).is_err());
     }
 
