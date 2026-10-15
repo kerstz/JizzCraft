@@ -1148,3 +1148,231 @@ fn s14_kill_switch_means_zero_connections() {
     );
     base.assert_settled();
 }
+
+// ---- 15 ---------------------------------------------------------------------
+
+/// Env var that carries the mount point into the re-executed test binary.
+const FULL_DIR: &str = "JIZZCRAFT_E2E_FULLDISK_DIR";
+
+/// Fill `dir` until the write fails with ENOSPC, then give `left` bytes back.
+fn fill_all_but(dir: &std::path::Path, left: u64) -> std::path::PathBuf {
+    use std::io::Write;
+    let p = dir.join("filler.bin");
+    let mut f = std::fs::File::create(&p).unwrap();
+    let chunk = vec![0u8; 16 * 1024];
+    let mut n = 0u64;
+    while f.write_all(&chunk).is_ok() {
+        n += chunk.len() as u64;
+    }
+    let _ = f.flush();
+    f.set_len(n.saturating_sub(left)).unwrap();
+    p
+}
+
+fn tree_files(p: &std::path::Path) -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(d) = std::fs::read_dir(p) {
+        for e in d.flatten() {
+            let q = e.path();
+            if q.is_dir() {
+                v.extend(tree_files(&q));
+            } else {
+                v.push(q.display().to_string());
+            }
+        }
+    }
+    v
+}
+
+/// The scenario itself. Runs inside a user+mount namespace where `dir` is a
+/// 4 MiB tmpfs, so ENOSPC is real and no privilege is needed.
+fn disk_full_body(dir: &std::path::Path) {
+    if !ready(WEBM) {
+        return;
+    }
+    let dl = dir.join("dl");
+    std::fs::create_dir(&dl).unwrap();
+
+    // 1. An HTTP source without Range is downloaded to a `.part` file: the
+    // volume fills up halfway.
+    let body = big_clip();
+    assert!(body.len() > 512 * 1024 && body.len() < 3 * 1024 * 1024);
+    let b2 = body.clone();
+    let srv = Server::start(Arc::new(move |_: &Req| {
+        let mut r = Reply::shared("video/webm", b2.clone());
+        r.ranges = false;
+        r
+    }));
+    let filler = fill_all_but(dir, body.len() as u64 / 2);
+    let base = Baseline::take();
+    {
+        let st = tempfile::tempdir().unwrap();
+        let svc = FetchService::new(
+            FetchConfig {
+                download_dir: Some(dl.clone()),
+                dht: false,
+                ..Default::default()
+            },
+            st.path().join("state"),
+        )
+        .unwrap();
+        let ticket = svc
+            .open_any(srv.url("/v/clip.webm"), StreamOpts::default())
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .expect("ticket");
+        let StreamTicket::Live {
+            mut reader, len, ..
+        } = ticket
+        else {
+            panic!("expected a live download");
+        };
+        assert_eq!(len, body.len() as u64);
+        let mut sink = vec![0u8; 64 * 1024];
+        let err = loop {
+            match reader.read(&mut sink) {
+                Ok(0) => panic!("the download finished on a full disk"),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => break e,
+            }
+        };
+        assert_sentence(&err.to_string(), errors::DISK_FULL);
+        drop(reader);
+        wait_for(10, "partial file removed", || tree_files(&dl).is_empty());
+
+        // 2. Space comes back: the same address now downloads completely.
+        std::fs::remove_file(&filler).unwrap();
+        let ticket = svc
+            .open_any(srv.url("/v/clip.webm"), StreamOpts::default())
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .expect("ticket after freeing space");
+        let StreamTicket::Live { mut reader, .. } = ticket else {
+            panic!("expected a live download");
+        };
+        let mut got = Vec::new();
+        let t0 = Instant::now();
+        while got.len() < body.len() {
+            assert!(t0.elapsed() < Duration::from_secs(30), "retry too slow");
+            match reader.read(&mut sink) {
+                Ok(0) => break,
+                Ok(n) => got.extend_from_slice(&sink[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("retry failed: {}", errors::classify(&e.to_string())),
+            }
+        }
+        assert!(got == *body, "resumed download differs");
+        drop(reader);
+        wait_for(10, "final file in place", || {
+            let f = tree_files(&dl);
+            f.len() == 1 && !f[0].ends_with(".part")
+        });
+        assert_eq!(std::fs::read(&tree_files(&dl)[0]).unwrap(), *body);
+    }
+    drop(srv);
+    base.assert_settled();
+    for f in tree_files(&dl) {
+        std::fs::remove_file(f).unwrap();
+    }
+
+    // 2b. The library database on the same volume: a write that does not fit
+    // fails with SQLITE_FULL, the file stays consistent and writes work again
+    // once space is back.
+    {
+        use jizzcraft_core::db::Db;
+        let db = Db::open(&dir.join("lib.db")).expect("open db");
+        let c = db.conn_for_tests();
+        c.execute("CREATE TABLE IF NOT EXISTS pad (b BLOB)", [])
+            .unwrap();
+        let filler = fill_all_but(dir, 64 * 1024);
+        let blob = vec![7u8; 256 * 1024];
+        let mut failed = None;
+        for _ in 0..8 {
+            if let Err(e) = c.execute("INSERT INTO pad VALUES (?1)", [&blob]) {
+                failed = Some(e.to_string());
+                break;
+            }
+        }
+        let e = failed.expect("a full volume must fail a write");
+        assert!(
+            e.to_ascii_lowercase().contains("full") || e.contains("disk"),
+            "unexpected database error"
+        );
+        db.quick_check().expect("database damaged by a full disk");
+        std::fs::remove_file(&filler).unwrap();
+        c.execute("INSERT INTO pad VALUES (?1)", [&blob])
+            .expect("write after freeing space");
+        db.quick_check().expect("database damaged after recovery");
+    }
+}
+
+/// Disk full, for real: a small tmpfs inside an unprivileged user+mount
+/// namespace (`unshare -Urm`). The test binary re-executes itself in there,
+/// so no root, no loop device and no change to the host.
+///
+/// It skips, with a printed reason, where user namespaces are unavailable;
+/// `JIZZCRAFT_REQUIRE_NAMESPACE=1` (CI) turns that skip into a failure.
+#[cfg(target_os = "linux")]
+#[test]
+fn s15_disk_full_is_a_sentence_and_leaves_nothing_behind() {
+    let _g = serial();
+    if let Ok(dir) = std::env::var(FULL_DIR) {
+        disk_full_body(std::path::Path::new(&dir));
+        return;
+    }
+    let skip = |why: &str| {
+        if std::env::var("JIZZCRAFT_REQUIRE_NAMESPACE").is_ok_and(|v| v == "1") {
+            panic!("JIZZCRAFT_REQUIRE_NAMESPACE=1 and the scenario cannot run: {why}");
+        }
+        eprintln!("skipped: {why}");
+    };
+    let probe = std::process::Command::new("unshare")
+        .args([
+            "-Urm",
+            "sh",
+            "-c",
+            "d=$(mktemp -d) && mount -t tmpfs -o size=1m tmpfs \"$d\"",
+        ])
+        .output();
+    match probe {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            return skip(&format!(
+                "cannot mount a tmpfs in a user namespace: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => return skip(&format!("unshare not available: {e}")),
+    }
+    let mnt = tempfile::tempdir().unwrap();
+    let me = std::env::current_exe().unwrap();
+    let out = std::process::Command::new("unshare")
+        .args(["-Urm", "sh", "-c"])
+        .arg("mount -t tmpfs -o size=4m tmpfs \"$1\" && shift && exec \"$@\"")
+        .arg("sh")
+        .arg(mnt.path())
+        .arg(&me)
+        .args([
+            "s15_disk_full_is_a_sentence_and_leaves_nothing_behind",
+            "--exact",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(FULL_DIR, mnt.path())
+        .output()
+        .expect("run the namespaced test");
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "disk-full scenario failed:\n{text}");
+    if text.contains("skipped:") {
+        eprintln!("skipped inside the namespace (see reason above)");
+    }
+}

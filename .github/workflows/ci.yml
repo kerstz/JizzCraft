@@ -1,9 +1,8 @@
 name: CI
 
 # Required status checks (branch protection): check, network, packaging,
-# install-e2e, deny, msrv.
-# Not required: windows (experimental, continue-on-error), e2e (new; make it
-# required once it has been green for a while).
+# install-e2e, deny, msrv, e2e (e2e scenarios).
+# Not required: windows (experimental, continue-on-error), perf.
 
 on:
   push:
@@ -116,9 +115,14 @@ jobs:
             gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Ubuntu 24.04 restricts unprivileged user namespaces; s15 (disk full)
+      # mounts a tmpfs inside one.
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Scenarios
         env:
           JIZZCRAFT_REQUIRE_PLUGINS: "1"
+          JIZZCRAFT_REQUIRE_NAMESPACE: "1"
         run: cargo run -q -p xtask -- e2e
 
   # Performance budgets (issue #17): synthetic 10k library, release build,

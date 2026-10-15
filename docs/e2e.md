@@ -24,7 +24,7 @@ Needs `gst-launch-1.0` and these elements: `playbin`, `appsink`, `vp8enc`,
 `webmmux`, `opusenc`, `x264enc`, `h264parse`, `mpegtsmux`, `mp4mux`,
 `avdec_h264`, `qtdemux`, `tsdemux`, `matroskademux`. (Ubuntu: `gstreamer1.0-
 plugins-{base,good,bad,ugly}` and `gstreamer1.0-libav`.) A whole run takes
-about three minutes in a debug build; CI runs it in its own `e2e` job.
+about three minutes in a debug build; CI runs it in its own `e2e` job, which is a required check.
 
 ## What every scenario checks
 
@@ -58,6 +58,14 @@ about three minutes in a debug build; CI runs it in its own `e2e` job.
 | `s12_magnet_with_no_peers_gives_a_sentence_soon` | A magnet nobody has ends in the "no peers" or "details in time" sentence within the configured metadata timeout, without the info hash. |
 | `s13_restart_keeps_the_torrent_and_ask_does_not_resume_it` | After dropping and recreating the service, the torrent is back and paused; policy Ask does not wake it. |
 | `s14_kill_switch_means_zero_connections` | With `require_proxy` and no proxy, none of `open_any`, `stream_url`, `play_http`, a resolver run, `search`, a torrent listing or a magnet opens a single connection (counted at the server) or starts the resolver. |
+| `s15_disk_full_is_a_sentence_and_leaves_nothing_behind` | Linux only. The test re-executes itself in an unprivileged user+mount namespace (`unshare -Urm`) with a 4 MiB tmpfs. A ranged-less HTTP download that does not fit ends in "Disk full. Downloads paused." (no path, no address), the `.part` file is removed, and once space is freed the same address downloads byte for byte. A SQLite database on the same volume fails the write, passes `quick_check`, and writes again after the space returns. Skips with a printed reason where user namespaces are unavailable; `JIZZCRAFT_REQUIRE_NAMESPACE=1` (CI) makes that a failure. |
+
+### Known limit of s15
+
+The torrent path is not covered: librqbit 9.0.1 panics (`file_ops.rs`,
+`assertion left == right`) on the partial write that a real ENOSPC produces,
+so the torrent never reaches the "disk full" status. The preflight and the
+status mapping are unit tested; the runtime case needs an upstream fix.
 
 ## Adding one
 
