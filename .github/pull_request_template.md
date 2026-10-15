@@ -1,3 +1,5 @@
+<!-- Thanks for contributing. First pull request? CONTRIBUTING.md and AGENTS.md have the rules, and docs/internals.md lists every CI job with the command that runs it locally. Small, focused pull requests get reviewed fastest. -->
+
 ## What and why
 
 <!-- One or two sentences. Link the issue: "Closes #123". -->
