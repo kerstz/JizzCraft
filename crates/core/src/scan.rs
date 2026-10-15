@@ -73,13 +73,23 @@ impl ScanReport {
 
 /// Import a folder (idempotent) and scan it. Returns `(folder_id, report)`.
 pub fn import_folder(db: &mut Db, path: &Path) -> Result<(i64, ScanReport)> {
+    import_folder_with(db, path, &ScanControl::default())
+}
+
+/// [`import_folder`] as a job: the scan stops between rows when `ctl.cancel`
+/// is set (what was committed is kept).
+pub fn import_folder_with(
+    db: &mut Db,
+    path: &Path,
+    ctl: &ScanControl,
+) -> Result<(i64, ScanReport)> {
     let root = crate::pathbytes::canonical(path)
         .map_err(|e| Error::Invalid(format!("cannot open folder: {e}")))?;
     if !root.is_dir() {
         return Err(Error::Invalid("not a directory".into()));
     }
     let (id, _) = db.add_folder(&root)?;
-    let report = scan_folder(db, id, &root)?;
+    let report = scan_folder_with(db, id, &root, ctl)?;
     Ok((id, report))
 }
 

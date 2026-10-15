@@ -11,6 +11,20 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault, step 7a of issue #13: lock screen and keyed opening in the
+  desktop app. A new `Root` wraps the app with `Locked`, `Unlocking`, `Open`
+  and `Locking` states (and an error screen for a missing, damaged or
+  orphaned header, which never creates a new library). An encrypted library
+  shows a neutral, translated lock screen (title `Viewer`, no counts or names);
+  nothing else runs before the key opens it. Argon2id runs on a worker thread,
+  a wrong passphrase gives a fixed sentence and wipes the buffer, with a soft
+  delay after three failures. `app.vault.lock` (menu "Lock library",
+  `Ctrl+Shift+L`) hides the app, cancels its jobs, stops the player through
+  its control thread, waits for the jobs and drops the app so the key is
+  zeroed. Every open in the UI (scans, jobs, folder removal, start-up check,
+  thumbnails, scrub previews) goes through `LibraryOpener` and the keys. Core:
+  `scan::import_folder_with`. Settings to enable or disable the vault,
+  conversion as a job and auto-lock are step 7b; see `docs/vault.md`.
 - Encrypted vault, step 6 of issue #13: the command line. `jizzcraft-cli vault
   status|enable|disable|change-passphrase|verify`. The passphrase is read from
   a terminal without echo (`rpassword`, CLI only), or from `--passphrase-fd N`

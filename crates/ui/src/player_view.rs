@@ -102,6 +102,8 @@ pub struct PlayerView {
     pub pending_resume: Option<(Duration, bool)>,
     /// `(path, size, mtime)` for the preview service.
     pub source: Option<(PathBuf, u64, i64)>,
+    /// Vault mode: scrub previews are cached encrypted under these keys.
+    pub thumb_keys: Option<Arc<jizzcraft_core::vault::ThumbKeys>>,
     pub previews_enabled: bool,
     /// Discreet / share-safe: previews use the blurred variant.
     pub blur_previews: bool,
@@ -152,6 +154,7 @@ impl PlayerView {
             manual_variant: None,
             pending_resume: None,
             source: None,
+            thumb_keys: None,
             previews_enabled: true,
             blur_previews: false,
             preview: None,
@@ -951,11 +954,12 @@ impl PlayerView {
             let ctx = ui.ctx().clone();
             let wake: Arc<dyn Fn() + Send + Sync> =
                 Arc::new(move || ctx.request_repaint_after(Duration::from_millis(1)));
-            self.preview = Some(PreviewService::new(
+            self.preview = Some(PreviewService::with_keys(
                 path.clone(),
                 *size,
                 *mtime,
                 jizzcraft_core::paths::cache_dir(),
+                self.thumb_keys.clone(),
                 wake,
             ));
         }

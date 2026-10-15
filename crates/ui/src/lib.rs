@@ -12,8 +12,10 @@ pub mod identity;
 pub mod keys;
 pub mod lang;
 pub mod player_view;
+pub mod root;
 pub mod subs;
 pub mod theme;
 pub mod widgets;
 
-pub use app::{JizzApp, Options};
+pub use app::{JizzApp, Library, Options};
+pub use root::Root;

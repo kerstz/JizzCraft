@@ -15,10 +15,11 @@ before the code exists, and records what each step has actually shipped.
 | 4 | Plain to encrypted conversion, crash recovery (engine only) | done |
 | 5 | Encrypted thumbnails and previews | done |
 | 6 | CLI commands, canary test | done |
-| 7 | Settings UI, lock screen, auto-lock | not started |
+| 7a | Lock screen, unlocking, locking, keyed opening in the app | done |
+| 7b | Settings (enable, disable, change), conversion as a job, auto-lock | not started |
 | 8 | Perf in vault mode, packaging smoke tests | not started |
 
-Until step 7 is done the desktop app has no way to turn the vault on. The
+Until step 7b is done the desktop app has no way to turn the vault on; it can only open and lock a library the CLI encrypted. The
 command line can (step 6, below); nothing is encrypted unless you run
 `jizzcraft-cli vault enable`.
 
@@ -263,6 +264,69 @@ Limits and honest caveats:
 - Tests inject a fail point after every step and a `kill -9` of a converting
   child process; they check that only "all clear with every row" or "all
   encrypted with every row" can result, including the FTS content.
+
+## Step 7a: lock screen and keyed opening in the desktop app
+
+`jizzcraft_ui::root::Root` is what eframe runs. It wraps the real app in a
+state machine, `Gate`, with `Locked`, `Unlocking`, `Open` and `Locking`
+(plus a `Failed` error screen):
+
+- **Start-up.** `vault_convert::recover`, then the first 16 bytes decide. A
+  library that is not encrypted opens exactly as before. An encrypted one
+  shows the lock screen and nothing else runs: no quick check, no cache
+  prune, no codec check, no `--import` or `--cmd` until the key opened the
+  library. A missing, damaged or orphaned header is an error screen with a
+  fixed translated sentence; no new library is ever created next to it.
+- **Lock screen.** Neutral: the word "Locked", a masked field, "Unlock" and
+  "Exit". No counts, names or brand; the window title is `Viewer` and the
+  icon the neutral one, whatever the identity. It is translated in the six
+  languages.
+- **Unlocking.** The passphrase leaves the field in a `Zeroizing` buffer
+  of fixed capacity (no reallocation while typing) and goes to a worker
+  thread: Argon2id and the first database open never run on the UI thread.
+  The window shows "Unlocking…". Only the derived database and thumbnail keys
+  (behind `Arc`s) leave the worker; the data key is dropped there. A wrong
+  passphrase gives the fixed sentence "Wrong passphrase." and wipes the
+  buffer. After three wrong attempts in a row the field waits 1, 2, 4 … 30
+  seconds; the counter lives in memory only and is not a defence against an
+  attacker who has the files (Argon2id is).
+- **Locking.** Command `app.vault.lock` (also `vault.lock`, menu "Lock
+  library" under Privacy, shortcut `Ctrl+Shift+L`). The window is hidden at
+  once and shows "Locking…". The app cancels its jobs through their flags
+  (scans stop between rows, fingerprint and integrity checks, folder removal),
+  saves the playback position and hands the player to its control thread
+  (`Player::drop` sends Stop, nothing is set to Null from the UI). Only when
+  every job holding a connection has ended (a ticket counter, released even on
+  a panic) is the app dropped: database connection, textures, thumbnail
+  service and previews go, and the last `Arc` to the key zeroes it. Then
+  "Locked" appears. A file dialog left open inside a backup or import job
+  therefore delays the end of the lock; the content is hidden meanwhile.
+- **Every open goes through `LibraryOpener`**: start-up, scans, jobs,
+  folder removal, the start-up quick check. Thumbnails and scrub previews use
+  `with_keys`. There is no `Db::open(path)` without a key in `crates/ui`.
+  The start-up cache prune is size-only and covers `vault-thumbs`.
+
+Not done in 7a, so planned for 7b: the settings page to enable, disable or
+change the passphrase; running the conversion as a job; auto-lock after
+inactivity; the "boss key also locks" option; a warning next to JSON exports,
+which stay in clear.
+
+Limits, honestly:
+
+- egui keeps text-layout caches and its own edit state; the typed passphrase
+  is wiped from our buffer and the edit state is dropped after each attempt,
+  but copies in the toolkit's memory, in the allocator or in swap are not
+  tracked (RAM is out of scope, see the threat model).
+- The Argon2 working memory inside the crate is not zeroed.
+- The state machine and the unlocking logic are unit-tested without a window
+  (`crates/ui/src/root.rs`, `crates/ui/tests/vault_open.rs`, and a test that
+  builds the real app without a window and drops it, checking that the key is
+  freed). The window itself, the visual aspect of the lock screen and a real
+  lock with a playing video were not seen on screen in this step.
+- No `xtask e2e` scenario was added: that harness drives loopback servers and
+  the player and does not depend on the UI crate; the integration test above
+  covers the same opening logic with a library encrypted by the same engine
+  the CLI uses.
 
 ## Step 6: command line
 

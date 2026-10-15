@@ -13,7 +13,6 @@ use jizzcraft_core::{Db, Error, Registry};
 use jizzcraft_media::integrity::{CacheKind, CheckMode, IntegrityOpts, clear_cache, run_integrity};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 
 impl JizzApp {
     /// Run `f` with a private connection, off the UI thread.
@@ -22,10 +21,13 @@ impl JizzApp {
         label: &'static str,
         f: impl FnOnce(&mut Db) -> Result<String, String> + Send + 'static,
     ) {
-        let (tx, ctx, path) = (self.tx.clone(), self.ctx.clone(), self.db_path.clone());
+        let (tx, ctx, opener) = (self.tx.clone(), self.ctx.clone(), self.opener.clone());
+        let ticket = super::JobTicket::new(&self.jobs);
         self.busy += 1;
         std::thread::spawn(move || {
-            let result = Db::open(&path)
+            let _ticket = ticket;
+            let result = opener
+                .open()
                 .map_err(|e| e.to_string())
                 .and_then(|mut db| f(&mut db));
             let _ = tx.send(JobMsg::Done { label, result });
@@ -96,6 +98,14 @@ impl JizzApp {
         );
         ui.separator();
         ui.label(theme::hud(crate::i18n::tr("Privacy"), MUTED));
+        if self.opener.key.is_some() {
+            item(
+                ui,
+                crate::i18n::tr("Lock library"),
+                "app.vault.lock",
+                json!({}),
+            );
+        }
         let paused = self.db.setting("history.enabled").ok().flatten().as_deref() == Some("0");
         item(
             ui,
@@ -225,8 +235,8 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
         |app, args| {
             let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
             let limit = args.get("limit").and_then(Value::as_u64);
+            let cancel = app.lock_cancel.clone();
             app.spawn_job("Fingerprint", move |db| {
-                let cancel = AtomicBool::new(false);
                 let r = jizzcraft_core::fingerprint::fingerprint_pending(
                     db,
                     !all,
@@ -263,8 +273,8 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             o.limit = args.get("limit").and_then(Value::as_u64);
+            let cancel = app.lock_cancel.clone();
             app.spawn_job("Integrity", move |db| {
-                let cancel = AtomicBool::new(false);
                 let r =
                     run_integrity(db, &o, &cancel, &mut |_, _| {}).map_err(|e| e.to_string())?;
                 Ok(format!(

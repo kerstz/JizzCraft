@@ -4,7 +4,7 @@
 // `--bench` re-attach to the parent console in `attach_console`.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use jizzcraft_ui::{JizzApp, Options, config::Config};
+use jizzcraft_ui::{Options, Root, config::Config};
 use std::path::PathBuf;
 
 const HELP: &str = "\
@@ -361,7 +361,7 @@ fn main() -> eframe::Result {
     let res = eframe::run_native(
         identity.app_name,
         native,
-        Box::new(move |cc| match JizzApp::new(cc, opts) {
+        Box::new(move |cc| match Root::new(cc, opts) {
             Ok(app) => Ok(Box::new(app)),
             Err(e) => Err(e.into()),
         }),

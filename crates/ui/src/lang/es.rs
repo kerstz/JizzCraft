@@ -1062,4 +1062,24 @@ pub const TABLE: &[(&str, &str)] = &[
         "The library database reported a problem. No backup could be made.",
         "La base de datos de la biblioteca ha notificado un problema. No se pudo crear una copia de seguridad.",
     ),
+    ("Wrong passphrase.", "Frase de paso incorrecta."),
+    (
+        "The vault header of this library is missing or damaged. The library cannot be opened and nothing was changed.",
+        "Falta el encabezado de la caja fuerte de esta biblioteca o está dañado. No se puede abrir la biblioteca y no se ha modificado nada.",
+    ),
+    (
+        "The library could not be opened.",
+        "No se pudo abrir la biblioteca.",
+    ),
+    ("Locking…", "Bloqueando…"),
+    ("Unlocking…", "Desbloqueando…"),
+    ("Locked", "Bloqueado"),
+    ("Passphrase", "Frase de paso"),
+    ("Unlock", "Desbloquear"),
+    ("Try again in {} s.", "Inténtalo de nuevo en {} s."),
+    ("Lock library", "Bloquear la biblioteca"),
+    (
+        "Lock the encrypted library",
+        "Bloquear la biblioteca cifrada",
+    ),
 ];

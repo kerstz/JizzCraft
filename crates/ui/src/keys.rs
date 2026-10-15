@@ -141,6 +141,16 @@ pub const KEYMAP: &[Binding] = &[
         "{}",
         "Panic: jump to the chosen video, full screen",
     ))),
+    shifted(ctrl(b(
+        Global,
+        Both,
+        Key::L,
+        false,
+        "Ctrl+Shift+L",
+        "app.vault.lock",
+        "{}",
+        "Lock the encrypted library",
+    ))),
     ctrl(b(
         Global,
         Both,

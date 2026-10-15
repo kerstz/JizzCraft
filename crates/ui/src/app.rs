@@ -222,7 +222,17 @@ pub struct JizzApp {
     db: Db,
     /// The library is newer than this build: opened read-only, with a banner.
     read_only: bool,
-    db_path: PathBuf,
+    /// Where the library is and the key it opens with (`None`: not encrypted).
+    /// Every connection a job needs is opened through it.
+    opener: jizzcraft_core::db::LibraryOpener,
+    /// Thumbnail keys in vault mode.
+    thumb_keys: Option<Arc<jizzcraft_core::vault::ThumbKeys>>,
+    /// Count of running jobs that hold a connection (and so the key).
+    jobs: Arc<std::sync::atomic::AtomicU32>,
+    /// Set when the library is being locked: jobs stop between rows.
+    lock_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// The lock command ran: the root envelope picks it up after the frame.
+    lock_requested: bool,
     registry: Rc<Registry<JizzApp>>,
     cfg: Config,
     persist_cfg: bool,
@@ -305,9 +315,110 @@ impl HasLibrary for JizzApp {
     fn db(&mut self) -> &mut Db {
         &mut self.db
     }
+
+    fn thumb_keys(&self) -> Option<Arc<jizzcraft_core::vault::ThumbKeys>> {
+        self.thumb_keys.clone()
+    }
+
+    fn lock_vault(&mut self) -> bool {
+        if self.opener.key.is_some() {
+            self.lock_requested = true;
+            self.ctx.request_repaint();
+            true
+        } else {
+            false
+        }
+    }
 }
 
-fn window_icon(bytes: &[u8]) -> Arc<egui::IconData> {
+/// Held by a job thread while it may use the library key; the root waits for
+/// the count to reach zero before it shows "Locked". Dropping (also on a
+/// panic) releases it.
+pub(crate) struct JobTicket(Arc<std::sync::atomic::AtomicU32>);
+
+impl JobTicket {
+    fn new(counter: &Arc<std::sync::atomic::AtomicU32>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        JobTicket(Arc::clone(counter))
+    }
+}
+
+impl Drop for JobTicket {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// An opened library handed to [`JizzApp::open`].
+pub struct Library {
+    pub(crate) db: Db,
+    pub(crate) read_only: bool,
+    pub(crate) opener: jizzcraft_core::db::LibraryOpener,
+    pub(crate) thumb_keys: Option<Arc<jizzcraft_core::vault::ThumbKeys>>,
+}
+
+impl Library {
+    /// A library that is not encrypted. A library written by a newer version
+    /// opens read-only (banner).
+    pub fn open_plain(path: &std::path::Path) -> Result<Library, String> {
+        let opener = jizzcraft_core::db::LibraryOpener::new(path, None);
+        let (db, read_only) = match opener.open() {
+            Ok(db) => (db, false),
+            Err(jizzcraft_core::Error::FutureSchema { .. }) => (
+                opener
+                    .open_read_only()
+                    .map_err(|e| format!("cannot open library: {e}"))?,
+                true,
+            ),
+            Err(e) => return Err(format!("cannot open library: {e}")),
+        };
+        Ok(Library {
+            db,
+            read_only,
+            opener,
+            thumb_keys: None,
+        })
+    }
+
+    /// From the proof of a successful unlock (see `root::unlock_blocking`).
+    pub(crate) fn from_unlocked(u: crate::root::Unlocked) -> Library {
+        Library {
+            db: u.db,
+            read_only: u.read_only,
+            opener: u.opener,
+            thumb_keys: Some(u.thumb_keys),
+        }
+    }
+}
+
+impl crate::root::Lockable for JizzApp {
+    fn vault_active(&self) -> bool {
+        self.opener.key.is_some()
+    }
+
+    fn begin_lock(&mut self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Jobs stop between rows; the folder removal has its own flag.
+        self.lock_cancel.store(true, SeqCst);
+        if let Some(c) = &self.remove_cancel {
+            c.store(true, SeqCst);
+        }
+        self.cancel_pending_streams();
+        // Saves the position, then the player goes to its control thread
+        // (`Player::drop` sends Stop; nothing is set to Null from here).
+        self.close_view();
+    }
+
+    fn jobs_finished(&self) -> bool {
+        self.jobs.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+
+    fn take_lock_request(&mut self) -> bool {
+        std::mem::take(&mut self.lock_requested)
+    }
+}
+
+pub(crate) fn window_icon(bytes: &[u8]) -> Arc<egui::IconData> {
     let img = image::load_from_memory(bytes)
         .expect("bundled icon decodes")
         .to_rgba8();
@@ -331,23 +442,41 @@ fn load_icon(ctx: &egui::Context, name: &str, bytes: &[u8]) -> TextureHandle {
 }
 
 impl JizzApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, opts: Options) -> Result<Self, String> {
-        theme::apply(&cc.egui_ctx);
-        let db_path = opts.db_path.clone().unwrap_or_else(paths::db_path);
-        // A library written by a newer version opens read-only (banner).
-        let (db, read_only) = match Db::open(&db_path) {
-            Ok(db) => (db, false),
-            Err(jizzcraft_core::Error::FutureSchema { .. }) => (
-                Db::open_read_only(&db_path).map_err(|e| format!("cannot open library: {e}"))?,
-                true,
-            ),
-            Err(e) => return Err(format!("cannot open library: {e}")),
-        };
+    /// Interface language: `--lang`, then the saved choice, then the system
+    /// locale, then English. Also needed by the lock screen.
+    pub(crate) fn apply_language(opts: &Options, cfg: Option<&Config>) {
+        let saved = cfg.map_or_else(|| Config::load().language, |c| c.language.clone());
+        let lang = opts
+            .lang
+            .as_deref()
+            .and_then(crate::i18n::Lang::parse)
+            .or_else(|| saved.as_deref().and_then(crate::i18n::Lang::parse))
+            .or_else(crate::i18n::from_env)
+            .unwrap_or(crate::i18n::Lang::En);
+        crate::i18n::set(lang);
+    }
+
+    /// Build the app around an opened library. Nothing runs against the
+    /// library before this point: a locked vault has no quick check, no cache
+    /// prune and no doctor until its key opened it.
+    pub(crate) fn open(
+        ctx: &egui::Context,
+        render_state: Option<egui_wgpu::RenderState>,
+        opts: Options,
+        lib: Library,
+    ) -> Result<Self, String> {
+        theme::apply(ctx);
+        let Library {
+            db,
+            read_only,
+            opener,
+            thumb_keys,
+        } = lib;
         let (tx, rx) = channel();
         let persist_cfg = opts.config.is_none();
         if persist_cfg && opts.bench.is_none() && opts.screenshot.is_none() {
             // One quiet look at the codecs, off the UI thread.
-            let (tx, ctx) = (tx.clone(), cc.egui_ctx.clone());
+            let (tx, ctx) = (tx.clone(), ctx.clone());
             std::thread::spawn(move || {
                 let r = jizzcraft_media::doctor::run();
                 if r.exit_code() != 0 {
@@ -357,14 +486,17 @@ impl JizzApp {
             });
         }
         let mut cfg = opts.config.clone().unwrap_or_else(Config::load);
+        let jobs = Arc::new(std::sync::atomic::AtomicU32::new(0));
         if persist_cfg && opts.bench.is_none() && opts.screenshot.is_none() {
             // Quiet start-up upkeep, off the UI thread: one integrity check,
             // and the cache trimmed at most once a day.
-            let (tx, ctx, path) = (tx.clone(), cc.egui_ctx.clone(), db_path.clone());
+            let (tx, ctx, opener2) = (tx.clone(), ctx.clone(), opener.clone());
+            let ticket = JobTicket::new(&jobs);
             std::thread::spawn(move || {
+                let _ticket = ticket;
                 // On a failed check, copy the library aside (same mechanism
                 // as the pre-remove backup) and say so only if it worked.
-                let kept = Db::open_read_only(&path).ok().and_then(|d| {
+                let kept = opener2.open_read_only().ok().and_then(|d| {
                     d.quick_check().is_err().then(|| {
                         d.backup_tagged("pre-check")
                             .map(|b| b.is_some())
@@ -387,15 +519,7 @@ impl JizzApp {
                 });
             }
         }
-        // --lang, then the saved choice, then the system locale, then English.
-        let lang = opts
-            .lang
-            .as_deref()
-            .and_then(crate::i18n::Lang::parse)
-            .or_else(|| cfg.language.as_deref().and_then(crate::i18n::Lang::parse))
-            .or_else(crate::i18n::from_env)
-            .unwrap_or(crate::i18n::Lang::En);
-        crate::i18n::set(lang);
+        Self::apply_language(&opts, Some(&cfg));
         if opts.disguised {
             // Start neutral: discreet mode on, even if the saved config says off.
             cfg.discreet = true;
@@ -415,16 +539,20 @@ impl JizzApp {
         }
 
         let mut app = JizzApp {
-            ctx: cc.egui_ctx.clone(),
+            ctx: ctx.clone(),
             db,
             read_only,
-            db_path,
+            opener,
+            thumb_keys: thumb_keys.clone(),
+            jobs,
+            lock_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lock_requested: false,
             registry: Rc::new(registry),
             cfg,
             persist_cfg,
             view: View::Library,
             view_token: 0,
-            render_state: cc.wgpu_render_state.clone(),
+            render_state,
             bench: None,
             tab: opts
                 .tab
@@ -479,16 +607,20 @@ impl JizzApp {
             proxy_test: status_chip::ProxyTest::default(),
             queue: Vec::new(),
             thumbs: {
-                let ctx = cc.egui_ctx.clone();
-                ThumbService::new(paths::cache_dir(), Arc::new(move || ctx.request_repaint()))
+                let ctx = ctx.clone();
+                ThumbService::with_keys(
+                    paths::cache_dir(),
+                    thumb_keys,
+                    Arc::new(move || ctx.request_repaint()),
+                )
             },
             textures: HashMap::new(),
             thumb_failed: HashSet::new(),
             meta_tried: HashSet::new(),
             icon_peach: window_icon(PEACH_PNG),
             icon_viewer: window_icon(VIEWER_PNG),
-            peach: load_icon(&cc.egui_ctx, "peach", PEACH_PNG),
-            viewer_icon: load_icon(&cc.egui_ctx, "viewer", VIEWER_PNG),
+            peach: load_icon(ctx, "peach", PEACH_PNG),
+            viewer_icon: load_icon(ctx, "viewer", VIEWER_PNG),
             last_title: String::new(),
             frame_no: 0,
             screenshot_sent: false,
@@ -929,6 +1061,7 @@ impl JizzApp {
             pv.media_id = Some(m.id);
             pv.duration_hint = m.duration_ms;
             pv.source = Some((m.path.clone(), m.size, m.mtime));
+            pv.thumb_keys = self.thumb_keys.clone();
             // Offer to continue where it stopped, unless resume is switched off.
             if let Some(ms) = m.resume_ms
                 && ms >= 5_000
@@ -1057,16 +1190,21 @@ impl JizzApp {
     fn start_scan(&mut self, dir: Option<PathBuf>) {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
-        let db_path = self.db_path.clone();
+        let opener = self.opener.clone();
+        let ticket = JobTicket::new(&self.jobs);
+        let ctl = jizzcraft_core::scan::ScanControl {
+            cancel: self.lock_cancel.clone(),
+            ..Default::default()
+        };
         self.busy += 1;
         std::thread::spawn(move || {
+            let _ticket = ticket;
             let result = (|| {
-                let mut db = Db::open(&db_path).map_err(|e| e.to_string())?;
+                let mut db = opener.open().map_err(|e| e.to_string())?;
                 match dir {
-                    Some(d) => {
-                        jizzcraft_core::scan::import_folder(&mut db, &d).map_err(|e| e.to_string())
-                    }
-                    None => jizzcraft_core::scan::rescan_all(&mut db)
+                    Some(d) => jizzcraft_core::scan::import_folder_with(&mut db, &d, &ctl)
+                        .map_err(|e| e.to_string()),
+                    None => jizzcraft_core::scan::rescan_all_with(&mut db, &ctl)
                         .map(|r| (0, r))
                         .map_err(|e| e.to_string()),
                 }
@@ -2725,14 +2863,17 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             app.remove_cancel = Some(cancel.clone());
             app.busy += 1;
-            let (tx, ctx, db_path, r) = (
+            let (tx, ctx, opener, r) = (
                 app.tx.clone(),
                 app.ctx.clone(),
-                app.db_path.clone(),
+                app.opener.clone(),
                 root.clone(),
             );
+            let ticket = JobTicket::new(&app.jobs);
             std::thread::spawn(move || {
-                let result = Db::open(&db_path)
+                let _ticket = ticket;
+                let result = opener
+                    .open()
                     .and_then(|mut db| db.remove_folder_safely(&r, &cancel, &mut |_| {}))
                     .map_err(|e| e.to_string())
                     .and_then(|o| o.ok_or_else(|| "not found".to_owned()));
@@ -3487,6 +3628,11 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
         Ok(json!({ "discreet": app.cfg.discreet }))
     });
     reg.register(
+        "app.vault.lock",
+        "Lock the encrypted library (back to the passphrase screen)",
+        |app, _| Ok(json!({ "locked": app.lock_vault() })),
+    );
+    reg.register(
         "app.boss_key",
         "Pause, mute, discreet mode, minimize",
         |app, _| {
@@ -3964,6 +4110,84 @@ pub fn fmt_date(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::root::Lockable;
+
+    fn scripted_opts(db: &std::path::Path) -> Options {
+        Options {
+            db_path: Some(db.to_path_buf()),
+            // A supplied config: no start-up doctor, quick check or prune.
+            config: Some(Config::default()),
+            ..Default::default()
+        }
+    }
+
+    /// The real app, built without a window, locked the way the root does.
+    #[test]
+    fn locking_the_real_app_cancels_jobs_and_frees_the_key() {
+        use jizzcraft_core::vault::KdfParams;
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let media = dir.path().join("media");
+        std::fs::create_dir(&media).unwrap();
+        drop(Db::open(&db_path).unwrap());
+        let fast = KdfParams {
+            m_cost: 19456,
+            t_cost: 2,
+            p_cost: 1,
+        };
+        jizzcraft_core::vault_convert::enable(&db_path, "a long enough passphrase", fast).unwrap();
+
+        let unlocked = crate::root::unlock_blocking(&db_path, "a long enough passphrase").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = JizzApp::open(
+            &ctx,
+            None,
+            scripted_opts(&db_path),
+            Library::from_unlocked(unlocked),
+        )
+        .unwrap();
+        assert!(app.vault_active());
+        let key = Arc::downgrade(app.opener.key.as_ref().unwrap());
+
+        // A scan is a job: it holds a ticket until it ends, then the count
+        // is back to zero.
+        app.start_scan(Some(media));
+        for _ in 0..400 {
+            if app.jobs_finished() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.jobs_finished(), "scan job released its ticket");
+
+        // A job that is still running keeps the lock from completing.
+        let held = JobTicket::new(&app.jobs);
+        assert!(!app.jobs_finished());
+        assert!(app.lock_vault());
+        assert!(app.take_lock_request());
+        assert!(!app.take_lock_request(), "one request, one lock");
+        app.begin_lock();
+        assert!(app.lock_cancel.load(SeqCst), "jobs were told to stop");
+        assert!(!app.jobs_finished());
+        drop(held);
+        assert!(app.jobs_finished());
+
+        drop(app);
+        assert!(key.upgrade().is_none(), "the database key is gone");
+    }
+
+    #[test]
+    fn a_plain_library_has_nothing_to_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let ctx = egui::Context::default();
+        let lib = Library::open_plain(&db_path).unwrap();
+        let mut app = JizzApp::open(&ctx, None, scripted_opts(&db_path), lib).unwrap();
+        assert!(!app.vault_active());
+        assert!(!app.lock_vault());
+        assert!(!app.take_lock_request());
+    }
 
     #[test]
     fn cache_prune_runs_once_a_day() {
