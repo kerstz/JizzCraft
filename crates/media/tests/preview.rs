@@ -74,3 +74,40 @@ fn missing_file_marks_failed_without_panicking() {
     wait_for(10, || svc.failed().then_some(()));
     assert!(svc.take().is_none());
 }
+
+/// Audit M1: the preview worker checks the stop flag before it writes, not
+/// only at the top of its loop.
+#[test]
+fn a_stopped_preview_worker_does_not_write_the_frame_it_was_decoding() {
+    use jizzcraft_media::service::Workers;
+    let cache = tempfile::tempdir().unwrap();
+    let workers = Workers::new();
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s2 = started.clone();
+    let source: jizzcraft_media::preview::FrameSource = Arc::new(move |_, _| {
+        s2.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(image::RgbImage::from_pixel(16, 9, image::Rgb([1, 2, 3])))
+    });
+    let svc = PreviewService::tracked(
+        std::path::PathBuf::from("/media/clip.mp4"),
+        10,
+        0,
+        cache.path().to_path_buf(),
+        None,
+        Arc::new(|| {}),
+        &workers,
+        Some(source),
+    );
+    svc.request(3, Duration::from_secs(3));
+    wait_for(10, || {
+        started
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then_some(())
+    });
+    drop(svc);
+    assert!(workers.wait_quiesced(Duration::from_secs(20)));
+    let _ = std::fs::remove_dir_all(cache.path().join("previews"));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(std::fs::read_dir(cache.path()).unwrap().next().is_none());
+}

@@ -2,7 +2,7 @@
 //! own thread with its own pipeline (never the player's), cached on disk under
 //! the XDG cache dir. Idle pipelines are torn down after a while.
 
-use crate::service::Rgba;
+use crate::service::{Rgba, Workers};
 use crate::thumbs::{self, ThumbStore};
 use image::RgbImage;
 use jizzcraft_core::vault::ThumbKeys;
@@ -56,10 +56,18 @@ enum Msg {
     Stop,
 }
 
+/// Produces the frame of `(bucket, position in ns)`. The default seeks a
+/// GStreamer pipeline; tests inject a slow one.
+#[doc(hidden)]
+pub type FrameSource = Arc<dyn Fn(u32, u64) -> Result<RgbImage, String> + Send + Sync>;
+
 pub struct PreviewService {
     tx: Sender<Msg>,
     out: Arc<Mutex<Option<PreviewFrame>>>,
     failed: Arc<AtomicBool>,
+    /// Raised on drop: checked before every decode and every cache write.
+    stop: Arc<AtomicBool>,
+    workers: Workers,
 }
 
 impl PreviewService {
@@ -85,16 +93,67 @@ impl PreviewService {
         keys: Option<Arc<ThumbKeys>>,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
+        Self::tracked(
+            path,
+            size,
+            mtime,
+            cache_root,
+            keys,
+            wake,
+            &Workers::new(),
+            None,
+        )
+    }
+
+    /// Like `with_keys`; the worker is counted in `workers` (shared with the
+    /// thumbnail service and waited on by the owner of the library).
+    /// `source` replaces the GStreamer decode (tests).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tracked(
+        path: PathBuf,
+        size: u64,
+        mtime: i64,
+        cache_root: PathBuf,
+        keys: Option<Arc<ThumbKeys>>,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        workers: &Workers,
+        source: Option<FrameSource>,
+    ) -> Self {
         let store = ThumbStore::new(cache_root, keys);
         let (tx, rx) = channel();
         let out = Arc::new(Mutex::new(None));
         let failed = Arc::new(AtomicBool::new(false));
-        let (o, f) = (Arc::clone(&out), Arc::clone(&failed));
-        std::thread::Builder::new()
+        let stop = Arc::new(AtomicBool::new(false));
+        let (o, f, s) = (Arc::clone(&out), Arc::clone(&failed), Arc::clone(&stop));
+        let token = workers.enter();
+        let spawned = std::thread::Builder::new()
             .name("jizzcraft-preview".into())
-            .spawn(move || worker(path, size, mtime, store, rx, o, f, wake))
-            .expect("spawn preview thread");
-        PreviewService { tx, out, failed }
+            .spawn(move || {
+                worker(path, size, mtime, store, rx, o, f, s, wake, source);
+                drop(token);
+            });
+        if spawned.is_err() {
+            failed.store(true, Ordering::Relaxed);
+        }
+        PreviewService {
+            tx,
+            out,
+            failed,
+            stop,
+            workers: workers.clone(),
+        }
+    }
+
+    /// Stop decoding and writing; the worker leaves after the decode in
+    /// flight. Does not block.
+    pub fn shutdown(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.tx.send(Msg::Stop);
+    }
+
+    /// The worker thread (and every one sharing the same [`Workers`]) ended.
+    pub fn quiesced(&self) -> bool {
+        self.workers.quiesced()
     }
 
     /// Latest request wins; older ones still queued are skipped.
@@ -117,7 +176,7 @@ impl PreviewService {
 
 impl Drop for PreviewService {
     fn drop(&mut self) {
-        let _ = self.tx.send(Msg::Stop);
+        self.shutdown();
     }
 }
 
@@ -139,8 +198,11 @@ fn worker(
     rx: Receiver<Msg>,
     out: Arc<Mutex<Option<PreviewFrame>>>,
     failed: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    source: Option<FrameSource>,
 ) {
+    let stopped = || stop.load(Ordering::SeqCst);
     let mut pipe: Option<thumbs::Paused> = None;
     let mut last_decode = Instant::now() - MIN_GAP;
     loop {
@@ -152,6 +214,9 @@ fn worker(
             }
             Err(RecvTimeoutError::Disconnected) => return,
         };
+        if stopped() {
+            return;
+        }
         let (mut bucket, mut ns) = match msg {
             Msg::Stop => return,
             Msg::Want { bucket, ns } => (bucket, ns),
@@ -166,13 +231,30 @@ fn worker(
                 }
             }
         }
+        if stopped() {
+            return;
+        }
         let (id, file) = store.preview_slot(&path, size, mtime, bucket);
         let img = if let Some(img) = store.load(&file, &id) {
             img
+        } else if let Some(src) = &source {
+            match src(bucket, ns) {
+                Ok(img) => {
+                    if stopped() {
+                        return;
+                    }
+                    let _ = store.save(&file, &id, &img);
+                    img
+                }
+                Err(_) => continue,
+            }
         } else {
             let gap = last_decode.elapsed();
             if gap < MIN_GAP {
                 std::thread::sleep(MIN_GAP - gap);
+            }
+            if stopped() {
+                return;
             }
             if pipe.is_none() {
                 match thumbs::open_paused(&path, PREVIEW_W) {
@@ -187,6 +269,10 @@ fn worker(
             last_decode = Instant::now();
             match thumbs::frame_at(p, ns, 3) {
                 Ok(img) => {
+                    // Locked, converting or closing: nothing reaches the cache.
+                    if stopped() {
+                        return;
+                    }
                     let _ = store.save(&file, &id, &img);
                     img
                 }
@@ -196,6 +282,9 @@ fn worker(
                 }
             }
         };
+        if stopped() {
+            return;
+        }
         *out.lock().unwrap() = Some(PreviewFrame {
             bucket,
             blur: to_rgba(&thumbs::blurred(&img)),

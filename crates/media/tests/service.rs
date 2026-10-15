@@ -115,3 +115,81 @@ fn walk(p: &std::path::Path) -> usize {
         })
         .unwrap_or(0)
 }
+
+/// Audit M1: a decode still in flight when the service is dropped must never
+/// reach the cache, even after the owner cleaned it (an encryption does).
+#[test]
+fn a_dropped_plain_service_writes_nothing_after_its_workers_left() {
+    use image::RgbImage;
+    use jizzcraft_media::service::Workers;
+    let media = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let f = media.path().join("a.png");
+    png(&f, 64, 64);
+    let workers = Workers::new();
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s2 = started.clone();
+    let slow: jizzcraft_media::service::Decoder = Arc::new(move |_| {
+        s2.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(600));
+        Ok(RgbImage::from_pixel(8, 8, image::Rgb([9, 9, 9])))
+    });
+    let svc = ThumbService::with_decoder(
+        cache.path().to_path_buf(),
+        None,
+        Arc::new(|| {}),
+        &workers,
+        slow,
+    );
+    assert!(
+        !workers.quiesced(),
+        "workers are alive while the service is"
+    );
+    svc.set_wanted(vec![req(1, f)]);
+    let end = Instant::now() + Duration::from_secs(10);
+    while !started.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(Instant::now() < end, "decode never started");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The request is in flight: lock/convert drops the service now.
+    drop(svc);
+    assert!(
+        workers.wait_quiesced(Duration::from_secs(20)),
+        "workers returned"
+    );
+    // The conversion's clean-up runs once the workers are gone...
+    let _ = std::fs::remove_dir_all(cache.path().join("thumbs"));
+    // ...and nothing appears afterwards.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!cache.path().join("thumbs").exists(), "no clear thumbnail");
+    assert!(std::fs::read_dir(cache.path()).unwrap().next().is_none());
+}
+
+/// Audit M1: the thumbnail keys are gone once the workers are, not whenever a
+/// detached thread happens to finish.
+#[test]
+fn thumb_keys_are_freed_with_the_workers() {
+    use jizzcraft_core::vault::{ThumbKeys, VaultKey};
+    use jizzcraft_media::service::Workers;
+    let cache = tempfile::tempdir().unwrap();
+    let keys: Arc<ThumbKeys> = Arc::new(VaultKey::from_bytes_for_tests([7; 32]).thumb_keys());
+    let weak = Arc::downgrade(&keys);
+    let workers = Workers::new();
+    let svc = ThumbService::tracked(
+        cache.path().to_path_buf(),
+        Some(keys),
+        Arc::new(|| {}),
+        &workers,
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "the service keeps no key, only a cipher"
+    );
+    svc.shutdown();
+    assert!(workers.wait_quiesced(Duration::from_secs(10)));
+    assert!(svc.quiesced());
+    assert_eq!(workers.live(), 0);
+    // A request after the shutdown is ignored.
+    svc.set_wanted(vec![req(1, std::path::PathBuf::from("/nonexistent/x.png"))]);
+    assert!(!svc.is_busy());
+}
