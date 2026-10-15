@@ -102,6 +102,13 @@ fn header_new(db: &Path) -> PathBuf {
     suffixed(&header_path(db), ".new")
 }
 
+/// Intent marker of a disable (`library.vault.disabling`): written and synced
+/// before the commit point, removed at the very end. It is the only thing that
+/// lets `recover` delete the header of a library that is found clear.
+fn disabling_marker(db: &Path) -> PathBuf {
+    suffixed(&header_path(db), ".disabling")
+}
+
 fn sqlite_err(e: rusqlite::Error) -> VaultError {
     match e {
         rusqlite::Error::SqliteFailure(f, _)
@@ -497,8 +504,11 @@ pub fn disable_with(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> 
     let dek = unlock_library_with(db_path, passphrase, opts)?;
     let key = dek.db_key();
     let tmp = plain_tmp(db_path);
+    let marker = disabling_marker(db_path);
     let r = (|| -> Res<()> {
         let staged = stage(db_path, Some(&key), &tmp, None, None, opts)?;
+        // Durable intent, strictly before the commit point.
+        write_synced(&marker, b"disabling", false)?;
         commit(db_path, &tmp, staged)
     })();
     match r {
@@ -507,6 +517,7 @@ pub fn disable_with(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> 
         Err(e) => {
             if probe_format(db_path).ok() == Some(FileFormat::Encrypted) {
                 remove(&tmp);
+                remove(&marker);
             }
             return Err(e);
         }
@@ -519,6 +530,8 @@ pub fn disable_with(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> 
     remove_backups(db_path, FileFormat::Encrypted);
     opts.hit(FailPoint::Cleanup)?;
     let _ = fs::remove_dir_all(opts.cache().join("vault-thumbs"));
+    remove(&marker);
+    sync_dir(dir_of(db_path));
     Ok(())
 }
 
@@ -565,7 +578,10 @@ pub fn change_passphrase_with(
 ///
 /// | library.db | leftovers | action |
 /// | --- | --- | --- |
-/// | plain | `enc-tmp`, `plain-tmp`, `.vault.new`, `.vault` | delete them (and encrypted backups / caches) |
+/// | plain | `enc-tmp`, `plain-tmp`, `.vault.new`, invalid `.vault` | delete them |
+/// | plain | `.disabling` marker | also delete `.vault`, encrypted backups, `vault-thumbs`, marker |
+/// | plain | valid `.vault`, no marker | `HeaderOrphan`, nothing deleted |
+/// | absent | valid header | `HeaderOrphan`, nothing deleted (`Db::open` refuses too) |
 /// | encrypted | `enc-tmp`, `plain-tmp` | delete |
 /// | encrypted | no `.vault`, valid `.vault.new` | rename `.new` to `.vault` |
 /// | encrypted | no `.vault`, no usable `.new` | `HeaderMissing`, nothing deleted |
@@ -578,17 +594,40 @@ pub fn recover(db_path: &Path) -> Res<FileFormat> {
 
 pub fn recover_with(db_path: &Path, opts: &ConvertOptions) -> Res<FileFormat> {
     let fmt = probe_format(db_path).map_err(|_| VaultError::ConvertFailed)?;
-    let (vault, new) = (header_path(db_path), header_new(db_path));
+    let (vault, new, marker) = (
+        header_path(db_path),
+        header_new(db_path),
+        disabling_marker(db_path),
+    );
+    let valid = |p: &Path| {
+        fs::read(p)
+            .ok()
+            .is_some_and(|b| validate_header(&b).is_ok())
+    };
     match fmt {
         FileFormat::Absent => {
+            // A header with no library: never delete the key envelope, and
+            // `Db::open` refuses to create a new library next to it.
+            if valid(&vault) || valid(&new) {
+                return Err(VaultError::HeaderOrphan);
+            }
             remove(&enc_tmp(db_path));
             remove(&plain_tmp(db_path));
+            remove(&marker);
         }
         FileFormat::Plain => {
+            let disabling = marker.exists();
+            // A valid `.vault` next to a clear library is only legitimate
+            // after an interrupted disable (marker). Otherwise the encrypted
+            // library was lost or replaced: keep everything.
+            if !disabling && valid(&vault) {
+                return Err(VaultError::HeaderOrphan);
+            }
             let had = enc_tmp(db_path).exists()
                 || plain_tmp(db_path).exists()
                 || vault.exists()
-                || new.exists();
+                || new.exists()
+                || disabling;
             remove(&enc_tmp(db_path));
             remove(&plain_tmp(db_path));
             remove(&new);
@@ -596,19 +635,20 @@ pub fn recover_with(db_path: &Path, opts: &ConvertOptions) -> Res<FileFormat> {
             if had {
                 sync_dir(dir_of(db_path));
             }
-            // An interrupted disable: encrypted leftovers are unreadable
-            // (a plain library never has encrypted backups or a vault cache).
-            remove_backups(db_path, FileFormat::Encrypted);
-            let _ = fs::remove_dir_all(opts.cache().join("vault-thumbs"));
+            if disabling {
+                // Interrupted disable after the commit: the encrypted
+                // leftovers are unreadable now, finish the cleanup.
+                remove_backups(db_path, FileFormat::Encrypted);
+                let _ = fs::remove_dir_all(opts.cache().join("vault-thumbs"));
+                remove(&marker);
+                sync_dir(dir_of(db_path));
+            }
         }
         FileFormat::Encrypted => {
             remove(&enc_tmp(db_path));
             remove(&plain_tmp(db_path));
-            let valid = |p: &Path| {
-                fs::read(p)
-                    .ok()
-                    .is_some_and(|b| validate_header(&b).is_ok())
-            };
+            // The disable never committed: the intent is void.
+            remove(&marker);
             if new.exists() && !valid(&new) {
                 remove(&new);
             }

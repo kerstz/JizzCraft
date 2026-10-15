@@ -213,13 +213,24 @@ Order of `enable` (`disable` mirrors it with `ATTACH ... KEY ''`):
 
 | `library.db` | Leftovers | Action |
 | --- | --- | --- |
-| plain | `enc-tmp`, `plain-tmp`, `.vault.new`, `.vault` | delete (also encrypted backups and `vault-thumbs`) |
+| plain | `enc-tmp`, `plain-tmp`, `.vault.new`, unreadable `.vault` | delete |
+| plain | `.vault.disabling` marker (interrupted disable, after commit) | delete `.vault`, encrypted `pre-vN`, `vault-thumbs` and the marker |
+| plain | valid `.vault`, **no** marker | `HeaderOrphan`, nothing is deleted: the encrypted library was lost or replaced by a clear copy |
+| absent | valid `.vault` or `.vault.new` | `HeaderOrphan`, nothing is deleted; `Db::open` refuses to create a new library |
+| encrypted | `.vault.disabling` | delete the marker (the disable never committed) |
 | encrypted | `enc-tmp`, `plain-tmp` | delete |
 | encrypted | no `.vault`, valid `.vault.new` | rename `.new` to `.vault` |
 | encrypted | no `.vault`, no usable `.new` | `HeaderMissing`, nothing is deleted |
 | encrypted | `.vault` and a damaged `.new` | delete `.new` |
 | encrypted | `.vault` and a valid `.new` | both kept; `unlock_library` tries the current header first and keeps the one that opens |
 | encrypted | header present | delete clear `pre-vN` and clear caches |
+
+`disable` writes `library.vault.disabling` (file and directory synced) before
+the commit point and removes it as its last step. The marker is the only
+authority for `recover` to delete the header, the encrypted backups and
+`vault-thumbs` of a library found clear. Without it a clear library next to a
+valid header is never "cleaned": the header is the only envelope of the key, and
+the encrypted file may simply be restored.
 
 Changing the passphrase rewrites only the header: the new one goes to
 `library.vault.new` (synced), then an atomic rename. A copy of the old header

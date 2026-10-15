@@ -75,6 +75,9 @@ pub enum VaultError {
     ConvertFailed,
     /// The converted copy did not verify; the library is unchanged.
     VerifyFailed,
+    /// A valid vault header exists next to a clear or missing library and no
+    /// interrupted disable explains it: nothing was deleted, nothing is created.
+    HeaderOrphan,
     /// A test fail point stopped the conversion (never returned otherwise).
     Interrupted,
 }
@@ -97,12 +100,28 @@ impl fmt::Display for VaultError {
             VaultError::AlreadyEncrypted => "the library is already encrypted",
             VaultError::ConvertFailed => "conversion failed, the library was not changed",
             VaultError::VerifyFailed => "the converted library did not verify, nothing was changed",
+            VaultError::HeaderOrphan => {
+                "a vault header exists but the library is not encrypted, nothing was changed"
+            }
             VaultError::Interrupted => "conversion interrupted",
         })
     }
 }
 
 impl std::error::Error for VaultError {}
+
+/// True when `library.vault` or `library.vault.new` next to `db_path` is a
+/// well-formed header.
+pub fn valid_header_exists(db_path: &Path) -> bool {
+    let h = header_path(db_path);
+    let mut n = h.as_os_str().to_os_string();
+    n.push(".new");
+    [h, PathBuf::from(n)].iter().any(|p| {
+        std::fs::read(p)
+            .ok()
+            .is_some_and(|b| validate_header(&b).is_ok())
+    })
+}
 
 macro_rules! secret_type {
     ($(#[$m:meta])* $name:ident) => {

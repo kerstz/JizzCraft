@@ -172,7 +172,12 @@ fn leftovers(lib: &Lib) -> Vec<String> {
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with("-tmp") || n.ends_with(".new") || n.ends_with("-wal"))
+        .filter(|n| {
+            n.ends_with("-tmp")
+                || n.ends_with(".new")
+                || n.ends_with("-wal")
+                || n.ends_with(".disabling")
+        })
         .collect();
     v.sort();
     v
@@ -479,6 +484,103 @@ fn recover_table_for_stray_files() {
         Ok(FileFormat::Encrypted)
     );
     assert!(leftovers(&lib).is_empty());
+}
+
+#[test]
+fn plain_library_with_a_valid_header_and_no_marker_deletes_nothing() {
+    // An encrypted library.db replaced by a clear backup: the header is the
+    // only envelope of the key and must survive.
+    let lib = library(0);
+    let clear = std::fs::read(&lib.db).unwrap();
+    let before = snap(&lib, None);
+    enable_with(&lib.db, PASS, FAST, &lib.opts(None)).unwrap();
+    let header = std::fs::read(header_path(&lib.db)).unwrap();
+    let enc_backup = lib.dir().join("library.pre-v1.db");
+    std::fs::copy(&lib.db, &enc_backup).unwrap();
+    let thumbs = lib.cache.join("vault-thumbs");
+    std::fs::create_dir_all(&thumbs).unwrap();
+    std::fs::write(thumbs.join("t"), b"x").unwrap();
+    let enc = std::fs::read(&lib.db).unwrap();
+    std::fs::write(&lib.db, &clear).unwrap();
+    assert_eq!(
+        recover_with(&lib.db, &lib.opts(None)),
+        Err(VaultError::HeaderOrphan)
+    );
+    assert_eq!(std::fs::read(header_path(&lib.db)).unwrap(), header);
+    assert_eq!(std::fs::read(&enc_backup).unwrap(), enc);
+    assert!(thumbs.join("t").exists());
+    assert_eq!(snap(&lib, None), before);
+    // Putting the encrypted file back makes everything work again.
+    std::fs::write(&lib.db, &enc).unwrap();
+    assert_eq!(snap(&lib, Some(PASS)), before);
+}
+
+#[test]
+fn absent_library_with_a_header_is_refused_by_recover_and_open() {
+    let lib = library(0);
+    enable_with(&lib.db, PASS, FAST, &lib.opts(None)).unwrap();
+    let header = std::fs::read(header_path(&lib.db)).unwrap();
+    std::fs::remove_file(&lib.db).unwrap();
+    assert_eq!(
+        recover_with(&lib.db, &lib.opts(None)),
+        Err(VaultError::HeaderOrphan)
+    );
+    assert!(matches!(
+        Db::open(&lib.db),
+        Err(jizzcraft_core::Error::Vault(VaultError::HeaderOrphan))
+    ));
+    assert!(!lib.db.exists(), "no new library was created");
+    assert_eq!(std::fs::read(header_path(&lib.db)).unwrap(), header);
+}
+
+#[test]
+fn interrupted_disable_after_commit_finishes_through_the_marker() {
+    for point in [FailPoint::Commit, FailPoint::Header, FailPoint::Cleanup] {
+        let lib = library(0);
+        let before = snap(&lib, None);
+        enable_with(&lib.db, PASS, FAST, &lib.opts(None)).unwrap();
+        std::fs::copy(&lib.db, lib.dir().join("library.pre-v1.db")).unwrap();
+        let thumbs = lib.cache.join("vault-thumbs");
+        std::fs::create_dir_all(&thumbs).unwrap();
+        std::fs::write(thumbs.join("t"), b"x").unwrap();
+        assert_eq!(
+            disable_with(&lib.db, PASS, &lib.opts(Some(point))),
+            Err(VaultError::Interrupted)
+        );
+        assert!(
+            lib.dir().join("library.vault.disabling").exists(),
+            "{point:?}"
+        );
+        assert_eq!(
+            recover_with(&lib.db, &lib.opts(None)),
+            Ok(FileFormat::Plain),
+            "{point:?}"
+        );
+        assert!(!header_path(&lib.db).exists(), "{point:?}");
+        assert!(!lib.dir().join("library.pre-v1.db").exists(), "{point:?}");
+        assert!(!thumbs.exists(), "{point:?}");
+        assert!(leftovers(&lib).is_empty(), "{point:?}");
+        assert_eq!(snap(&lib, None), before, "{point:?}");
+        // Idempotent.
+        assert_eq!(
+            recover_with(&lib.db, &lib.opts(None)),
+            Ok(FileFormat::Plain)
+        );
+    }
+}
+
+#[test]
+fn interrupted_disable_before_commit_drops_the_marker() {
+    let lib = library(0);
+    enable_with(&lib.db, PASS, FAST, &lib.opts(None)).unwrap();
+    // Simulate a crash between marker write and commit.
+    std::fs::write(lib.dir().join("library.vault.disabling"), b"disabling").unwrap();
+    assert_eq!(
+        recover_with(&lib.db, &lib.opts(None)),
+        Ok(FileFormat::Encrypted)
+    );
+    assert!(leftovers(&lib).is_empty());
+    assert!(header_path(&lib.db).exists());
 }
 
 // ---- other process holds the library -------------------------------------
