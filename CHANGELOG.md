@@ -34,6 +34,19 @@ anything may change between minor versions.
   `portability::backup` stay encrypted (the backup also copies the header).
   Migration, FTS and crash tests now run in clear and encrypted mode.
 
+- Encrypted vault, step 4 of issue #13 (engine only, **still nothing is
+  encrypted** by any shipped path: no UI or CLI calls it yet).
+  `jizzcraft_core::vault_convert` converts a library in place:
+  `enable`, `disable`, `change_passphrase` (header rewrap only, atomic) and
+  `recover`. The copy is exported with `sqlcipher_export`, verified (key,
+  cipher integrity, quick check, row counts, `user_version`, FTS integrity)
+  and synced before a single rename commits it; clear `pre-vN` backups and
+  clear thumbnail caches are then deleted. `recover` restores a consistent
+  all-clear or all-encrypted state from disk alone. Tests inject a failure
+  after every step and `kill -9` a converting process. New fixed-message
+  `VaultError` variants: `Busy`, `AlreadyEncrypted`, `ConvertFailed`,
+  `VerifyFailed`.
+
 ### Tooling
 - Performance budgets (issue #17, engine part). `cargo xtask perf` builds a
   synthetic 10k-file library and times scan (cold and rescan), database open,

@@ -67,6 +67,16 @@ pub enum VaultError {
     Kdf,
     /// The system random generator failed.
     Random,
+    /// Another connection or process holds the library; nothing was changed.
+    Busy,
+    /// Conversion refused: the library is already encrypted.
+    AlreadyEncrypted,
+    /// Conversion failed before its commit point; the library is unchanged.
+    ConvertFailed,
+    /// The converted copy did not verify; the library is unchanged.
+    VerifyFailed,
+    /// A test fail point stopped the conversion (never returned otherwise).
+    Interrupted,
 }
 
 impl fmt::Display for VaultError {
@@ -83,6 +93,11 @@ impl fmt::Display for VaultError {
             VaultError::ThumbCorrupt => "encrypted cache file is damaged",
             VaultError::Kdf => "key derivation failed",
             VaultError::Random => "random generator failed",
+            VaultError::Busy => "the library is in use by another process",
+            VaultError::AlreadyEncrypted => "the library is already encrypted",
+            VaultError::ConvertFailed => "conversion failed, the library was not changed",
+            VaultError::VerifyFailed => "the converted library did not verify, nothing was changed",
+            VaultError::Interrupted => "conversion interrupted",
         })
     }
 }

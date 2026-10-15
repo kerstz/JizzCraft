@@ -11,13 +11,13 @@ before the code exists, and records what each step has actually shipped.
 | 1 | SQLite replaced by SQLCipher (same behaviour, nothing encrypted) | done |
 | 2 | Key derivation and header file (pure crypto, `core::vault`) | done |
 | 3 | Opening the database with a key | done |
-| 4 | Plain to encrypted conversion, crash recovery | not started |
+| 4 | Plain to encrypted conversion, crash recovery (engine only) | done |
 | 5 | Encrypted thumbnails and previews | not started |
 | 6 | CLI commands | not started |
 | 7 | Settings UI, lock screen, auto-lock | not started |
 | 8 | Perf in vault mode, packaging smoke tests | not started |
 
-Until steps 4 to 7 are done there is no way to turn the vault on, and no part of
+Until steps 5 to 7 are done there is no way to turn the vault on, and no part of
 your library is protected by it.
 
 ## Threat model
@@ -180,3 +180,64 @@ is encrypted by this build.
 - Passphrase hashing is slow on purpose (about 0.1 to 0.5 s at the default
   cost); callers must run it off the UI thread. Memory held by Argon2 inside
   the crate is not zeroed by this code.
+
+## Step 4: conversion and recovery (engine only)
+
+`jizzcraft_core::vault_convert`: `enable`, `disable`, `change_passphrase`,
+`recover` and `unlock_library`. Nothing in the application or the CLI calls
+them yet, so no shipped build encrypts a library. Everything is slow (Argon2id,
+a full copy): call it from a job, never from the UI thread.
+
+Order of `enable` (`disable` mirrors it with `ATTACH ... KEY ''`):
+
+1. `wal_checkpoint(TRUNCATE)`, `journal_mode = DELETE`, then the exclusive lock
+   is held for the whole conversion (`locking_mode = EXCLUSIVE`). If another
+   connection or process holds the library the answer is `Busy` and nothing
+   changed.
+2. `library.vault.new` written and synced.
+3. `ATTACH 'library.db.enc-tmp' KEY x'..'` and `sqlcipher_export`, then
+   `user_version`.
+4. The copy is verified as a stranger would open it: key accepted,
+   `cipher_integrity_check`, `quick_check`, row count of every table,
+   `user_version`, FTS5 `integrity-check`. Any mismatch is `VerifyFailed`.
+5. File and directory are synced; a `-wal` or `-journal` next to the target
+   aborts.
+6. **Commit point**: `rename(library.db.enc-tmp, library.db)`.
+7. `library.vault.new` renamed to `library.vault`.
+8. Clear `pre-vN` backups and clear `cache/thumbs`, `cache/previews` deleted.
+   (Encrypted thumbnails are step 5; here caches are only removed.) Disable
+   deletes `library.vault`, the encrypted `pre-vN` backups and
+   `cache/vault-thumbs`.
+
+`recover(db_path)` must run before every open. It decides from disk state:
+
+| `library.db` | Leftovers | Action |
+| --- | --- | --- |
+| plain | `enc-tmp`, `plain-tmp`, `.vault.new`, `.vault` | delete (also encrypted backups and `vault-thumbs`) |
+| encrypted | `enc-tmp`, `plain-tmp` | delete |
+| encrypted | no `.vault`, valid `.vault.new` | rename `.new` to `.vault` |
+| encrypted | no `.vault`, no usable `.new` | `HeaderMissing`, nothing is deleted |
+| encrypted | `.vault` and a damaged `.new` | delete `.new` |
+| encrypted | `.vault` and a valid `.new` | both kept; `unlock_library` tries the current header first and keeps the one that opens |
+| encrypted | header present | delete clear `pre-vN` and clear caches |
+
+Changing the passphrase rewrites only the header: the new one goes to
+`library.vault.new` (synced), then an atomic rename. A copy of the old header
+still opens with the old passphrase.
+
+Limits and honest caveats:
+
+- Until step 8 finishes (or `recover` runs) the old clear copy and the clear
+  caches are still on disk, and deleting a file does not wipe flash or
+  copy-on-write storage: use full-disk encryption if that matters.
+- Another process that had the library open before the conversion but held no
+  lock can keep writing to the old, unlinked file after the rename on
+  Unix; on Windows the lock is dropped before the rename (a file cannot be
+  renamed while open), which leaves a short window. Close other instances
+  first.
+- `recover` is not a lock: do not run it while a conversion is in progress in
+  another process.
+- Whole-file rollback to an older valid copy is still not detected.
+- Tests inject a fail point after every step and a `kill -9` of a converting
+  child process; they check that only "all clear with every row" or "all
+  encrypted with every row" can result, including the FTS content.
