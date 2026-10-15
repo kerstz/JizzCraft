@@ -27,3 +27,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # `@1.95` is the MSRV pin in ci.yml (the toolchain version, not the
+      # action version); bumping it to 1.120 silently changes the MSRV job.
+      - dependency-name: dtolnay/rust-toolchain
