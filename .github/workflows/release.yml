@@ -204,22 +204,3 @@ jobs:
             Verify with `SHA256SUMS`, or `gh attestation verify <file> --repo kerstz/JizzCraft`.
             The `-network` tarball adds indexers, torrents and streaming from your own
             sources; the default build makes no network connection at all.
-
-  # Last task of a release: fast-forward the edition channel branches to the
-  # tagged commit. Done here because a release created with GITHUB_TOKEN does
-  # not trigger `release: published` (channels.yml is the manual fallback).
-  # Never forced: a non-fast-forward push fails loudly.
-  channels:
-    if: always() && github.event_name == 'push' && needs.publish.result == 'success'
-    needs: [publish]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-      - name: Fast-forward edition/offline and edition/online to the tag commit
-        run: |
-          set -eu
-          for b in edition/offline edition/online; do
-            git push origin "${GITHUB_SHA}:refs/heads/$b"
-          done
