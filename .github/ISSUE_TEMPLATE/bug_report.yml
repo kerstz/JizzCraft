@@ -6,6 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
+        Thanks for taking the time. New to JizzCraft? The [FAQ](https://github.com/kerstz/JizzCraft/blob/main/docs/getting-started.md#faq) and [troubleshooting](https://github.com/kerstz/JizzCraft/blob/main/docs/troubleshooting.md) answer the most common install and playback problems.
         Please do **not** attach real media, file names, paths, URLs or keys. Use synthetic examples.
         Run `jizzcraft-cli doctor --report` and paste its output: it is built from an allow-list and contains no names, paths, URLs or keys.
   - type: input

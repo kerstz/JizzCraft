@@ -72,10 +72,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-CI runs the same three commands on Ubuntu with GStreamer base and good
-plugins. Media tests need `gst-launch-1.0`, `vp8enc`, `webmmux` and the
-playback elements; when they are missing the tests print `skipped: …` and
-return, so check the output if you run them on a minimal system.
+CI runs the same three commands on Ubuntu with the GStreamer base, good, bad,
+ugly and libav plugins, plus the network build, the end-to-end scenarios,
+cargo-deny, the MSRV check and the packaging checks. Every job and the
+command that reproduces it locally are listed in
+[`docs/internals.md`](docs/internals.md#build-test-and-run-ci-locally).
+Media tests need `gst-launch-1.0`, `vp8enc`, `webmmux` and the playback
+elements; when they are missing the tests print `skipped: …` and return
+(CI sets `JIZZCRAFT_REQUIRE_PLUGINS=1` to make that a failure), so check the
+output if you run them on a minimal system.
+
+New to the code base? [`docs/internals.md`](docs/internals.md) maps the
+crates, the dependency rules and the test behind each guarantee.
 
 Keep pull requests focused (a PR titled "misc fixes" gets reviewed with misc
 enthusiasm), describe what you checked by hand versus what is covered by

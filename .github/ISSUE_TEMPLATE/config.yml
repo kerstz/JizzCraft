@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Install or usage question
+    url: https://github.com/kerstz/JizzCraft/blob/main/docs/getting-started.md#faq
+    about: Where your data lives, uninstalling, a video that does not play. Check the FAQ first; if it is not answered there, open a bug report.
+  - name: How it is built
+    url: https://github.com/kerstz/JizzCraft/blob/main/docs/internals.md
+    about: Architecture, the tests behind each guarantee, and how to run the CI locally.
   - name: Security issue
     url: https://github.com/kerstz/JizzCraft/security/advisories/new
     about: Please report vulnerabilities privately, not in a public issue.
