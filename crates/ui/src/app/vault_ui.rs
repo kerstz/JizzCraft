@@ -13,15 +13,15 @@
 use super::JizzApp;
 use crate::i18n::{tr, trf};
 use crate::root::{
-    ConvertKind, ConvertOutcome, ConvertRequest, MAX_PASSPHRASE_BYTES, MIN_PASSPHRASE_CHARS,
-    secret_buf,
+    ConvertKind, ConvertOutcome, ConvertRequest, MAX_PASSPHRASE_CHARS, MIN_PASSPHRASE_CHARS,
+    purge_edit_state, secret_buf, too_long,
 };
 use crate::theme::{DANGER, FAINT, MUTED};
 use crate::widgets;
 use egui::RichText;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Default inactivity delay, in minutes.
 pub const DEFAULT_AUTOLOCK_MINUTES: u32 = 15;
@@ -34,6 +34,8 @@ pub const MAX_AUTOLOCK_MINUTES: u32 = 24 * 60;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormError {
     TooShort,
+    /// Over `MAX_PASSPHRASE_CHARS`: refused, never cut.
+    TooLong,
     Mismatch,
     NotAcknowledged,
     EmptyCurrent,
@@ -47,6 +49,7 @@ impl FormError {
     pub fn text(self) -> &'static str {
         match self {
             FormError::TooShort => tr("Use at least 12 characters."),
+            FormError::TooLong => tr("The passphrase is too long (1024 characters at most)."),
             FormError::Mismatch => tr("The two passphrases do not match."),
             FormError::NotAcknowledged => tr("Tick the box to confirm that you understand."),
             FormError::EmptyCurrent => tr("Enter your current passphrase."),
@@ -67,6 +70,9 @@ pub fn validate(
     again: &str,
     ack: bool,
 ) -> Result<(), FormError> {
+    if too_long(current) || too_long(new) || too_long(again) {
+        return Err(FormError::TooLong);
+    }
     let new_checks = || -> Result<(), FormError> {
         if new.chars().count() < MIN_PASSPHRASE_CHARS {
             return Err(FormError::TooShort);
@@ -115,9 +121,16 @@ pub fn strength(p: &str) -> Strength {
         return Strength::Weak;
     }
     let (mut lower, mut upper, mut digit, mut other) = (false, false, false, false);
-    let mut seen = std::collections::HashSet::new();
+    // Distinct characters without a per-call set: a 128-bit map for ASCII, a
+    // sorted list only when something else is typed.
+    let mut ascii: u128 = 0;
+    let mut wide: Vec<char> = Vec::new();
     for c in p.chars() {
-        seen.insert(c);
+        if c.is_ascii() {
+            ascii |= 1u128 << (c as u32);
+        } else {
+            wide.push(c);
+        }
         if c.is_lowercase() {
             lower = true;
         } else if c.is_uppercase() {
@@ -128,9 +141,14 @@ pub fn strength(p: &str) -> Strength {
             other = true;
         }
     }
+    wide.sort_unstable();
+    wide.dedup();
+    let distinct = ascii.count_ones() as usize + wide.len();
+    // `wide` held copies of typed characters: wipe them.
+    zeroize::Zeroize::zeroize(&mut wide[..]);
     let pool =
         (lower as u32) * 26 + (upper as u32) * 26 + (digit as u32) * 10 + (other as u32) * 33;
-    let effective = len.min(seen.len() * 2) as f32;
+    let effective = len.min(distinct * 2) as f32;
     let bits = effective * (pool.max(2) as f32).log2();
     match bits {
         b if b < 40.0 => Strength::Weak,
@@ -202,15 +220,29 @@ pub(super) struct Dialog {
     ack: bool,
     error: Option<FormError>,
     focus: bool,
+    /// Estimated when the new passphrase changes, not every frame.
+    strength: Strength,
+}
+
+/// A buffer for a field this dialog does not show: nothing allocated.
+fn unused() -> Zeroizing<String> {
+    Zeroizing::new(String::new())
 }
 
 impl Dialog {
     fn new(kind: ConvertKind) -> Dialog {
+        let needs_current = kind != ConvertKind::Enable;
+        let needs_new = kind != ConvertKind::Disable;
         Dialog {
             kind,
-            current: secret_buf(),
-            new: secret_buf(),
-            again: secret_buf(),
+            current: if needs_current {
+                secret_buf()
+            } else {
+                unused()
+            },
+            new: if needs_new { secret_buf() } else { unused() },
+            again: if needs_new { secret_buf() } else { unused() },
+            strength: Strength::Weak,
             ack: false,
             error: None,
             focus: true,
@@ -242,7 +274,9 @@ fn field(ui: &mut egui::Ui, buf: &mut String, hint: &str, focus: bool) -> egui::
     let r = ui.add(
         egui::TextEdit::singleline(buf)
             .password(true)
-            .char_limit(MAX_PASSPHRASE_BYTES / 4)
+            // One more than the limit: an overlong paste is seen and refused
+            // with a message, not silently cut.
+            .char_limit(MAX_PASSPHRASE_CHARS + 1)
             .hint_text(hint)
             .desired_width(f32::INFINITY),
     );
@@ -376,6 +410,11 @@ impl JizzApp {
                             ui,
                             tr("A copy of the old header file still opens with the old passphrase."),
                         );
+                        note(
+                            ui,
+                            tr("Changing the passphrase does not regenerate the data key: \
+                                after a passphrase leak, turn encryption off and on again."),
+                        );
                     }
                 }
                 ui.add_space(6.0);
@@ -389,10 +428,11 @@ impl JizzApp {
                     } else {
                         tr("New passphrase")
                     };
-                    field(ui, &mut d.new, hint, focus && !needs_current);
+                    if field(ui, &mut d.new, hint, focus && !needs_current).changed() {
+                        d.strength = strength(&d.new);
+                    }
                     field(ui, &mut d.again, tr("Repeat the passphrase"), false);
-                    let st = strength(&d.new);
-                    let (label, color) = match st {
+                    let (label, color) = match d.strength {
                         Strength::Weak => (tr("weak"), DANGER),
                         Strength::Fair => (tr("fair"), MUTED),
                         Strength::Good => (tr("good"), MUTED),
@@ -431,7 +471,10 @@ impl JizzApp {
                         tr("JSON exports of your metadata stay in clear."),
                     );
                 }
-                if let Some(e) = d.error {
+                // Over the limit: said while typing, and the form is refused.
+                let live = (too_long(&d.current) || too_long(&d.new) || too_long(&d.again))
+                    .then_some(FormError::TooLong);
+                if let Some(e) = live.or(d.error) {
                     ui.add(
                         egui::Label::new(RichText::new(e.text()).size(13.0).color(DANGER)).wrap(),
                     );
@@ -454,14 +497,21 @@ impl JizzApp {
         if cancel || !open {
             // Buffers are wiped by their `Zeroizing` drop; egui's edit state
             // goes too.
-            ctx.data_mut(|data| {
-                data.remove_by_type::<egui::text_edit::TextEditState>();
-            });
+            purge_edit_state(ctx);
             return;
         }
         if go {
             match validate(d.kind, &d.current, &d.new, &d.again, d.ack) {
-                Err(e) => d.error = Some(e),
+                Err(e) => {
+                    d.error = Some(e);
+                    if e == FormError::TooLong {
+                        // Nothing leaves the window and nothing stays in it.
+                        d.current.zeroize();
+                        d.new.zeroize();
+                        d.again.zeroize();
+                        purge_edit_state(ctx);
+                    }
+                }
                 Ok(()) => {
                     let kind = d.kind;
                     let req = match kind {
@@ -483,9 +533,7 @@ impl JizzApp {
                     };
                     match self.request_convert(req) {
                         Ok(()) => {
-                            ctx.data_mut(|data| {
-                                data.remove_by_type::<egui::text_edit::TextEditState>();
-                            });
+                            purge_edit_state(ctx);
                             self.settings.open = false;
                             return;
                         }
@@ -603,27 +651,6 @@ impl JizzApp {
     fn vault_active_flag(&self) -> bool {
         self.opener.key.is_some()
     }
-
-    /// Called once per frame: input or a playing video keeps the library
-    /// unlocked; idleness past the setting locks it (same path as the menu).
-    pub(super) fn autolock_tick(&mut self, ctx: &egui::Context, playing: bool) {
-        if self.opener.key.is_none() {
-            return;
-        }
-        let now = Instant::now();
-        let input = ctx.input(|i| !i.events.is_empty() || i.pointer.delta() != egui::Vec2::ZERO);
-        if input {
-            self.autolock.touch(now);
-        }
-        let minutes = self.cfg.autolock_minutes();
-        if self.autolock.due(now, minutes, playing) {
-            self.lock_requested = true;
-            ctx.request_repaint();
-        } else if let Some(left) = self.autolock.remaining(now, minutes) {
-            // Wake up for the deadline even if nothing else repaints.
-            ctx.request_repaint_after(left.clamp(Duration::from_secs(1), Duration::from_secs(30)));
-        }
-    }
 }
 
 pub(super) fn register(reg: &mut jizzcraft_core::Registry<JizzApp>) {
@@ -719,6 +746,41 @@ mod tests {
             ),
             Ok(())
         );
+    }
+
+    #[test]
+    fn an_overlong_passphrase_is_refused_with_its_own_message() {
+        let over = "x".repeat(MAX_PASSPHRASE_CHARS + 1);
+        let ok = "y".repeat(MAX_PASSPHRASE_CHARS);
+        assert_eq!(
+            validate(Enable, "", &over, &over, true),
+            Err(FormError::TooLong)
+        );
+        assert_eq!(
+            validate(Disable, &over, "", "", false),
+            Err(FormError::TooLong)
+        );
+        assert_eq!(validate(Enable, "", &ok, &ok, true), Ok(()));
+        assert!(!FormError::TooLong.text().is_empty());
+        assert_ne!(FormError::TooLong.text(), FormError::TooShort.text());
+    }
+
+    #[test]
+    fn strength_counts_distinct_characters_without_a_set() {
+        // Same verdicts as the set-based estimate, accents included.
+        assert_eq!(strength("ééééééééééééééééééé"), Strength::Weak);
+        assert!(strength("éàüöçñßøåæœ-2024-Zx!") >= Strength::Good);
+        assert_eq!(strength("Tr0ub4dor&3-xylophone-9Q!"), Strength::Strong);
+    }
+
+    #[test]
+    fn dialog_allocates_only_the_secrets_it_shows() {
+        let d = Dialog::new(ConvertKind::Disable);
+        assert!(d.current.capacity() >= MAX_PASSPHRASE_CHARS);
+        assert_eq!((d.new.capacity(), d.again.capacity()), (0, 0));
+        let d = Dialog::new(ConvertKind::Enable);
+        assert_eq!(d.current.capacity(), 0);
+        assert!(d.new.capacity() >= (MAX_PASSPHRASE_CHARS + 1) * 4);
     }
 
     #[test]

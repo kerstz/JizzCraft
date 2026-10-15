@@ -1083,6 +1083,14 @@ pub const TABLE: &[(&str, &str)] = &[
         "Bloquear la biblioteca cifrada",
     ),
     (
+        "Changing the passphrase does not regenerate the data key: after a passphrase leak, turn encryption off and on again.",
+        "Cambiar la frase de contraseña no regenera la clave de datos: tras una filtración de la frase, desactive y vuelva a activar el cifrado.",
+    ),
+    (
+        "The passphrase is too long (1024 characters at most).",
+        "La frase de contraseña es demasiado larga (máximo 1024 caracteres).",
+    ),
+    (
         "A copy of the old header file still opens with the old passphrase.",
         "Una copia del archivo de cabecera antiguo sigue abriéndose con la frase de contraseña anterior.",
     ),

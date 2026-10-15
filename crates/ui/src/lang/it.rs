@@ -1083,6 +1083,14 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Lock library", "Blocca la libreria"),
     ("Lock the encrypted library", "Blocca la libreria cifrata"),
     (
+        "Changing the passphrase does not regenerate the data key: after a passphrase leak, turn encryption off and on again.",
+        "Cambiare la passphrase non rigenera la chiave dei dati: dopo una fuga della passphrase, disattiva e riattiva la cifratura.",
+    ),
+    (
+        "The passphrase is too long (1024 characters at most).",
+        "La passphrase è troppo lunga (al massimo 1024 caratteri).",
+    ),
+    (
         "A copy of the old header file still opens with the old passphrase.",
         "Una copia del vecchio file di intestazione si apre ancora con la vecchia passphrase.",
     ),

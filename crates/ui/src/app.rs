@@ -307,6 +307,9 @@ pub struct JizzApp {
     queue: Vec<(String, Value)>,
 
     thumbs: ThumbService,
+    /// Every decode thread of this app (thumbnails and scrub previews). The
+    /// root waits for it before it converts or shows "Locked".
+    workers: jizzcraft_media::service::Workers,
     textures: HashMap<i64, ThumbTex>,
     thumb_failed: HashSet<i64>,
     meta_tried: HashSet<i64>,
@@ -425,11 +428,42 @@ impl crate::root::Lockable for JizzApp {
         self.cancel_pending_streams();
         // Saves the position, then the player goes to its control thread
         // (`Player::drop` sends Stop; nothing is set to Null from here).
+        // Dropping the view also stops its scrub-preview worker.
         self.close_view();
+        // No thumbnail is read from the queue or written after this; the
+        // root waits for `workers_finished` before it goes on.
+        self.thumbs.shutdown();
     }
 
     fn jobs_finished(&self) -> bool {
         self.jobs.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+
+    fn workers_finished(&self) -> bool {
+        self.workers.quiesced()
+    }
+
+    fn idle_due(&mut self, now: Instant) -> bool {
+        if self.opener.key.is_none() {
+            return false;
+        }
+        let playing = matches!(
+            &self.view,
+            View::Player(pv) if pv.player.state() == PlayState::Playing
+        );
+        let minutes = self.cfg.autolock_minutes();
+        self.autolock.due(now, minutes, playing)
+    }
+
+    fn touch(&mut self, now: Instant) {
+        self.autolock.touch(now);
+    }
+
+    fn idle_deadline(&self, now: Instant) -> Option<Instant> {
+        self.opener.key.as_ref()?;
+        self.autolock
+            .remaining(now, self.cfg.autolock_minutes())
+            .map(|left| now + left)
     }
 
     fn take_lock_request(&mut self) -> bool {
@@ -582,6 +616,7 @@ impl JizzApp {
             status_chip::register(&mut registry);
         }
 
+        let workers = jizzcraft_media::service::Workers::new();
         let mut app = JizzApp {
             ctx: ctx.clone(),
             db,
@@ -655,12 +690,14 @@ impl JizzApp {
             queue: Vec::new(),
             thumbs: {
                 let ctx = ctx.clone();
-                ThumbService::with_keys(
+                ThumbService::tracked(
                     paths::cache_dir(),
                     thumb_keys,
                     Arc::new(move || ctx.request_repaint()),
+                    &workers,
                 )
             },
+            workers,
             textures: HashMap::new(),
             thumb_failed: HashSet::new(),
             meta_tried: HashSet::new(),
@@ -1114,6 +1151,7 @@ impl JizzApp {
             pv.duration_hint = m.duration_ms;
             pv.source = Some((m.path.clone(), m.size, m.mtime));
             pv.thumb_keys = self.thumb_keys.clone();
+            pv.workers = self.workers.clone();
             // Offer to continue where it stopped, unless resume is switched off.
             if let Some(ms) = m.resume_ms
                 && ms >= 5_000
@@ -2729,11 +2767,8 @@ impl eframe::App for JizzApp {
         let ctx = ui.ctx().clone();
         self.frame_no += 1;
         self.sync_appearance(&ctx);
-        let playing = matches!(
-            &self.view,
-            View::Player(pv) if pv.player.state() == PlayState::Playing
-        );
-        self.autolock_tick(&ctx, playing);
+        // The inactivity lock is tested by the root before this app is drawn
+        // (`Gate::tick`), and by its own timer when no frame is drawn at all.
         // Jokes never show on a shared screen, in discreet mode or disguised.
         // Comedy, like this app, is best enjoyed alone.
         crate::fun::set_enabled(
@@ -4171,6 +4206,10 @@ mod tests {
     use crate::root::Lockable;
 
     fn scripted_opts(db: &std::path::Path) -> Options {
+        // Every app under test caches under a temporary home, never the
+        // user's own cache directory.
+        let home = crate::test_support::isolate_home();
+        assert_eq!(jizzcraft_core::paths::cache_dir(), home.join("cache"));
         Options {
             db_path: Some(db.to_path_buf()),
             // A supplied config: no start-up doctor, quick check or prune.
@@ -4207,6 +4246,11 @@ mod tests {
         .unwrap();
         assert!(app.vault_active());
         let key = Arc::downgrade(app.opener.key.as_ref().unwrap());
+        let thumb_keys = Arc::downgrade(app.thumb_keys.as_ref().unwrap());
+        assert!(
+            !app.workers_finished(),
+            "decode threads are alive while open"
+        );
 
         // A scan is a job: it holds a ticket until it ends, then the count
         // is back to zero.
@@ -4231,8 +4275,20 @@ mod tests {
         drop(held);
         assert!(app.jobs_finished());
 
+        // The decode threads leave on their own after `begin_lock`; the root
+        // waits for them before it shows "Locked".
+        let end = Instant::now() + Duration::from_secs(10);
+        while !app.workers_finished() {
+            assert!(Instant::now() < end, "thumbnail workers never left");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
         drop(app);
         assert!(key.upgrade().is_none(), "the database key is gone");
+        assert!(
+            thumb_keys.upgrade().is_none(),
+            "the thumbnail keys are gone"
+        );
     }
 
     /// A real app on an encrypted library, built without a window.
@@ -4333,25 +4389,26 @@ mod tests {
     fn auto_lock_uses_the_same_path_as_the_menu() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _p) = encrypted_app(dir.path());
-        let ctx = egui::Context::default();
-        let long_ago = Instant::now() - Duration::from_secs(3600);
+        let now = Instant::now();
+        let long_ago = now - Duration::from_secs(3600);
 
         // Never: idle forever, nothing happens.
         app.cfg.autolock_minutes = Some(0);
         app.autolock = vault_ui::AutoLock::new(long_ago);
-        app.autolock_tick(&ctx, false);
-        assert!(!app.take_lock_request());
+        assert!(!app.idle_due(now));
+        assert_eq!(app.idle_deadline(now), None);
 
-        // A playing video is activity.
+        // Idle past the delay: due, and the deadline is known to the timer.
         app.cfg.autolock_minutes = Some(5);
-        app.autolock_tick(&ctx, true);
-        assert!(!app.take_lock_request());
-
-        // Idle past the delay: one lock request, taken like the menu's.
         app.autolock = vault_ui::AutoLock::new(long_ago);
-        app.autolock_tick(&ctx, false);
-        assert!(app.take_lock_request());
-        assert!(!app.take_lock_request());
+        assert!(app.idle_due(now));
+        app.touch(now);
+        assert!(!app.idle_due(now));
+        assert_eq!(
+            app.idle_deadline(now),
+            Some(now + Duration::from_secs(300)),
+            "the timer thread sleeps until this instant"
+        );
     }
 
     #[test]
@@ -4368,8 +4425,8 @@ mod tests {
         .unwrap();
         app.cfg.autolock_minutes = Some(1);
         app.autolock = vault_ui::AutoLock::new(Instant::now() - Duration::from_secs(3600));
-        app.autolock_tick(&egui::Context::default(), false);
-        assert!(!app.take_lock_request());
+        assert!(!app.idle_due(Instant::now()));
+        assert_eq!(app.idle_deadline(Instant::now()), None);
     }
 
     #[test]

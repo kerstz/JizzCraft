@@ -108,6 +108,8 @@ pub struct PlayerView {
     /// Discreet / share-safe: previews use the blurred variant.
     pub blur_previews: bool,
     preview: Option<PreviewService>,
+    /// Counts the preview worker with the app's other decode threads.
+    pub workers: jizzcraft_media::service::Workers,
     preview_tex: HashMap<u32, (egui::TextureHandle, egui::TextureHandle, Instant)>,
     /// Force a preview popup at this position (screenshots, `player.preview`).
     pub force_preview: Option<Duration>,
@@ -158,6 +160,7 @@ impl PlayerView {
             previews_enabled: true,
             blur_previews: false,
             preview: None,
+            workers: jizzcraft_media::service::Workers::new(),
             preview_tex: HashMap::new(),
             force_preview: None,
             autoplay_in: None,
@@ -954,13 +957,15 @@ impl PlayerView {
             let ctx = ui.ctx().clone();
             let wake: Arc<dyn Fn() + Send + Sync> =
                 Arc::new(move || ctx.request_repaint_after(Duration::from_millis(1)));
-            self.preview = Some(PreviewService::with_keys(
+            self.preview = Some(PreviewService::tracked(
                 path.clone(),
                 *size,
                 *mtime,
                 jizzcraft_core::paths::cache_dir(),
                 self.thumb_keys.clone(),
                 wake,
+                &self.workers,
+                None,
             ));
         }
         if let Some(svc) = &self.preview {

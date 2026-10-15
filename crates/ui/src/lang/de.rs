@@ -1077,6 +1077,14 @@ pub const TABLE: &[(&str, &str)] = &[
         "Verschlüsselte Bibliothek sperren",
     ),
     (
+        "Changing the passphrase does not regenerate the data key: after a passphrase leak, turn encryption off and on again.",
+        "Das Ändern der Passphrase erzeugt den Datenschlüssel nicht neu: Schalten Sie die Verschlüsselung nach einem Passphrase-Leck aus und wieder ein.",
+    ),
+    (
+        "The passphrase is too long (1024 characters at most).",
+        "Die Passphrase ist zu lang (höchstens 1024 Zeichen).",
+    ),
+    (
         "A copy of the old header file still opens with the old passphrase.",
         "Eine Kopie der alten Header-Datei lässt sich weiterhin mit der alten Passphrase öffnen.",
     ),

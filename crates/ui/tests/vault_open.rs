@@ -7,10 +7,33 @@ use jizzcraft_ui::root::{Fail, Startup, spawn_unlock, startup, unlock_blocking};
 use std::time::Duration;
 use zeroize::Zeroizing;
 
+/// Enabling cleans the cache directory and the engine reads `paths::*`: a test
+/// must never do that in the user's own `~/.cache`. `set_home` is once per
+/// process, which is one test binary.
+fn isolate_home() {
+    use std::sync::OnceLock;
+    static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap().keep();
+        jizzcraft_core::paths::set_home(dir.clone());
+        dir
+    });
+    let home = jizzcraft_core::paths::home().expect("home is set");
+    assert!(
+        jizzcraft_core::paths::cache_dir().starts_with(home),
+        "cache under the test home"
+    );
+    assert!(
+        jizzcraft_core::paths::cache_dir().starts_with(std::env::temp_dir()),
+        "never the real cache"
+    );
+}
+
 const PASS: &str = "e2e-passphrase-0123456789";
 const CANARY: &str = "zz-canary-7f3a.png";
 
 fn encrypted_library() -> (tempfile::TempDir, std::path::PathBuf) {
+    isolate_home();
     let dir = tempfile::tempdir().unwrap();
     let media = dir.path().join("media");
     std::fs::create_dir(&media).unwrap();
@@ -90,6 +113,7 @@ fn conversion_worker_encrypts_a_clear_library_and_hands_back_a_keyed_one() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
+    isolate_home();
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("library.db");
     drop(Db::open(&db_path).unwrap());

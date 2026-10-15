@@ -36,14 +36,34 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, Zeroizing};
 
-/// Longest passphrase taken from the field, in bytes (same as the CLI).
-pub const MAX_PASSPHRASE_BYTES: usize = 4096;
+/// Longest passphrase accepted, in characters: the engine's limit (1024). A
+/// longer one is refused with a message, never cut.
+pub use jizzcraft_core::vault::MAX_PASSPHRASE_CHARS;
+
+/// Capacity of a passphrase buffer: one character more than the limit (so an
+/// overlong paste is seen, not silently cut), four bytes each. No
+/// reallocation while typing.
+pub const MAX_PASSPHRASE_BYTES: usize = (MAX_PASSPHRASE_CHARS + 1) * 4;
+
+/// True when `p` is over the limit (counted in characters, not bytes).
+pub fn too_long(p: &str) -> bool {
+    p.len() > MAX_PASSPHRASE_CHARS && p.chars().count() > MAX_PASSPHRASE_CHARS
+}
+
+/// Forget what egui keeps of the text fields: cursor, selection and the undo
+/// history, which holds copies of what was typed (a passphrase included).
+pub(crate) fn purge_edit_state(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_by_type::<egui::text_edit::TextEditState>());
+}
 
 /// A fixed, translatable reason a library cannot be unlocked or opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fail {
     /// The passphrase did not open the header.
     Wrong,
+    /// The typed passphrase is over [`MAX_PASSPHRASE_CHARS`]: nothing was
+    /// tried and nothing was cut.
+    TooLong,
     /// Header missing, damaged, unsupported or orphaned: no prompt helps.
     Header,
     /// Anything else (damaged database, busy, I/O).
@@ -66,6 +86,9 @@ impl Fail {
     pub fn text(self) -> &'static str {
         match self {
             Fail::Wrong => crate::i18n::tr("Wrong passphrase."),
+            Fail::TooLong => {
+                crate::i18n::tr("The passphrase is too long (1024 characters at most).")
+            }
             Fail::Header => crate::i18n::tr(
                 "The vault header of this library is missing or damaged. \
                  The library cannot be opened and nothing was changed.",
@@ -117,6 +140,9 @@ impl std::fmt::Debug for Unlocked {
 /// key itself is dropped (and zeroed) here: only the derived database and
 /// thumbnail keys leave, behind `Arc`s that the last user frees.
 pub fn unlock_blocking(db_path: &Path, passphrase: &str) -> Result<Unlocked, Fail> {
+    if too_long(passphrase) {
+        return Err(Fail::TooLong);
+    }
     let vault = vault_convert::unlock_library(db_path, passphrase).map_err(Fail::from_vault)?;
     let db_key: Arc<DbKey> = Arc::new(vault.db_key());
     let thumb_keys = Arc::new(vault.thumb_keys());
@@ -182,6 +208,24 @@ pub trait Lockable {
     fn begin_lock(&mut self);
     /// Every job that holds a key has ended.
     fn jobs_finished(&self) -> bool;
+    /// Every background decode thread (thumbnails, previews) has returned and
+    /// let go of its cipher. Until then nothing may clean the cache, convert
+    /// or drop the keys: a worker could still write a clear file.
+    fn workers_finished(&self) -> bool {
+        true
+    }
+    /// The inactivity delay elapsed (a playing video counts as activity).
+    /// Called by the gate before the app is drawn, and from a timer when no
+    /// frame is drawn at all.
+    fn idle_due(&mut self, _now: Instant) -> bool {
+        false
+    }
+    /// Input happened: restart the inactivity clock.
+    fn touch(&mut self, _now: Instant) {}
+    /// When the inactivity lock falls due if nothing happens (`None`: never).
+    fn idle_deadline(&self, _now: Instant) -> Option<Instant> {
+        None
+    }
     /// The user asked for a lock since the last call.
     fn take_lock_request(&mut self) -> bool;
     /// A conversion (encrypt, decrypt, change passphrase) was asked for since
@@ -335,7 +379,11 @@ pub fn convert_blocking(
         ..Default::default()
     };
     let short = |p: &str| p.chars().count() < MIN_PASSPHRASE_CHARS;
+    let long = too_long(&req.pass) || req.new_pass.as_deref().is_some_and(|n| too_long(n));
     let result = match (req.kind, req.new_pass.as_ref()) {
+        // Refused, never cut: a longer passphrase cannot be typed again by
+        // someone who only knows its first characters.
+        _ if long => Err(VaultError::EmptyPassphrase),
         (ConvertKind::Enable, _) if short(&req.pass) => Err(VaultError::EmptyPassphrase),
         (ConvertKind::Change, Some(n)) if short(n) => Err(VaultError::EmptyPassphrase),
         (ConvertKind::Change, None) => Err(VaultError::EmptyPassphrase),
@@ -636,6 +684,50 @@ impl<A: Lockable> Gate<A> {
         true
     }
 
+    /// The inactivity deadline, tested against `now`. Call it before the app
+    /// is drawn: when due the app is hidden at once (`Locking`) and no frame of
+    /// its content is built. Returns whether a lock started.
+    ///
+    /// Order matters: test the deadline first, then [`Gate::touch`] for this
+    /// frame's input, so the click that wakes a window after the deadline
+    /// cannot rescue the library.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        let due = match &mut self.state {
+            State::Open(app) => app.vault_active() && app.idle_due(now),
+            _ => false,
+        };
+        due && self.request_lock()
+    }
+
+    /// Input happened in the open app.
+    pub fn touch(&mut self, now: Instant) {
+        if let State::Open(app) = &mut self.state {
+            app.touch(now);
+        }
+    }
+
+    /// When the open, encrypted app falls idle (what the timer sleeps until).
+    pub fn idle_deadline(&self, now: Instant) -> Option<Instant> {
+        match &self.state {
+            State::Open(app) if app.vault_active() => app.idle_deadline(now),
+            _ => None,
+        }
+    }
+
+    /// Start a lock or a conversion the open app asked for. Returns whether
+    /// one started.
+    pub fn take_requests(&mut self) -> bool {
+        let lock = match &mut self.state {
+            State::Open(app) => app.take_lock_request(),
+            _ => return false,
+        };
+        if lock {
+            self.request_lock()
+        } else {
+            self.start_convert()
+        }
+    }
+
     /// Take a pending conversion from an open app and start closing it.
     /// Returns whether one started. Needs an open app; the app itself has
     /// refused the request while jobs run.
@@ -729,7 +821,7 @@ impl<A: Lockable> Gate<A> {
             return;
         };
         let quiescing = match &c.phase {
-            ConvPhase::Quiesce { app, .. } => Some(app.jobs_finished()),
+            ConvPhase::Quiesce { app, .. } => Some(app.jobs_finished() && app.workers_finished()),
             ConvPhase::Running(_) => None,
         };
         if let Some(ready) = quiescing {
@@ -803,15 +895,95 @@ impl<A: Lockable> Gate<A> {
         }
     }
 
-    /// Drop the app once its jobs have ended; only then show "Locked".
+    /// Drop the app once its jobs and decode workers have ended; only then
+    /// show "Locked".
     pub fn poll_lock(&mut self) {
         let State::Locking(app) = &self.state else {
             return;
         };
-        if app.jobs_finished() {
+        if app.jobs_finished() && app.workers_finished() {
             // Dropping closes the database, frees textures and the
             // thumbnail service and releases the last key references.
             self.state = State::Locked(LockScreen::new());
+        }
+    }
+}
+
+/// Wakes the UI at a deadline from its own thread, so the inactivity lock
+/// does not depend on the window being drawn (eframe throttles hidden ones).
+/// The wake-up only asks for a pass (`request_repaint`, which also runs
+/// `App::logic` for a minimized window); the lock itself is decided there.
+pub struct IdleTimer {
+    shared: Arc<TimerShared>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+struct TimerShared {
+    state: std::sync::Mutex<TimerState>,
+    cv: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct TimerState {
+    deadline: Option<Instant>,
+    /// The deadline already announced: not announced twice.
+    fired: Option<Instant>,
+    stop: bool,
+}
+
+impl IdleTimer {
+    /// `fire` runs on the timer thread once per deadline.
+    pub fn new(fire: Box<dyn Fn() + Send + Sync>) -> Self {
+        let shared = Arc::new(TimerShared {
+            state: std::sync::Mutex::new(TimerState::default()),
+            cv: std::sync::Condvar::new(),
+        });
+        let s = Arc::clone(&shared);
+        let handle = std::thread::Builder::new()
+            .name("jizzcraft-idle".into())
+            .spawn(move || {
+                let mut st = s.state.lock().unwrap();
+                loop {
+                    if st.stop {
+                        return;
+                    }
+                    match st.deadline {
+                        Some(d) if st.fired != Some(d) => {
+                            let now = Instant::now();
+                            if now >= d {
+                                st.fired = Some(d);
+                                drop(st);
+                                fire();
+                                st = s.state.lock().unwrap();
+                            } else {
+                                st = s.cv.wait_timeout(st, d - now).unwrap().0;
+                            }
+                        }
+                        _ => st = s.cv.wait(st).unwrap(),
+                    }
+                }
+            })
+            .ok();
+        IdleTimer { shared, handle }
+    }
+
+    /// The instant the lock falls due, or `None` (nothing to wait for).
+    pub fn set(&self, deadline: Option<Instant>) {
+        let mut st = self.shared.state.lock().unwrap();
+        if st.deadline != deadline {
+            st.deadline = deadline;
+            drop(st);
+            self.shared.cv.notify_all();
+        }
+    }
+}
+
+impl Drop for IdleTimer {
+    fn drop(&mut self) {
+        self.shared.state.lock().unwrap().stop = true;
+        self.shared.cv.notify_all();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
         }
     }
 }
@@ -833,6 +1005,10 @@ pub struct Root {
     /// The neutral window icon, sent once while locked.
     icon: Arc<egui::IconData>,
     neutral_sent: bool,
+    /// Wakes the app at the inactivity deadline even when no frame is drawn.
+    timer: IdleTimer,
+    /// State of the previous pass, to purge text-edit history on a change.
+    last_state: &'static str,
 }
 
 impl Root {
@@ -865,6 +1041,11 @@ impl Root {
             render_state: cc.wgpu_render_state.clone(),
             icon: crate::app::window_icon(VIEWER_PNG),
             neutral_sent: false,
+            timer: IdleTimer::new({
+                let ctx = cc.egui_ctx.clone();
+                Box::new(move || ctx.request_repaint())
+            }),
+            last_state: "",
         })
     }
 
@@ -901,19 +1082,14 @@ impl Root {
     }
 }
 
-impl eframe::App for Root {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
+impl Root {
+    /// Everything that moves the gate and draws nothing: the inactivity
+    /// deadline first (before any input of this frame can rescue the library),
+    /// then the workers' answers, then what the app asked for. Safe to call
+    /// twice per frame; `logic` runs it when the window is hidden too.
+    fn advance(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
-
-        // A close during a conversion is held until the user confirms.
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.gate.on_close_request() == CloseVerdict::Hold
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
-
-        // Transitions first, so this frame already draws the new state.
+        self.gate.tick(now);
         let ctx2 = ctx.clone();
         let (opts, rs) = (&self.opts, &self.render_state);
         self.gate.poll_unlock(now, |u| {
@@ -952,17 +1128,75 @@ impl eframe::App for Root {
             // after the next lock.
             self.neutral_sent = false;
         }
+        // A lock or a conversion asked for outside a frame (a command, the
+        // boss key from `logic`): started here, before the app is drawn.
+        if self.gate.take_requests() {
+            ctx.request_repaint();
+        }
+        self.sync(ctx, now);
+    }
+
+    /// After every gate move: purge what egui remembers of typed text when
+    /// the screen changes to a locked one, and tell the timer the deadline.
+    fn sync(&mut self, ctx: &egui::Context, now: Instant) {
+        let name = self.gate.state.name();
+        if name != self.last_state {
+            if matches!(name, "locking" | "locked" | "unlocking" | "converting") {
+                purge_edit_state(ctx);
+            }
+            self.last_state = name;
+        }
+        self.timer.set(self.gate.idle_deadline(now));
+    }
+
+    /// Hide the app for the frame being built: a full-window fill above every
+    /// layer, so the last buffer carries no content of the library.
+    fn cover(ctx: &egui::Context) {
+        let layer = egui::LayerId::new(egui::Order::Debug, egui::Id::new("vault-cover"));
+        ctx.layer_painter(layer)
+            .rect_filled(ctx.content_rect(), 0.0, BG);
+    }
+}
+
+impl eframe::App for Root {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Also called while the window is minimized or hidden, when `ui` is
+        // not: the inactivity lock must not depend on being drawn.
+        self.advance(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let now = Instant::now();
+
+        // A close during a conversion is held until the user confirms.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.gate.on_close_request() == CloseVerdict::Hold
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+
+        // Transitions first, so this frame already draws the new state. The
+        // deadline is tested before this frame's input is counted.
+        self.advance(&ctx);
+        if matches!(self.gate.state, State::Open(_)) {
+            let input =
+                ctx.input(|i| !i.events.is_empty() || i.pointer.delta() != egui::Vec2::ZERO);
+            if input {
+                self.gate.touch(now);
+            }
+        }
 
         match &mut self.gate.state {
             State::Open(app) => {
                 eframe::App::ui(&mut **app, ui, frame);
-                let lock = app.take_lock_request();
-                if lock {
-                    self.gate.request_lock();
-                    ctx.request_repaint();
-                } else if self.gate.start_convert() {
+                // Asked for while drawing (menu, shortcut, boss key): the
+                // library is hidden before this frame is presented.
+                if self.gate.take_requests() {
+                    Self::cover(&ctx);
                     ctx.request_repaint();
                 }
+                self.sync(&ctx, now);
             }
             State::Converting(c) => {
                 let (kind, committed, cancelling) = (c.kind(), c.committed(), c.cancelling());
@@ -1101,7 +1335,7 @@ fn lock_screen_ui(
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut *ls.buf)
                         .password(true)
-                        .char_limit(MAX_PASSPHRASE_BYTES / 4)
+                        .char_limit(MAX_PASSPHRASE_CHARS + 1)
                         .hint_text(crate::i18n::tr("Passphrase"))
                         .desired_width(f32::INFINITY),
                 );
@@ -1118,7 +1352,9 @@ fn lock_screen_ui(
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                if let Some(e) = ls.error {
+                // Over the limit: said at once, and nothing is cut.
+                let over = too_long(&ls.buf).then_some(Fail::TooLong);
+                if let Some(e) = over.or(ls.error) {
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(e.text())
@@ -1137,13 +1373,15 @@ fn lock_screen_ui(
                     );
                     ui.ctx().request_repaint_after(Duration::from_millis(250));
                 }
-                if go && wait == 0 && !ls.buf.is_empty() {
+                if go && wait == 0 && too_long(&ls.buf) {
+                    ls.wipe();
+                    ls.error = Some(Fail::TooLong);
+                    purge_edit_state(ui.ctx());
+                } else if go && wait == 0 && !ls.buf.is_empty() {
                     // The passphrase moves out of the field; egui's edit
                     // state (cursor, undo) is dropped with it.
                     submitted = Some(ls.take());
-                    ui.ctx().data_mut(|d| {
-                        d.remove_by_type::<egui::text_edit::TextEditState>();
-                    });
+                    purge_edit_state(ui.ctx());
                 } else if go && wait > 0 {
                     ls.wipe();
                 }
@@ -1165,6 +1403,11 @@ mod tests {
         vault: bool,
         began: Rc<Cell<u32>>,
         jobs: Arc<AtomicU32>,
+        /// Decode threads still alive (thumbnails, previews).
+        workers: Arc<AtomicU32>,
+        /// The inactivity delay: `Some(idle_for)` is due once `now` is past.
+        idle_at: Option<Instant>,
+        touched: Rc<Cell<u32>>,
         cancel: Arc<AtomicBool>,
         request: bool,
         convert: Option<ConvertRequest>,
@@ -1182,6 +1425,19 @@ mod tests {
         }
         fn jobs_finished(&self) -> bool {
             self.jobs.load(Ordering::SeqCst) == 0
+        }
+        fn workers_finished(&self) -> bool {
+            self.workers.load(Ordering::SeqCst) == 0
+        }
+        fn idle_due(&mut self, now: Instant) -> bool {
+            self.idle_at.is_some_and(|t| now >= t)
+        }
+        fn touch(&mut self, now: Instant) {
+            self.touched.set(self.touched.get() + 1);
+            self.idle_at = self.idle_at.map(|_| now + Duration::from_secs(60));
+        }
+        fn idle_deadline(&self, _now: Instant) -> Option<Instant> {
+            self.idle_at
         }
         fn take_lock_request(&mut self) -> bool {
             std::mem::take(&mut self.request)
@@ -1202,6 +1458,9 @@ mod tests {
             vault,
             began: Rc::new(Cell::new(0)),
             jobs: Arc::new(AtomicU32::new(0)),
+            workers: Arc::new(AtomicU32::new(0)),
+            idle_at: None,
+            touched: Rc::new(Cell::new(0)),
             cancel: Arc::new(AtomicBool::new(false)),
             request: false,
             convert: None,
@@ -1214,6 +1473,8 @@ mod tests {
 
     /// An encrypted library with one folder row, fast Argon2 parameters.
     fn encrypted_library() -> (tempfile::TempDir, PathBuf) {
+        // Enabling cleans the cache directory: never the user's own.
+        crate::test_support::isolate_home();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.db");
         {
@@ -1499,6 +1760,7 @@ mod tests {
     }
 
     fn plain_library() -> (tempfile::TempDir, PathBuf) {
+        crate::test_support::isolate_home();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("library.db");
         let mut db = Db::open(&path).unwrap();
@@ -1724,5 +1986,203 @@ mod tests {
         );
         let shown = format!("{r:?}");
         assert!(!shown.contains("hunter2") && !shown.contains("another"));
+    }
+
+    // ---- audit round 2: workers, deadline, history ---------------------------
+
+    #[test]
+    fn locked_is_shown_only_after_the_decode_workers_are_gone() {
+        let app = fake(true);
+        let workers = app.workers.clone();
+        workers.store(2, Ordering::SeqCst);
+        let mut g = Gate::open_plain(PathBuf::from("x"), app);
+        assert!(g.request_lock());
+        // Jobs are done, workers are not: still "Locking", app kept alive.
+        g.poll_lock();
+        assert_eq!(g.state.name(), "locking");
+        workers.store(1, Ordering::SeqCst);
+        g.poll_lock();
+        assert_eq!(g.state.name(), "locking");
+        workers.store(0, Ordering::SeqCst);
+        g.poll_lock();
+        assert_eq!(g.state.name(), "locked");
+    }
+
+    #[test]
+    fn a_conversion_does_not_start_while_a_worker_could_still_write() {
+        let (_d, path) = plain_library();
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let workers = app.workers.clone();
+        workers.store(1, Ordering::SeqCst);
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        for _ in 0..3 {
+            g.poll_convert(
+                |_, _, _, _, _| panic!("no conversion while a worker runs"),
+                |_| Err(String::new()),
+            );
+        }
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Plain);
+        workers.store(0, Ordering::SeqCst);
+        assert_eq!(run_convert(&mut g, &Rc::new(Cell::new(None))), Some(true));
+    }
+
+    #[test]
+    fn the_thumbnail_keys_are_freed_before_locked_is_shown() {
+        use jizzcraft_core::vault::{ThumbKeys, VaultKey};
+        let keys: Arc<ThumbKeys> = Arc::new(VaultKey::from_bytes_for_tests([3; 32]).thumb_keys());
+        let weak = Arc::downgrade(&keys);
+        let mut app = fake(true);
+        app.keys = Some((
+            Arc::new(VaultKey::from_bytes_for_tests([3; 32]).db_key()),
+            keys,
+        ));
+        let workers = app.workers.clone();
+        workers.store(1, Ordering::SeqCst);
+        let mut g = Gate::open_plain(PathBuf::from("x"), app);
+        assert!(g.request_lock());
+        g.poll_lock();
+        assert!(weak.upgrade().is_some(), "still held while locking");
+        workers.store(0, Ordering::SeqCst);
+        g.poll_lock();
+        assert_eq!(g.state.name(), "locked");
+        assert!(weak.upgrade().is_none(), "gone before the lock screen");
+    }
+
+    #[test]
+    fn the_deadline_locks_without_a_frame_and_input_after_it_does_not_save_you() {
+        let t0 = Instant::now();
+        let mut app = fake(true);
+        app.idle_at = Some(t0 + Duration::from_secs(900));
+        let touched = app.touched.clone();
+        let began = app.began.clone();
+        let mut g = Gate::open_plain(PathBuf::from("x"), app);
+        assert_eq!(g.idle_deadline(t0), Some(t0 + Duration::from_secs(900)));
+
+        // Before the deadline: nothing, and input pushes it back.
+        assert!(!g.tick(t0 + Duration::from_secs(899)));
+        g.touch(t0 + Duration::from_secs(899));
+        assert_eq!(touched.get(), 1);
+        assert_eq!(g.state.name(), "open");
+
+        // The window was minimized past the deadline: the first thing that
+        // runs is the tick, with no frame and no input counted before it.
+        let late = t0 + Duration::from_secs(899 + 61);
+        assert!(g.tick(late));
+        assert_eq!(began.get(), 1, "hidden and cancelled at once");
+        assert_eq!(g.state.name(), "locking");
+        // The click that woke the window cannot rescue it any more.
+        g.touch(late);
+        assert_eq!(touched.get(), 1, "no app left to touch");
+        g.poll_lock();
+        assert_eq!(g.state.name(), "locked");
+        assert_eq!(g.idle_deadline(late), None);
+    }
+
+    #[test]
+    fn a_plain_library_never_idles_out() {
+        let mut app = fake(false);
+        app.idle_at = Some(Instant::now());
+        let mut g = Gate::open_plain(PathBuf::from("x"), app);
+        assert!(!g.tick(Instant::now() + Duration::from_secs(10)));
+        assert_eq!(g.idle_deadline(Instant::now()), None);
+        assert_eq!(g.state.name(), "open");
+    }
+
+    #[test]
+    fn take_requests_locks_before_the_frame_is_drawn() {
+        let mut app = fake(true);
+        app.request = true;
+        let mut g = Gate::open_plain(PathBuf::from("x"), app);
+        assert!(g.take_requests());
+        assert_eq!(g.state.name(), "locking");
+        assert!(!g.take_requests());
+    }
+
+    #[test]
+    fn the_idle_timer_fires_without_any_frame_and_once_per_deadline() {
+        use std::sync::atomic::AtomicUsize;
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f2 = fired.clone();
+        let t = IdleTimer::new(Box::new(move || {
+            f2.fetch_add(1, Ordering::SeqCst);
+        }));
+        let d = Instant::now() + Duration::from_millis(80);
+        t.set(Some(d));
+        t.set(Some(d)); // setting it again changes nothing
+        for _ in 0..400 {
+            if fired.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        std::thread::sleep(Duration::from_millis(100));
+        t.set(Some(d));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the same deadline fires once"
+        );
+        // A cleared deadline never fires.
+        t.set(Some(Instant::now() + Duration::from_millis(60)));
+        t.set(None);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        drop(t); // joins the thread
+    }
+
+    #[test]
+    fn egui_text_history_is_purged() {
+        use egui::text_edit::TextEditState;
+        let ctx = egui::Context::default();
+        let mut buf = String::from("a passphrase typed here");
+        let id = egui::Id::new("pw");
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::TextEdit::singleline(&mut buf)
+                .id(id)
+                .password(true)
+                .show(ui);
+        });
+        out.textures_delta.clear();
+        assert!(
+            TextEditState::load(&ctx, id).is_some(),
+            "egui keeps the field state"
+        );
+        purge_edit_state(&ctx);
+        assert!(TextEditState::load(&ctx, id).is_none(), "and it is gone");
+    }
+
+    #[test]
+    fn overlong_passphrases_are_refused_not_cut() {
+        let ok = "a".repeat(MAX_PASSPHRASE_CHARS);
+        let over = "a".repeat(MAX_PASSPHRASE_CHARS + 1);
+        assert!(!too_long(&ok));
+        assert!(too_long(&over));
+        // Characters, not bytes.
+        assert!(!too_long(&"é".repeat(MAX_PASSPHRASE_CHARS)));
+        assert!(too_long(&"é".repeat(MAX_PASSPHRASE_CHARS + 1)));
+        // The buffer holds the limit plus one character without growing.
+        assert!(secret_buf().capacity() >= (MAX_PASSPHRASE_CHARS + 1) * 4);
+        // Nothing is tried: no header is read for an overlong one.
+        assert_eq!(
+            unlock_blocking(Path::new("/nonexistent/library.db"), &over).err(),
+            Some(Fail::TooLong)
+        );
+        assert!(!Fail::TooLong.text().is_empty());
+        // The conversion refuses it too, whatever the window did.
+        let (_d, path) = plain_library();
+        let r = convert_blocking(
+            &path,
+            req(ConvertKind::Enable, &over, None),
+            None,
+            &Arc::new(AtomicBool::new(false)),
+            &Arc::new(AtomicBool::new(false)),
+            FAST,
+        );
+        assert_eq!(r.outcome, ConvertOutcome::Failed);
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Plain);
     }
 }
