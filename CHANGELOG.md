@@ -7,6 +7,11 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Fixed
+- Online edition: an empty proxy in `fetch.json` (or blanks typed in the
+  setting) now means "no proxy" everywhere; torrents no longer fail to start
+  because of it. The proxy stays optional.
+
 ## [0.2.0] - 2026-10-15
 
 Second alpha, Linux first. Highlights:
