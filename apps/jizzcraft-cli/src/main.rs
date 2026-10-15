@@ -298,6 +298,79 @@ enum CategoryCmd {
     },
 }
 
+/// Arguments of `query` (boxed in `Cmd`: this variant is far larger than the rest).
+#[derive(clap::Args)]
+struct QueryArgs {
+    /// Favorites only.
+    #[arg(long)]
+    fav: bool,
+    /// Restrict to a media type.
+    #[arg(long = "type", value_enum)]
+    kind: Option<TypeArg>,
+    /// Filename substring (case-insensitive).
+    #[arg(long)]
+    name: Option<String>,
+    /// Include files flagged missing.
+    #[arg(long)]
+    include_missing: bool,
+    #[arg(long)]
+    limit: Option<u64>,
+    /// Sort key: name, added, size, duration, random, or position (needs --playlist).
+    #[arg(long, default_value = "name")]
+    sort: String,
+    /// Descending order.
+    #[arg(long)]
+    desc: bool,
+    /// Seed for `--sort random` (stable shuffle).
+    #[arg(long)]
+    seed: Option<u32>,
+    /// Minimum star rating (1-5).
+    #[arg(long)]
+    min_rating: Option<u8>,
+    /// Only unrated items.
+    #[arg(long)]
+    unrated: bool,
+    /// Only items in this directory.
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// Include sub-directories with --dir.
+    #[arg(long)]
+    recursive: bool,
+    /// Hidden items: only | include (default: excluded).
+    #[arg(long)]
+    hidden: Option<String>,
+    /// Only items still in the inbox.
+    #[arg(long)]
+    inbox: bool,
+    /// Only items flagged damaged by the integrity check.
+    #[arg(long)]
+    damaged: bool,
+    /// Start from a built-in or saved view (e.g. inbox, top-rated).
+    #[arg(long)]
+    view: Option<String>,
+    /// Only items in this playlist id.
+    #[arg(long)]
+    playlist: Option<i64>,
+    /// Must have this tag id (repeat: all of them).
+    #[arg(long = "tag", value_name = "ID")]
+    tags: Vec<i64>,
+    /// Has at least one of these tag ids (repeat for more).
+    #[arg(long = "any-tag", value_name = "ID")]
+    any_tags: Vec<i64>,
+    /// Must not have this tag id (repeat for more).
+    #[arg(long = "not-tag", value_name = "ID")]
+    not_tags: Vec<i64>,
+    /// In this category id or any category below it (repeat: all of them).
+    #[arg(long = "category", value_name = "ID")]
+    categories: Vec<i64>,
+    /// Only items without any tag.
+    #[arg(long)]
+    untagged: bool,
+    /// Only items without any category.
+    #[arg(long)]
+    uncategorized: bool,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Playlists: ordered lists of library items.
@@ -346,76 +419,7 @@ enum Cmd {
         offset: u64,
     },
     /// List media.
-    Query {
-        /// Favorites only.
-        #[arg(long)]
-        fav: bool,
-        /// Restrict to a media type.
-        #[arg(long = "type", value_enum)]
-        kind: Option<TypeArg>,
-        /// Filename substring (case-insensitive).
-        #[arg(long)]
-        name: Option<String>,
-        /// Include files flagged missing.
-        #[arg(long)]
-        include_missing: bool,
-        #[arg(long)]
-        limit: Option<u64>,
-        /// Sort key: name, added, size, duration, random, or position (needs --playlist).
-        #[arg(long, default_value = "name")]
-        sort: String,
-        /// Descending order.
-        #[arg(long)]
-        desc: bool,
-        /// Seed for `--sort random` (stable shuffle).
-        #[arg(long)]
-        seed: Option<u32>,
-        /// Minimum star rating (1-5).
-        #[arg(long)]
-        min_rating: Option<u8>,
-        /// Only unrated items.
-        #[arg(long)]
-        unrated: bool,
-        /// Only items in this directory.
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        /// Include sub-directories with --dir.
-        #[arg(long)]
-        recursive: bool,
-        /// Hidden items: only | include (default: excluded).
-        #[arg(long)]
-        hidden: Option<String>,
-        /// Only items still in the inbox.
-        #[arg(long)]
-        inbox: bool,
-        /// Only items flagged damaged by the integrity check.
-        #[arg(long)]
-        damaged: bool,
-        /// Start from a built-in or saved view (e.g. inbox, top-rated).
-        #[arg(long)]
-        view: Option<String>,
-        /// Only items in this playlist id.
-        #[arg(long)]
-        playlist: Option<i64>,
-        /// Must have this tag id (repeat: all of them).
-        #[arg(long = "tag", value_name = "ID")]
-        tags: Vec<i64>,
-        /// Has at least one of these tag ids (repeat for more).
-        #[arg(long = "any-tag", value_name = "ID")]
-        any_tags: Vec<i64>,
-        /// Must not have this tag id (repeat for more).
-        #[arg(long = "not-tag", value_name = "ID")]
-        not_tags: Vec<i64>,
-        /// In this category id or any category below it (repeat: all of them).
-        #[arg(long = "category", value_name = "ID")]
-        categories: Vec<i64>,
-        /// Only items without any tag.
-        #[arg(long)]
-        untagged: bool,
-        /// Only items without any category.
-        #[arg(long)]
-        uncategorized: bool,
-    },
+    Query(Box<QueryArgs>),
     /// Set the star rating of an item.
     Rate { id: i64, rating: u8 },
     /// Hide an item in the library (database only; --show to undo).
@@ -619,31 +623,32 @@ fn run(cli: &Cli) -> Result<(), String> {
             "media.search".to_owned(),
             json!({ "query": words.join(" "), "limit": limit, "offset": offset }),
         ),
-        Cmd::Query {
-            fav,
-            kind,
-            name,
-            include_missing,
-            limit,
-            sort,
-            desc,
-            seed,
-            min_rating,
-            unrated,
-            dir,
-            recursive,
-            hidden,
-            inbox,
-            damaged,
-            view,
-            playlist,
-            tags,
-            any_tags,
-            not_tags,
-            categories,
-            untagged,
-            uncategorized,
-        } => {
+        Cmd::Query(q) => {
+            let QueryArgs {
+                fav,
+                kind,
+                name,
+                include_missing,
+                limit,
+                sort,
+                desc,
+                seed,
+                min_rating,
+                unrated,
+                dir,
+                recursive,
+                hidden,
+                inbox,
+                damaged,
+                view,
+                playlist,
+                tags,
+                any_tags,
+                not_tags,
+                categories,
+                untagged,
+                uncategorized,
+            } = &**q;
             if sort == "position" && playlist.is_none() {
                 return Err("--sort position needs --playlist".to_owned());
             }
