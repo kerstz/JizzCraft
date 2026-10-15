@@ -101,14 +101,15 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     });
     reg.register(
         LIBRARY_REMOVE,
-        "Forget an imported folder and its media rows, never the files: {path}",
+        "Forget an imported folder and its media rows, never the files; a pre-remove backup is written first: {path}",
         |c, a| {
             let path = str_arg(&a, "path")?;
-            let removed = c
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let r = c
                 .db()
-                .remove_folder(std::path::Path::new(&path))?
+                .remove_folder_safely(std::path::Path::new(&path), &cancel, &mut |_| {})?
                 .ok_or_else(|| Error::NotFound("imported folder".into()))?;
-            Ok(json!({ "removed_media": removed }))
+            Ok(json!({ "removed_media": r.removed, "backed_up": r.backed_up }))
         },
     );
     reg.register(
