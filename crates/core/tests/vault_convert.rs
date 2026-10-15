@@ -1,15 +1,87 @@
 //! Plain <-> encrypted conversion and recovery (issue #13, step 4).
 use jizzcraft_core::db::{FileFormat, probe_format};
 use jizzcraft_core::vault::{KdfParams, VaultError, header_path};
-use jizzcraft_core::vault_convert::{
-    ConvertOptions, FailPoint, change_passphrase_with, disable_with, enable_with, recover_with,
-    unlock_library_with,
-};
+use jizzcraft_core::vault_convert::{ConvertOptions, FailPoint};
 use jizzcraft_core::{Db, Filter, scan};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+
+// ---- no fork while a library lock is held -------------------------------
+//
+// `library.lock` is an flock, which belongs to the open file *description*. A
+// child spawned by another test thread (`busy_library_*`, `kill_nine_*`) holds
+// a copy of every descriptor open in this process between the fork and its
+// exec, so a lock this test already released can still look taken for a few
+// milliseconds (longer under load): a spurious `Busy`. Every call that takes
+// the lock goes through the wrappers below, which count as "active"; spawning
+// waits until nothing is active and keeps new calls out until the child has
+// exec'd (std's `spawn` returns only then).
+mod fork_gate {
+    use std::sync::{Condvar, Mutex};
+    static STATE: Mutex<usize> = Mutex::new(0);
+    static IDLE: Condvar = Condvar::new();
+
+    pub struct Active;
+    pub fn active() -> Active {
+        // Blocked only while a spawn is in flight (the spawner holds STATE).
+        *STATE.lock().unwrap() += 1;
+        Active
+    }
+    impl Drop for Active {
+        fn drop(&mut self) {
+            let mut n = STATE.lock().unwrap();
+            *n -= 1;
+            if *n == 0 {
+                IDLE.notify_all();
+            }
+        }
+    }
+
+    /// Run `spawn` while no lock-holding call is in progress.
+    pub fn spawn_exclusive<T>(spawn: impl FnOnce() -> T) -> T {
+        let mut n = STATE.lock().unwrap();
+        while *n != 0 {
+            n = IDLE.wait(n).unwrap();
+        }
+        spawn()
+    }
+}
+use fork_gate::{active, spawn_exclusive};
+
+mod gated {
+    use super::{ConvertOptions, active};
+    use jizzcraft_core::db::FileFormat;
+    use jizzcraft_core::vault::{KdfParams, VaultError, VaultKey};
+    use jizzcraft_core::vault_convert as vc;
+
+    use std::path::Path;
+
+    type Res<T> = Result<T, VaultError>;
+
+    pub fn enable_with(db: &Path, pass: &str, p: KdfParams, o: &ConvertOptions) -> Res<()> {
+        let _a = active();
+        vc::enable_with(db, pass, p, o)
+    }
+    pub fn disable_with(db: &Path, pass: &str, o: &ConvertOptions) -> Res<()> {
+        let _a = active();
+        vc::disable_with(db, pass, o)
+    }
+    pub fn change_passphrase_with(db: &Path, old: &str, new: &str, o: &ConvertOptions) -> Res<()> {
+        let _a = active();
+        vc::change_passphrase_with(db, old, new, o)
+    }
+    pub fn recover_with(db: &Path, o: &ConvertOptions) -> Res<FileFormat> {
+        let _a = active();
+        vc::recover_with(db, o)
+    }
+    pub fn unlock_library_with(db: &Path, pass: &str, o: &ConvertOptions) -> Res<VaultKey> {
+        let _a = active();
+        vc::unlock_library_with(db, pass, o)
+    }
+}
+use gated::{change_passphrase_with, disable_with, enable_with, recover_with, unlock_library_with};
 
 const PASS: &str = "correct horse battery staple";
 const NEW_PASS: &str = "another long passphrase 2";
@@ -610,13 +682,15 @@ fn busy_library_fails_without_corruption() {
     let lib = library(0);
     let before = snap(&lib, None);
     let exe = std::env::current_exe().unwrap();
-    let mut child = Command::new(exe)
-        .args(["hold_child", "--exact", "--nocapture", "--test-threads=1"])
-        .env(HOLD_ENV, &lib.db)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = spawn_exclusive(|| {
+        Command::new(exe)
+            .args(["hold_child", "--exact", "--nocapture", "--test-threads=1"])
+            .env(HOLD_ENV, &lib.db)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+    })
+    .unwrap();
     let out = child.stdout.take().unwrap();
     let ready = std::io::BufReader::new(out)
         .lines()
@@ -684,19 +758,21 @@ fn kill_nine_during_conversion_leaves_one_consistent_mode() {
         | 1;
     let mut seen = [0usize; 2];
     for round in 0..20 {
-        let mut child = Command::new(&exe)
-            .args([
-                "convert_child",
-                "--exact",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(KILL_ENV, &lib.db)
-            .env(KILL_CACHE, &lib.cache)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_exclusive(|| {
+            Command::new(&exe)
+                .args([
+                    "convert_child",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(KILL_ENV, &lib.db)
+                .env(KILL_CACHE, &lib.cache)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })
+        .unwrap();
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
@@ -825,6 +901,8 @@ fn recover_during_a_stage_is_busy_and_deletes_nothing() {
 
 #[test]
 fn an_external_holder_of_the_lock_makes_recover_busy() {
+    // This test holds a lock descriptor itself: keep spawns away meanwhile.
+    let _a = active();
     let lib = library(0);
     let lock_path = lib.dir().join("library.lock");
     let f = std::fs::OpenOptions::new()
