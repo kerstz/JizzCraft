@@ -6,6 +6,7 @@ use crate::model::{Media, MediaKind, MediaMeta, Stats};
 use crate::organize::OrgFilter;
 use rusqlite::{Connection, OptionalExtension, Row, params, types::Value};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// Each entry migrates from version `index` to `index + 1`. SQL is append-only;
 /// Rust backfills are keyed by target version in `post_migrate`.
@@ -341,6 +342,100 @@ pub struct Filter {
 
 pub struct Db {
     pub(crate) conn: Connection,
+    /// File this handle was opened from (`None` for in-memory databases).
+    pub(crate) path: Option<PathBuf>,
+    /// Opened with a vault key: copies made from this handle stay encrypted.
+    pub(crate) encrypted: bool,
+}
+
+/// What the first bytes of a database file say it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFormat {
+    /// No file, or an empty one: a new database will be created.
+    Absent,
+    /// Starts with `SQLite format 3\0`.
+    Plain,
+    /// Anything else: SQLCipher files start with a random salt.
+    Encrypted,
+}
+
+/// Look at the first 16 bytes of `path`. Disk state is the truth; no header
+/// file or setting is consulted.
+pub fn probe_format(path: &Path) -> Result<FileFormat> {
+    use std::io::Read;
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(FileFormat::Absent),
+        Err(e) => return Err(e.into()),
+    };
+    let mut buf = [0u8; 16];
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..])? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(match n {
+        0 => FileFormat::Absent,
+        16 if &buf == b"SQLite format 3\0" => FileFormat::Plain,
+        _ => FileFormat::Encrypted,
+    })
+}
+
+/// A library location plus the key to open it with. Cheap to clone and send
+/// to a job thread; every connection a job needs goes through it.
+#[derive(Clone)]
+pub struct LibraryOpener {
+    pub path: PathBuf,
+    pub key: Option<std::sync::Arc<crate::vault::DbKey>>,
+}
+
+impl std::fmt::Debug for LibraryOpener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LibraryOpener")
+            .field("keyed", &self.key.is_some())
+            .finish()
+    }
+}
+
+impl LibraryOpener {
+    pub fn new(path: impl Into<PathBuf>, key: Option<std::sync::Arc<crate::vault::DbKey>>) -> Self {
+        LibraryOpener {
+            path: path.into(),
+            key,
+        }
+    }
+
+    pub fn open(&self) -> Result<Db> {
+        Db::open_with(&self.path, self.key.as_deref())
+    }
+
+    pub fn open_read_only(&self) -> Result<Db> {
+        Db::open_read_only_with(&self.path, self.key.as_deref())
+    }
+}
+
+/// `PRAGMA key` and a first read, before anything else touches the file.
+fn apply_key(conn: &Connection, key: &crate::vault::DbKey) -> Result<()> {
+    use crate::vault::VaultError;
+    // SQLCipher logs decryption failures to stderr; a wrong key is an
+    // expected, handled outcome here and must not print.
+    let _ = conn.execute_batch("PRAGMA cipher_log_level = NONE;");
+    let pragma = Zeroizing::new(format!("PRAGMA key = {};", key.pragma_value().as_str()));
+    conn.execute_batch(&pragma)
+        .map_err(|_| Error::Vault(VaultError::DbCorrupt))?;
+    match conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+        r.get::<_, i64>(0)
+    }) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::NotADatabase =>
+        {
+            Err(Error::Vault(VaultError::DbCorrupt))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 pub fn path_to_blob(p: &Path) -> Vec<u8> {
@@ -380,10 +475,27 @@ impl Db {
     /// Open (and migrate) the library. A database written by a newer build is
     /// refused with `Error::FutureSchema`; use `open_read_only` for that case.
     pub fn open(path: &Path) -> Result<Db> {
+        Self::open_with(path, None)
+    }
+
+    /// Like `open`, with the vault key for an encrypted library. Without a key
+    /// an encrypted file is `Error::Locked`; with a key a plain file is
+    /// `VaultError::NotEncrypted` and a wrong key `VaultError::DbCorrupt`. A
+    /// missing file is created encrypted when a key is given.
+    pub fn open_with(path: &Path, key: Option<&crate::vault::DbKey>) -> Result<Db> {
+        use crate::vault::VaultError;
+        match (probe_format(path)?, key) {
+            (FileFormat::Encrypted, None) => return Err(Error::Locked),
+            (FileFormat::Plain, Some(_)) => return Err(Error::Vault(VaultError::NotEncrypted)),
+            _ => {}
+        }
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
+        if let Some(k) = key {
+            apply_key(&conn, k)?;
+        }
         let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if found > SCHEMA_VERSION {
             return Err(Error::FutureSchema {
@@ -391,27 +503,45 @@ impl Db {
                 supported: SCHEMA_VERSION,
             });
         }
-        Self::init(conn, Some(path))
+        Self::init(conn, Some(path), key.is_some())
     }
 
     /// Read-only handle: no migration, no journal change, no writes. For a
     /// library from a newer build, or when the folder is not writable.
     pub fn open_read_only(path: &Path) -> Result<Db> {
+        Self::open_read_only_with(path, None)
+    }
+
+    /// `open_read_only` for an encrypted library; same errors as `open_with`.
+    pub fn open_read_only_with(path: &Path, key: Option<&crate::vault::DbKey>) -> Result<Db> {
+        use crate::vault::VaultError;
+        match (probe_format(path)?, key) {
+            (FileFormat::Encrypted, None) => return Err(Error::Locked),
+            (FileFormat::Plain, Some(_)) => return Err(Error::Vault(VaultError::NotEncrypted)),
+            _ => {}
+        }
         let conn = Connection::open_with_flags(
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        if let Some(k) = key {
+            apply_key(&conn, k)?;
+        }
         conn.pragma_update(None, "foreign_keys", true)?;
         conn.busy_timeout(std::time::Duration::from_millis(2000))?;
         conn.pragma_update(None, "query_only", true)?;
-        Ok(Db { conn })
+        Ok(Db {
+            conn,
+            path: Some(path.to_path_buf()),
+            encrypted: key.is_some(),
+        })
     }
 
     pub fn open_in_memory() -> Result<Db> {
-        Self::init(Connection::open_in_memory()?, None)
+        Self::init(Connection::open_in_memory()?, None, false)
     }
 
-    fn init(conn: Connection, path: Option<&Path>) -> Result<Db> {
+    fn init(conn: Connection, path: Option<&Path>, encrypted: bool) -> Result<Db> {
         conn.pragma_update(None, "foreign_keys", true)?;
         // Background jobs open their own connections; wait instead of failing.
         conn.busy_timeout(std::time::Duration::from_millis(2000))?;
@@ -426,7 +556,11 @@ impl Db {
         // No-op (returns "memory") on in-memory databases; ignore the result.
         let _ = conn.query_row(&format!("PRAGMA journal_mode = {mode}"), [], |_| Ok(()));
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        let mut db = Db { conn };
+        let mut db = Db {
+            conn,
+            path: path.map(Path::to_path_buf),
+            encrypted,
+        };
         db.migrate(path)?;
         Ok(db)
     }

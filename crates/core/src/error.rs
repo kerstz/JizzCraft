@@ -13,6 +13,10 @@ pub enum Error {
         found: i64,
         supported: i64,
     },
+    /// The library is encrypted and no key was given.
+    Locked,
+    /// A vault failure (wrong key, damaged header, ...). Fixed message.
+    Vault(crate::vault::VaultError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -24,6 +28,8 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::Invalid(s) => write!(f, "invalid input: {s}"),
             Error::NotFound(s) => write!(f, "not found: {s}"),
+            Error::Locked => write!(f, "the library is locked"),
+            Error::Vault(e) => write!(f, "vault: {e}"),
             Error::FutureSchema { found, supported } => write!(
                 f,
                 "library schema v{found} is newer than this build (v{supported})"
@@ -37,6 +43,12 @@ impl std::error::Error for Error {}
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
         Error::Db(e)
+    }
+}
+
+impl From<crate::vault::VaultError> for Error {
+    fn from(e: crate::vault::VaultError) -> Self {
+        Error::Vault(e)
     }
 }
 

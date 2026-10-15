@@ -10,14 +10,14 @@ before the code exists, and records what each step has actually shipped.
 | 0 | This document, `SECURITY.md`, README wording | done |
 | 1 | SQLite replaced by SQLCipher (same behaviour, nothing encrypted) | done |
 | 2 | Key derivation and header file (pure crypto, `core::vault`) | done |
-| 3 | Opening the database with a key | not started |
+| 3 | Opening the database with a key | done |
 | 4 | Plain to encrypted conversion, crash recovery | not started |
 | 5 | Encrypted thumbnails and previews | not started |
 | 6 | CLI commands | not started |
 | 7 | Settings UI, lock screen, auto-lock | not started |
 | 8 | Perf in vault mode, packaging smoke tests | not started |
 
-Until steps 2 to 7 are done there is no way to turn the vault on, and no part of
+Until steps 4 to 7 are done there is no way to turn the vault on, and no part of
 your library is protected by it.
 
 ## Threat model
@@ -153,3 +153,30 @@ passes in that mode. Notes:
   should set the variable.
 - Not tested: macOS and Windows. The Windows build (MSVC and the zig
   cross-check) could not be run from the development machine.
+
+## Steps 2 and 3: key handling and keyed opening (engine only)
+
+Code only; nothing in the application or the CLI calls it yet, so no library
+is encrypted by this build.
+
+- `jizzcraft_core::vault`: header encode/decode, Argon2id, key envelope, the
+  three BLAKE3 sub-keys, `ThumbCipher`. The reference vector in its tests is
+  frozen: a change there is a format break.
+- `Db::open_with(path, Option<&DbKey>)` and `open_read_only_with`. The key is
+  set before any read. The mode comes from the first 16 bytes of the file
+  (`db::probe_format`), never from a setting. An encrypted file without a key
+  is `Error::Locked`; a wrong key is `VaultError::DbCorrupt`; a key on a clear
+  file is `VaultError::NotEncrypted`. SQLCipher's own logging is switched off.
+- `LibraryOpener { path, key }` is what jobs will carry (still `None` at every
+  call site today).
+- Copies stay encrypted: `pre-vN` backups and `portability::backup` use
+  `VACUUM INTO`, which inherits the key (tested, as is `ATTACH` without a
+  key). `backup` also copies the header next to the copy, with the extension
+  replaced by `vault` (`copy.db` gets `copy.vault`), and refuses when the
+  library has no readable header.
+- A `pre-vN` backup of an encrypted library is opened with the same key; it
+  has no header of its own because the key is the same.
+- JSON exports are still in clear.
+- Passphrase hashing is slow on purpose (about 0.1 to 0.5 s at the default
+  cost); callers must run it off the UI thread. Memory held by Argon2 inside
+  the crate is not zeroed by this code.

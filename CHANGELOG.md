@@ -22,6 +22,18 @@ anything may change between minor versions.
   newer SQL. OpenSSL (Apache-2.0) and SQLCipher (BSD-3) are credited in
   `NOTICE` and `ATTRIBUTION.md`.
 
+- Encrypted vault, steps 2 and 3 of issue #13 (engine only, **still
+  nothing is encrypted**: no UI, CLI or conversion calls it yet).
+  `jizzcraft_core::vault` holds the pure crypto: the 111-byte `library.vault`
+  header (the earlier "135 bytes" in the docs was an arithmetic slip),
+  Argon2id with bounded parameters, an XChaCha20-Poly1305 key envelope,
+  BLAKE3 sub-keys, redacted zeroing key types and the thumbnail cipher, with a
+  frozen test vector. `Db::open_with` / `open_read_only_with` open a library
+  with a key (`Error::Locked` without one, `VaultError::DbCorrupt` with a wrong
+  one), `LibraryOpener` carries path and key, and `pre-vN` backups and
+  `portability::backup` stay encrypted (the backup also copies the header).
+  Migration, FTS and crash tests now run in clear and encrypted mode.
+
 ### Tooling
 - Performance budgets (issue #17, engine part). `cargo xtask perf` builds a
   synthetic 10k-file library and times scan (cold and rescan), database open,

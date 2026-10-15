@@ -1,12 +1,20 @@
 //! Kill -9 a writer 20 times; the library must open, pass `quick_check` and
 //! hold a consistent prefix of what the child committed.
+use jizzcraft_core::db::FileFormat;
 use jizzcraft_core::scan::rescan_all;
+use jizzcraft_core::vault::{DbKey, VaultKey};
 use jizzcraft_core::{Db, Filter};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const CHILD_ENV: &str = "JIZZCRAFT_CRASH_CHILD";
+/// Test-only: a fixed key as 64 hex characters, set for the encrypted run.
+const KEY_ENV: &str = "JIZZCRAFT_CRASH_KEY";
+
+fn test_key() -> DbKey {
+    VaultKey::from_bytes_for_tests(std::array::from_fn(|i| 0x30 + i as u8)).db_key()
+}
 const FILES: usize = 4_500;
 
 /// Runs inside the child process only; a no-op in a normal test run.
@@ -15,7 +23,8 @@ fn crash_child() {
     let Ok(db_path) = std::env::var(CHILD_ENV) else {
         return;
     };
-    let mut db = Db::open(&PathBuf::from(db_path)).unwrap();
+    let key = std::env::var(KEY_ENV).ok().map(|_| test_key());
+    let mut db = Db::open_with(&PathBuf::from(db_path), key.as_ref()).unwrap();
     loop {
         let _ = rescan_all(&mut db);
         for _ in 0..300 {
@@ -49,6 +58,18 @@ fn crash_child() {
 
 #[test]
 fn kill_nine_leaves_a_consistent_library() {
+    kill_nine(false, 20);
+}
+
+/// Same invariants with SQLCipher pages and a keyed WAL.
+#[test]
+fn kill_nine_leaves_a_consistent_encrypted_library() {
+    kill_nine(true, 10);
+}
+
+fn kill_nine(encrypted: bool, rounds: usize) {
+    let key = encrypted.then(test_key);
+    let key = key.as_ref();
     let lib = tempfile::tempdir().unwrap();
     let media = tempfile::tempdir().unwrap();
     for i in 0..FILES {
@@ -60,7 +81,7 @@ fn kill_nine_leaves_a_consistent_library() {
     }
     let db_path = lib.path().join("library.db");
     {
-        let mut db = Db::open(&db_path).unwrap();
+        let mut db = Db::open_with(&db_path, key).unwrap();
         let (id, _) = db.add_folder(media.path()).unwrap();
         let r = jizzcraft_core::scan::scan_folder(&mut db, id, media.path()).unwrap();
         assert_eq!(r.added, FILES as u64);
@@ -72,10 +93,14 @@ fn kill_nine_leaves_a_consistent_library() {
         .unwrap()
         .as_nanos() as u64
         | 1;
-    for round in 0..20 {
-        let mut child = Command::new(&exe)
-            .args(["crash_child", "--exact", "--nocapture", "--test-threads=1"])
-            .env(CHILD_ENV, &db_path)
+    for round in 0..rounds {
+        let mut cmd = Command::new(&exe);
+        cmd.args(["crash_child", "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, &db_path);
+        if encrypted {
+            cmd.env(KEY_ENV, "1");
+        }
+        let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -87,7 +112,14 @@ fn kill_nine_leaves_a_consistent_library() {
         child.kill().unwrap(); // SIGKILL
         child.wait().unwrap();
 
-        let db = Db::open(&db_path).unwrap();
+        let mode = jizzcraft_core::db::probe_format(&db_path).unwrap();
+        let want = if encrypted {
+            FileFormat::Encrypted
+        } else {
+            FileFormat::Plain
+        };
+        assert_eq!(mode, want, "round {round}: file mode");
+        let db = Db::open_with(&db_path, key).unwrap();
         db.quick_check()
             .unwrap_or_else(|e| panic!("round {round}: {e}"));
         let c = db.conn_for_tests();

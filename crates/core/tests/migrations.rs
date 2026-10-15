@@ -1,6 +1,7 @@
 //! Every historical schema version is rebuilt by replaying the frozen
 //! migration prefix, filled with user data, and opened with the current code.
 use jizzcraft_core::db::SCHEMA_VERSION;
+use jizzcraft_core::vault::{DbKey, VaultKey};
 use jizzcraft_core::{Db, Error, Filter, HiddenMode};
 use rusqlite::{Connection, params};
 use std::path::Path;
@@ -32,9 +33,19 @@ fn migrations_are_frozen() {
     }
 }
 
-/// A populated database as it looked at schema `version`.
-fn fixture(path: &Path, version: usize) {
+/// The two storage modes every test below runs in.
+fn modes() -> [Option<DbKey>; 2] {
+    [None, Some(VaultKey::generate().unwrap().db_key())]
+}
+
+/// A populated database as it looked at schema `version`, encrypted when a
+/// key is given.
+fn fixture_keyed(path: &Path, version: usize, key: Option<&DbKey>) {
     let c = Connection::open(path).unwrap();
+    if let Some(k) = key {
+        c.execute_batch(&format!("PRAGMA key = {};", k.pragma_value().as_str()))
+            .unwrap();
+    }
     for sql in &Db::migrations_for_tests()[..version] {
         c.execute_batch(sql).unwrap();
     }
@@ -152,86 +163,99 @@ fn check_survivors(db: &Db, version: usize) {
 
 #[test]
 fn every_historical_version_upgrades_with_data_intact() {
-    for version in 1..=Db::migrations_for_tests().len() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("library.db");
-        fixture(&path, version);
-        let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION, "v{version}");
-        check_survivors(&db, version);
-        db.quick_check().unwrap();
-        drop(db);
-        let backup = tmp.path().join(format!("library.pre-v{version}.db"));
-        if version < SCHEMA_VERSION as usize {
-            let b = Connection::open(&backup).unwrap();
-            let v: i64 = b
-                .pragma_query_value(None, "user_version", |r| r.get(0))
-                .unwrap();
-            assert_eq!(v, version as i64, "backup keeps the old schema");
-            let n: i64 = b
-                .query_row("SELECT count(*) FROM media", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(n, 3);
-        } else {
-            assert!(!backup.exists(), "no backup when nothing migrates");
+    for key in modes() {
+        let key = key.as_ref();
+        for version in 1..=Db::migrations_for_tests().len() {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("library.db");
+            fixture_keyed(&path, version, key);
+            let db = Db::open_with(&path, key).unwrap();
+            assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION, "v{version}");
+            check_survivors(&db, version);
+            db.quick_check().unwrap();
+            drop(db);
+            let backup = tmp.path().join(format!("library.pre-v{version}.db"));
+            if version < SCHEMA_VERSION as usize {
+                let b = Db::open_read_only_with(&backup, key).unwrap();
+                assert_eq!(
+                    b.schema_version().unwrap(),
+                    version as i64,
+                    "backup keeps the old schema"
+                );
+                let n: i64 = b
+                    .conn_for_tests()
+                    .query_row("SELECT count(*) FROM media", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(n, 3);
+                // The backup is in the same mode as the library.
+                let head = &std::fs::read(&backup).unwrap()[..16];
+                assert_eq!(head == b"SQLite format 3\0", key.is_none(), "v{version}");
+            } else {
+                assert!(!backup.exists(), "no backup when nothing migrates");
+            }
+            // Idempotent.
+            assert_eq!(
+                Db::open_with(&path, key).unwrap().schema_version().unwrap(),
+                SCHEMA_VERSION
+            );
         }
-        // Idempotent.
-        assert_eq!(
-            Db::open(&path).unwrap().schema_version().unwrap(),
-            SCHEMA_VERSION
-        );
     }
 }
 
 #[test]
 fn only_the_last_three_backups_are_kept() {
-    let tmp = tempfile::tempdir().unwrap();
-    for v in 10..14 {
-        std::fs::write(tmp.path().join(format!("library.pre-v{v}.db")), b"x").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    for key in modes() {
+        let key = key.as_ref();
+        let tmp = tempfile::tempdir().unwrap();
+        for v in 10..14 {
+            std::fs::write(tmp.path().join(format!("library.pre-v{v}.db")), b"x").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let path = tmp.path().join("library.db");
+        fixture_keyed(&path, 1, key);
+        drop(Db::open_with(&path, key).unwrap());
+        let mut left: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".pre-v"))
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 3, "{left:?}");
+        assert!(left.contains(&"library.pre-v1.db".to_string()));
     }
-    let path = tmp.path().join("library.db");
-    fixture(&path, 1);
-    drop(Db::open(&path).unwrap());
-    let mut left: Vec<String> = std::fs::read_dir(tmp.path())
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.contains(".pre-v"))
-        .collect();
-    left.sort();
-    assert_eq!(left.len(), 3, "{left:?}");
-    assert!(left.contains(&"library.pre-v1.db".to_string()));
 }
 
 #[test]
 fn future_schema_is_refused_but_readable() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("library.db");
-    fixture(&path, SCHEMA_VERSION as usize);
-    Connection::open(&path)
-        .unwrap()
-        .pragma_update(None, "user_version", SCHEMA_VERSION + 5)
-        .unwrap();
-    match Db::open(&path) {
-        Err(Error::FutureSchema { found, supported }) => {
-            assert_eq!((found, supported), (SCHEMA_VERSION + 5, SCHEMA_VERSION));
+    for key in modes() {
+        let key = key.as_ref();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("library.db");
+        fixture_keyed(&path, SCHEMA_VERSION as usize, key);
+        {
+            let c = Connection::open(&path).unwrap();
+            if let Some(k) = key {
+                c.execute_batch(&format!("PRAGMA key = {};", k.pragma_value().as_str()))
+                    .unwrap();
+            }
+            c.pragma_update(None, "user_version", SCHEMA_VERSION + 5)
+                .unwrap();
         }
-        other => panic!("expected FutureSchema, got {:?}", other.err()),
+        match Db::open_with(&path, key) {
+            Err(Error::FutureSchema { found, supported }) => {
+                assert_eq!((found, supported), (SCHEMA_VERSION + 5, SCHEMA_VERSION));
+            }
+            other => panic!("expected FutureSchema, got {:?}", other.err()),
+        }
+        let ro = Db::open_read_only_with(&path, key).unwrap();
+        assert_eq!(ro.count(&Filter::default()).unwrap(), 2);
+        assert!(
+            ro.set_rating(1, 5).is_err(),
+            "a read-only handle must refuse writes"
+        );
+        assert_eq!(ro.schema_version().unwrap(), SCHEMA_VERSION + 5);
     }
-    let ro = Db::open_read_only(&path).unwrap();
-    assert_eq!(ro.count(&Filter::default()).unwrap(), 2);
-    assert!(
-        ro.set_rating(1, 5).is_err(),
-        "a read-only handle must refuse writes"
-    );
-    assert_eq!(
-        Connection::open(&path)
-            .unwrap()
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        SCHEMA_VERSION + 5
-    );
 }
 
 #[test]
