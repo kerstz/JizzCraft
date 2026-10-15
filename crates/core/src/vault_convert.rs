@@ -66,6 +66,12 @@ pub struct ConvertOptions {
     pub cache_dir: Option<PathBuf>,
     #[doc(hidden)]
     pub fail_at: Option<FailPoint>,
+    /// Set by the caller to stop the conversion. Looked at only before the
+    /// commit point; after it the conversion always finishes.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Set by the engine just before the commit point (the rename): from then
+    /// on a cancel request has no effect.
+    pub committed: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ConvertOptions {
@@ -73,6 +79,25 @@ impl ConvertOptions {
         self.cache_dir
             .clone()
             .unwrap_or_else(crate::paths::cache_dir)
+    }
+
+    /// `Cancelled` when the caller asked to stop (only valid before commit).
+    fn check_cancel(&self) -> Res<()> {
+        let on = self
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst));
+        if on {
+            Err(VaultError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn mark_committed(&self) {
+        if let Some(c) = &self.committed {
+            c.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     fn hit(&self, p: FailPoint) -> Res<()> {
@@ -354,6 +379,7 @@ fn stage(
     header_to_write: Option<&[u8; HEADER_LEN]>,
     opts: &ConvertOptions,
 ) -> Res<Staged> {
+    opts.check_cancel()?;
     remove(tmp);
     // CREATE is needed so ATTACH can create the copy (it inherits the flags);
     // the source exists, `require_format` checked.
@@ -397,6 +423,7 @@ fn stage(
     }
 
     // 3. export.
+    opts.check_cancel()?;
     let want_counts = row_counts(&src)?;
     let version = user_version(&src)?;
     let attach_key: Zeroizing<String> = match dst_key {
@@ -422,6 +449,7 @@ fn stage(
     opts.hit(FailPoint::Export)?;
 
     // 4. verify the copy as a stranger would open it.
+    opts.check_cancel()?;
     verify(tmp, dst_key, &want_counts, version)?;
     opts.hit(FailPoint::Verify)?;
 
@@ -433,7 +461,7 @@ fn stage(
 }
 
 /// Step 6: the commit point. Never with a `-wal` next to the target.
-fn commit(db_path: &Path, tmp: &Path, staged: Staged) -> Res<()> {
+fn commit(db_path: &Path, tmp: &Path, staged: Staged, opts: &ConvertOptions) -> Res<()> {
     if suffixed(db_path, "-wal").exists() || suffixed(db_path, "-journal").exists() {
         return Err(VaultError::ConvertFailed);
     }
@@ -442,6 +470,9 @@ fn commit(db_path: &Path, tmp: &Path, staged: Staged) -> Res<()> {
     drop(staged);
     #[cfg(not(windows))]
     let _keep_lock = staged.lock;
+    // Last chance to stop; after this line the conversion runs to its end.
+    opts.check_cancel()?;
+    opts.mark_committed();
     crate::fsutil::replace(tmp, db_path).map_err(io_err)?;
     sync_dir(dir_of(db_path));
     // The old file's side files must not be applied to the new one.
@@ -478,7 +509,7 @@ pub fn enable_with(
     let tmp = enc_tmp(db_path);
     let r = (|| -> Res<()> {
         let staged = stage(db_path, None, &tmp, Some(&key), Some(&header), opts)?;
-        commit(db_path, &tmp, staged)?;
+        commit(db_path, &tmp, staged, opts)?;
         Ok(())
     })();
     match r {
@@ -519,7 +550,7 @@ pub fn disable_with(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> 
         let staged = stage(db_path, Some(&key), &tmp, None, None, opts)?;
         // Durable intent, strictly before the commit point.
         write_synced(&marker, b"disabling", false)?;
-        commit(db_path, &tmp, staged)
+        commit(db_path, &tmp, staged, opts)
     })();
     match r {
         Ok(()) => {}

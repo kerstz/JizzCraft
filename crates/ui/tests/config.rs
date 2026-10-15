@@ -32,4 +32,29 @@ fn settings_roundtrip_and_survive_garbage() {
     std::fs::write(jizzcraft_ui::config::path(), br#"{"age_confirmed":true}"#).unwrap();
     let old = Config::load();
     assert!(old.age_confirmed && !old.left_hand);
+    // ... and get the defaults of the automatic lock: 15 minutes, boss key off.
+    assert_eq!(old.autolock_minutes(), 15);
+    assert!(!old.boss_locks);
+
+    // The automatic lock settings persist, 0 (never) included, and are clamped.
+    let c = Config {
+        autolock_minutes: Some(0),
+        boss_locks: true,
+        ..Config::default()
+    };
+    c.save();
+    let back = Config::load();
+    assert_eq!(back.autolock_minutes(), 0);
+    assert!(back.boss_locks);
+    let c = Config {
+        autolock_minutes: Some(7),
+        ..Config::default()
+    };
+    c.save();
+    assert_eq!(Config::load().autolock_minutes(), 7);
+    let huge = Config {
+        autolock_minutes: Some(u32::MAX),
+        ..Config::default()
+    };
+    assert_eq!(huge.autolock_minutes(), 24 * 60);
 }

@@ -1,10 +1,12 @@
 # Encrypted vault (issue #13)
 
-**Status: in progress, not delivered in the app.** A library is encrypted only
-if you run `jizzcraft-cli vault enable`; otherwise the library database and the
-thumbnail cache are stored in clear, exactly as before. This
-page describes the design being built so that the promise is written down
-before the code exists, and records what each step has actually shipped.
+**Status: alpha, delivered, off by default.** A library is encrypted only if
+you turn the vault on (Settings > Privacy > *Encrypt library*, or
+`jizzcraft-cli vault enable`); otherwise the library database and the
+thumbnail cache are stored in clear, exactly as before. This page records the
+promise, the threat model and what each step has shipped. Step 8 (performance
+in vault mode, packaging smoke tests, troubleshooting) is still open, which is
+why the feature is called an alpha.
 
 | Step | Content | State |
 | --- | --- | --- |
@@ -16,12 +18,11 @@ before the code exists, and records what each step has actually shipped.
 | 5 | Encrypted thumbnails and previews | done |
 | 6 | CLI commands, canary test | done |
 | 7a | Lock screen, unlocking, locking, keyed opening in the app | done |
-| 7b | Settings (enable, disable, change), conversion as a job, auto-lock | not started |
+| 7b | Settings (enable, disable, change), conversion as a job, auto-lock | done |
 | 8 | Perf in vault mode, packaging smoke tests | not started |
 
-Until step 7b is done the desktop app has no way to turn the vault on; it can only open and lock a library the CLI encrypted. The
-command line can (step 6, below); nothing is encrypted unless you run
-`jizzcraft-cli vault enable`.
+The desktop app and the command line can both enable, disable and change the
+passphrase (steps 7b and 6, below). Nothing is encrypted until you do.
 
 ## Threat model
 
@@ -57,7 +58,8 @@ the application is closed or locked.
 - **Weak passphrases, evil-maid attacks, coercion.**
 - **Rollback.** Replacing `library.db` with an older valid copy is not
   detected.
-- **JSON exports** remain in clear (the UI will warn).
+- **JSON exports** remain in clear (the app asks for confirmation before
+  writing one while the vault is on; the CLI prints no warning).
 
 ### Forgotten passphrase
 
@@ -306,10 +308,7 @@ state machine, `Gate`, with `Locked`, `Unlocking`, `Open` and `Locking`
   `with_keys`. There is no `Db::open(path)` without a key in `crates/ui`.
   The start-up cache prune is size-only and covers `vault-thumbs`.
 
-Not done in 7a, so planned for 7b: the settings page to enable, disable or
-change the passphrase; running the conversion as a job; auto-lock after
-inactivity; the "boss key also locks" option; a warning next to JSON exports,
-which stay in clear.
+Settings, conversion and auto-lock are step 7b, next section.
 
 Limits, honestly:
 
@@ -327,6 +326,86 @@ Limits, honestly:
   the player and does not depend on the UI crate; the integration test above
   covers the same opening logic with a library encrypted by the same engine
   the CLI uses.
+
+## Step 7b: settings, conversion as a job, auto-lock
+
+Settings > Privacy (both editions):
+
+- **Encrypt library.** A dialog asks the passphrase twice (12 characters
+  minimum, counted as characters; an estimate of the strength is computed on
+  this machine and shown, nothing is sent). A box has to be ticked: "If I
+  forget this passphrase, my library (tags, notes, history, playlists) is lost
+  permanently. No recovery exists." Notes say that data already written in
+  clear can stay readable on the disk (use full-disk encryption too), that
+  clear backups and clear thumbnails are deleted and rebuilt encrypted, and that
+  JSON exports stay in clear.
+- **Change passphrase** and **Turn off encryption** ask for the current
+  passphrase again even though the vault is open (an unattended unlocked
+  window is not enough to weaken the vault).
+- **Automatic lock**: minutes of inactivity (default 15, `0` = never, at most
+  1440). Any input is activity, and so is a video that is playing. When the
+  time is up the app takes the path of `app.vault.lock`. Stored as
+  `autolock_minutes` in the clear `config.json`.
+- **The boss key also locks the library** (`boss_locks`, off by default).
+- The settings command is `app.vault.settings {autolock_minutes?, boss_locks?}`.
+  No command takes a passphrase.
+
+The conversion is a state of the root envelope, `Converting`:
+
+```text
+Open(app) --confirm--> Quiesce(app) --jobs ended, app dropped--> Running(worker)
+     ^                                                             |
+     +--------- Open(app, library opened again, one toast) <-------+
+```
+
+1. The app refuses the request with a fixed sentence while any job holds the
+   library ("Wait for running tasks to finish, then try again.").
+2. The root cancels the app's jobs, waits for their tickets, and drops the app
+   so the connection (and WAL) are closed before the engine takes its
+   exclusive lock. While it runs the window shows only "Encrypting…" (or
+   "Decrypting…", "Changing passphrase…"): no other job can start.
+3. A worker thread runs `vault_convert::enable_with`, `disable_with` or
+   `change_passphrase_with` (Argon2id included; the UI thread never hashes),
+   then opens the library again: with the new key after an enable or a change,
+   clear after a disable, and with the keys it already had when the
+   conversion was refused (wrong passphrase, busy, cancelled).
+4. **Cancel** is offered until the commit point. The engine checks the flag
+   before staging, before the export, before verifying and a last time right
+   before the rename, then sets `committed`; after that the button disappears
+   and the conversion finishes. A cancel leaves the library and the disk exactly
+   as they were (tested: no leftover file). If the flag is raised after the last
+   check the conversion simply completes and the toast says so.
+5. One toast at the end: "Library encrypted.", "Encryption turned off.",
+   "Passphrase changed.", "Cancelled. Nothing was changed.", "Wrong passphrase.
+   Nothing was changed.", "The library is in use by another program. Nothing
+   was changed." or "The operation failed. Your library is intact." No name, no
+   path, no engine error text.
+6. If the library cannot be opened again the root shows the lock screen when the
+   disk is encrypted (the passphrase may still work) and the error screen
+   otherwise.
+
+The view (selection, scroll, open item) is not restored after a conversion:
+the app is rebuilt, as after an unlock. The `--import` and `--cmd` options are
+not run again.
+
+Limits, honestly:
+
+- **Not seen on screen.** The dialogs, the progress screen and the Privacy page
+  were compiled and exercised through state-machine and app-level tests
+  without a window; no human looked at them or at a real conversion with a
+  large library and a playing video yet (step 8).
+- Quitting the window during a conversion kills the process; the engine is
+  crash-safe (`recover` finishes or undoes it at the next start), but nothing
+  warns before the close.
+- Conversion of a read-only library (made by a newer version) is refused.
+- Another JizzCraft process holding the library makes the conversion `Busy`;
+  nothing changes.
+- The passphrase is typed in egui text fields: toolkit caches and RAM are
+  outside the guarantees (see the threat model). The conversion buffers are
+  `Zeroizing` and moved, never cloned, to the worker.
+- Argon2 working memory inside the crate is not zeroed.
+- Changing the passphrase rewrites the header only; a copy of the old header
+  still opens with the old passphrase (key rotation is a later item).
 
 ## Step 6: command line
 

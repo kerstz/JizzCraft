@@ -1082,4 +1082,131 @@ pub const TABLE: &[(&str, &str)] = &[
         "Lock the encrypted library",
         "Bloquear la biblioteca cifrada",
     ),
+    (
+        "A copy of the old header file still opens with the old passphrase.",
+        "Una copia del archivo de cabecera antiguo sigue abriéndose con la frase de contraseña anterior.",
+    ),
+    (
+        "A video that is playing counts as activity.",
+        "Un vídeo en reproducción cuenta como actividad.",
+    ),
+    (
+        "At least 12 characters. The strength is estimated on this machine; nothing is sent anywhere.",
+        "Al menos 12 caracteres. La fortaleza se estima en este equipo; no se envía nada a ningún sitio.",
+    ),
+    ("Automatic lock", "Bloqueo automático"),
+    (
+        "Cancelled. Nothing was changed.",
+        "Cancelado. No se cambió nada.",
+    ),
+    ("Cancelling…", "Cancelando…"),
+    ("Change", "Cambiar"),
+    ("Change passphrase", "Cambiar la frase de contraseña"),
+    ("Change passphrase…", "Cambiar la frase de contraseña…"),
+    ("Changing passphrase…", "Cambiando la frase de contraseña…"),
+    (
+        "Clear backups and clear thumbnails will be deleted. Thumbnails are rebuilt encrypted.",
+        "Se eliminarán las copias de seguridad y las miniaturas en claro. Las miniaturas se reconstruyen cifradas.",
+    ),
+    ("Current passphrase", "Frase de contraseña actual"),
+    (
+        "Data already written in clear can stay readable on the disk. Also use full-disk encryption.",
+        "Los datos ya escritos en claro pueden seguir siendo legibles en el disco. Use también el cifrado de disco completo.",
+    ),
+    ("Decrypting…", "Descifrando…"),
+    ("Encrypt", "Cifrar"),
+    ("Encrypt library", "Cifrar la biblioteca"),
+    ("Encrypt library…", "Cifrar la biblioteca…"),
+    ("Encrypted library", "Biblioteca cifrada"),
+    ("Encrypting…", "Cifrando…"),
+    (
+        "Encryption cannot be changed now (read-only library or a change in progress).",
+        "El cifrado no se puede cambiar ahora (biblioteca de solo lectura o cambio en curso).",
+    ),
+    ("Encryption is off.", "El cifrado está desactivado."),
+    ("Encryption is on.", "El cifrado está activado."),
+    ("Encryption turned off.", "Cifrado desactivado."),
+    (
+        "Encrypts the library database and the thumbnails with a passphrase. There is no recovery if you forget it.",
+        "Cifra la base de datos de la biblioteca y las miniaturas con una frase de contraseña. No existe recuperación si la olvida.",
+    ),
+    (
+        "Enter your current passphrase.",
+        "Introduzca su frase de contraseña actual.",
+    ),
+    (
+        "Enter your passphrase again to confirm.",
+        "Introduzca de nuevo su frase de contraseña para confirmar.",
+    ),
+    ("Export anyway", "Exportar de todos modos"),
+    ("Export in clear", "Exportación en claro"),
+    (
+        "If I forget this passphrase, my library (tags, notes, history, playlists) is lost permanently. No recovery exists.",
+        "Si olvido esta frase de contraseña, mi biblioteca (etiquetas, notas, historial, listas de reproducción) se pierde para siempre. No existe ninguna recuperación.",
+    ),
+    (
+        "JSON exports of your metadata stay in clear.",
+        "Las exportaciones JSON de sus metadatos permanecen en claro.",
+    ),
+    (
+        "Keep this window open until it finishes.",
+        "Mantenga esta ventana abierta hasta que termine.",
+    ),
+    ("Library encrypted.", "Biblioteca cifrada."),
+    (
+        "Lock after this many idle minutes (0 = never)",
+        "Bloquear tras estos minutos de inactividad (0 = nunca)",
+    ),
+    ("New passphrase", "Nueva frase de contraseña"),
+    ("Passphrase changed.", "Frase de contraseña cambiada."),
+    ("Repeat the passphrase", "Repita la frase de contraseña"),
+    ("Strength: {}", "Fortaleza: {}"),
+    (
+        "The boss key also locks the library",
+        "La tecla jefe también bloquea la biblioteca",
+    ),
+    (
+        "The library is in use by another program. Nothing was changed.",
+        "La biblioteca está en uso por otro programa. No se cambió nada.",
+    ),
+    (
+        "The operation failed. Your library is intact.",
+        "La operación falló. Su biblioteca está intacta.",
+    ),
+    (
+        "The two passphrases do not match.",
+        "Las dos frases de contraseña no coinciden.",
+    ),
+    (
+        "This JSON file is not encrypted, even though your library is. Anyone who can read the file can read what it contains.",
+        "Este archivo JSON no está cifrado, aunque su biblioteca sí lo esté. Cualquiera que pueda leer el archivo puede leer su contenido.",
+    ),
+    (
+        "Tick the box to confirm that you understand.",
+        "Marque la casilla para confirmar que lo ha entendido.",
+    ),
+    ("Turn off", "Desactivar"),
+    ("Turn off encryption", "Desactivar el cifrado"),
+    ("Turn off encryption…", "Desactivar el cifrado…"),
+    (
+        "Turning encryption off leaves your library readable by anyone who has the files.",
+        "Al desactivar el cifrado, su biblioteca queda legible para cualquiera que tenga los archivos.",
+    ),
+    ("Use at least 12 characters.", "Use al menos 12 caracteres."),
+    (
+        "Wait for running tasks to finish, then try again.",
+        "Espere a que terminen las tareas en curso e inténtelo de nuevo.",
+    ),
+    (
+        "Wrong passphrase. Nothing was changed.",
+        "Frase de contraseña incorrecta. No se cambió nada.",
+    ),
+    (
+        "Your tags, notes, history, playlists and thumbnails will be stored encrypted. Your media files are not touched.",
+        "Sus etiquetas, notas, historial, listas de reproducción y miniaturas se guardarán cifrados. Sus archivos multimedia no se tocan.",
+    ),
+    ("fair", "media"),
+    ("good", "buena"),
+    ("strong", "fuerte"),
+    ("weak", "débil"),
 ];

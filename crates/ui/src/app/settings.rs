@@ -1,7 +1,8 @@
-//! The Settings window: General, Web pages, Browser, Connection.
+//! The Settings window: General, Privacy, Web pages, Browser, Connection.
 //!
 //! The online pages (Web pages, Browser, Connection) exist only in the online
-//! edition; the offline build shows General and nothing that could connect.
+//! edition; the offline build shows General and Privacy and nothing that could
+//! connect.
 //! Browser preferences live in `fetch.json` (`FetchConfig::browser`) and are
 //! changed through the `browser.prefs.set` command.
 
@@ -18,6 +19,7 @@ use std::sync::{Arc, Mutex};
 pub(super) enum Tab {
     #[default]
     General,
+    Privacy,
     WebPages,
     Browser,
     Connection,
@@ -27,6 +29,7 @@ impl Tab {
     fn label(self) -> &'static str {
         match self {
             Tab::General => "General",
+            Tab::Privacy => "Privacy",
             Tab::WebPages => "Web pages",
             Tab::Browser => "Browser",
             Tab::Connection => "Connection",
@@ -36,6 +39,7 @@ impl Tab {
     pub(super) fn parse(s: &str) -> Option<Tab> {
         match s {
             "general" => Some(Tab::General),
+            "privacy" => Some(Tab::Privacy),
             "web_pages" | "web" => Some(Tab::WebPages),
             "browser" => Some(Tab::Browser),
             "connection" => Some(Tab::Connection),
@@ -47,8 +51,14 @@ impl Tab {
 /// Pages shown for an edition, in order. Offline: General only.
 pub(super) fn tabs(edition: Edition) -> Vec<Tab> {
     match edition {
-        Edition::Offline => vec![Tab::General],
-        Edition::Online => vec![Tab::General, Tab::WebPages, Tab::Browser, Tab::Connection],
+        Edition::Offline => vec![Tab::General, Tab::Privacy],
+        Edition::Online => vec![
+            Tab::General,
+            Tab::Privacy,
+            Tab::WebPages,
+            Tab::Browser,
+            Tab::Connection,
+        ],
     }
 }
 
@@ -149,6 +159,7 @@ impl JizzApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| match st.tab {
                         Tab::General => self.settings_general(ui, &mut st, &mut cmds),
+                        Tab::Privacy => self.settings_privacy(ui),
                         #[cfg(feature = "network")]
                         Tab::WebPages => super::web_pages::panel(self, ui),
                         #[cfg(feature = "network")]
@@ -498,7 +509,7 @@ impl JizzApp {
 pub(super) fn register(reg: &mut jizzcraft_core::Registry<JizzApp>) {
     reg.register(
         "app.settings",
-        "Show or hide Settings: {tab?: general|web_pages|browser|connection}",
+        "Show or hide Settings: {tab?: general|privacy|web_pages|browser|connection}",
         |app, a| {
             let tab = a
                 .get("tab")
@@ -520,8 +531,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn offline_shows_general_only() {
-        assert_eq!(tabs(Edition::Offline), [Tab::General]);
+    fn offline_shows_general_and_privacy_only() {
+        assert_eq!(tabs(Edition::Offline), [Tab::General, Tab::Privacy]);
         let on = tabs(Edition::Online);
         assert_eq!(on[0], Tab::General);
         assert!(on.contains(&Tab::Browser) && on.contains(&Tab::Connection));

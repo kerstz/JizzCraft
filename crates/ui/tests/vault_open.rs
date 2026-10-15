@@ -82,3 +82,41 @@ fn missing_header_is_an_error_and_creates_nothing() {
         jizzcraft_core::db::FileFormat::Encrypted
     );
 }
+
+#[test]
+fn conversion_worker_encrypts_a_clear_library_and_hands_back_a_keyed_one() {
+    use jizzcraft_core::db::{FileFormat, probe_format};
+    use jizzcraft_ui::root::{ConvertKind, ConvertOutcome, ConvertRequest, spawn_convert};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("library.db");
+    drop(Db::open(&db_path).unwrap());
+    let (cancel, committed) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let rx = spawn_convert(
+        db_path.clone(),
+        ConvertRequest {
+            kind: ConvertKind::Enable,
+            pass: Zeroizing::new(PASS.to_owned()),
+            new_pass: None,
+        },
+        None,
+        cancel,
+        committed.clone(),
+        Box::new(|| {}),
+    );
+    let done = rx
+        .recv_timeout(Duration::from_secs(120))
+        .expect("worker answered");
+    assert_eq!(done.outcome, ConvertOutcome::Done);
+    assert!(committed.load(std::sync::atomic::Ordering::SeqCst));
+    let lib = done.lib.expect("reopened");
+    assert!(lib.opener.key.is_some() && lib.thumb_keys.is_some());
+    assert!(lib.db.is_encrypted());
+    assert_eq!(probe_format(&db_path).unwrap(), FileFormat::Encrypted);
+    assert_eq!(startup(&db_path), Startup::Encrypted);
+}

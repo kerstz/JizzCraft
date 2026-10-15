@@ -32,8 +32,15 @@ exploitable.
 
 Out of scope: the age gate, boss key, discreet mode and share-safe mode are
 conveniences, not security boundaries. The library database and thumbnail cache
-are stored in clear: an encrypted vault is in progress (issue #13, see
-`docs/vault.md`) but **not delivered** in the desktop app yet; only `jizzcraft-cli vault enable` can encrypt a library today (see `docs/vault.md`). Bugs in GStreamer, its plugins or the `image`
+are stored in clear **unless you turn on the encrypted vault** (alpha, off by
+default: Settings > Privacy, or `jizzcraft-cli vault enable`; issue #13). The
+vault is a feature with a written threat model in `docs/vault.md`: it protects
+the database, its backups and the thumbnails at rest, not your media files, a
+running unlocked machine, RAM and swap, data written in clear before it was
+enabled (use full-disk encryption too), `config.json`, `fetch.json` or JSON
+exports. There is no passphrase recovery by design. Reports of a way to read
+vault content without the passphrase, of a secret reaching a log, toast, error,
+argv or environment, or of a conversion that loses data are in scope. Bugs in GStreamer, its plugins or the `image`
 decoders themselves should be reported upstream.
 
 ## Things to know

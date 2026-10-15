@@ -37,7 +37,7 @@ A fast native app for your own images and videos: browse, search, rate, tag and 
 
 The claims below are checked by tests: the default build links no network code, and your files are only ever read.
 
-> "Written in Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer, and the library uses SQLCipher 4.14 (an SQLite fork) built against a vendored OpenSSL, both through `rusqlite`; all of these are C. SQLCipher is linked, but the library is **not encrypted today**: the encrypted vault is not delivered (see [Privacy guarantees](#privacy-guarantees)).
+> "Written in Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer, and the library uses SQLCipher 4.14 (an SQLite fork) built against a vendored OpenSSL, both through `rusqlite`; all of these are C. SQLCipher is linked and the optional encrypted vault is shipped as an **alpha**: a library is clear until you turn the vault on (see [Privacy guarantees](#privacy-guarantees)).
 
 ## A look around
 
@@ -364,7 +364,11 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 - Ratings, hidden flags, history and markers live only in the library database. No sidecar files are written, and exports leave out names and history unless you ask.
 - Watch history can be paused, cleared (and truncated out of the WAL file) or hidden in the UI; the boss key hides it too.
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
-- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are **not encrypted** today. An encrypted vault is in progress (issue #13, [`docs/vault.md`](docs/vault.md)): the key wrapping, the conversion engine, crash recovery and the command line (`jizzcraft-cli vault enable|disable|change-passphrase|verify|status`) are written and tested, but the desktop app has no settings page or lock screen for it yet, so it is **not delivered** as a feature; until it ships in the app, use full-disk encryption if the library must be protected.
+- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries.
+- **Encrypted vault (alpha, off by default).** Settings > Privacy > *Encrypt library* (or `jizzcraft-cli vault enable`) encrypts the library database and the thumbnails with a passphrase; the library then opens on a neutral lock screen, can lock itself after inactivity (15 minutes by default, a playing video counts as activity) and optionally with the boss key. Until you turn it on nothing is encrypted. Read [`docs/vault.md`](docs/vault.md) before relying on it.
+  - **It protects**: the database (names, paths, tags, categories, notes, markers, ratings, history, playlists, full-text index), its `pre-vN` backups and the thumbnails and scrub previews, against someone holding a copy of the disk or of a backup while the app is closed or locked.
+  - **It does not protect**: your media files; an unlocked or compromised running machine (the key is in RAM; swap and hibernation may hold it); data that was written in clear before you enabled it (SSDs and copy-on-write filesystems may keep old blocks: use full-disk encryption too); `config.json` and `fetch.json`; JSON exports (the app warns before writing one); operating-system traces (recent-files lists, other programs' thumbnails); file counts and sizes in the cache; weak passphrases, evil-maid attacks and coercion; rollback to an older valid copy of the library.
+  - **There is no recovery.** No hint, key file, keychain entry or backdoor exists. Forget the passphrase and the tags, notes, history and playlists are gone; your media files are untouched and can be imported again.
 
 ## The Online edition
 
@@ -406,7 +410,7 @@ What it exposes: your IP is visible to the indexers you configure, to BitTorrent
 
 ## Roadmap
 
-- Player and library: YUV to RGB in a shader, embedded subtitles and an audio-track picker for local files, perceptual-hash duplicates, file watching, encrypted vault (in progress: usable from the CLI, no desktop UI yet), sandboxed decoding.
+- Player and library: YUV to RGB in a shader, embedded subtitles and an audio-track picker for local files, perceptual-hash duplicates, file watching, encrypted vault (alpha: usable from the app and the CLI; performance numbers and packaging smoke tests remain), sandboxed decoding.
 - Distribution and validation: AUR packages, Flatpak, AppImage, and real-hardware runs on Windows and macOS.
 
 The full list, including what is explicitly not planned, is in [`ROADMAP.md`](ROADMAP.md).

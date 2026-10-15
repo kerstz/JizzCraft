@@ -11,6 +11,26 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault, step 7b of issue #13: Settings, conversion and auto-lock in
+  the desktop app. The vault is now a feature, delivered as an **alpha** and
+  off until you turn it on. New Settings page "Privacy": *Encrypt library*
+  (passphrase typed twice, 12 characters minimum, a local strength estimate,
+  a mandatory "no recovery" box, notes that data written in clear may stay
+  readable on disk and that clear backups and thumbnails are deleted),
+  *Change passphrase*, *Turn off encryption* (both ask for the passphrase
+  again even when the vault is open). The conversion runs as a job: the root
+  closes the library (jobs cancelled and waited for), a worker does the
+  Argon2id and the conversion, the library opens again with the key; Cancel
+  works until the commit point (`ConvertOptions::cancel` / `committed`,
+  `VaultError::Cancelled`); a request is refused with a fixed sentence while
+  a job runs; one final toast without names or paths. Automatic lock after
+  inactivity (`autolock_minutes`, default 15, 0 = off, a playing video counts
+  as activity) through the same path as `app.vault.lock`, and the option
+  "The boss key also locks the library" (`boss_locks`, off by default); both
+  in the clear config, set by the new `app.vault.settings` command. The
+  clear JSON metadata export asks for confirmation when the vault is on.
+  Still no recovery, hint, OS keychain or "remember me". Six languages.
+  Step 8 (performance in vault mode, packaging smoke tests) remains.
 - Encrypted vault, step 7a of issue #13: lock screen and keyed opening in the
   desktop app. A new `Root` wraps the app with `Locked`, `Unlocking`, `Open`
   and `Locking` states (and an error screen for a missing, damaged or

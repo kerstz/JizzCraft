@@ -36,6 +36,8 @@ mod status_chip;
 #[cfg(feature = "network")]
 mod stream_open;
 mod tools;
+mod vault_ui;
+pub(crate) use vault_ui::{DEFAULT_AUTOLOCK_MINUTES, MAX_AUTOLOCK_MINUTES};
 #[cfg(feature = "network")]
 mod web_pages;
 
@@ -233,6 +235,13 @@ pub struct JizzApp {
     lock_cancel: Arc<std::sync::atomic::AtomicBool>,
     /// The lock command ran: the root envelope picks it up after the frame.
     lock_requested: bool,
+    /// A conversion the user confirmed in Settings; the root envelope takes
+    /// it after the frame, closes the library and converts on a worker.
+    convert_request: Option<crate::root::ConvertRequest>,
+    /// Encryption dialogs and the clear-export warning.
+    vault_ui: vault_ui::VaultUi,
+    /// Inactivity clock of the automatic lock.
+    autolock: vault_ui::AutoLock,
     registry: Rc<Registry<JizzApp>>,
     cfg: Config,
     persist_cfg: bool,
@@ -380,6 +389,16 @@ impl Library {
         })
     }
 
+    /// From a library opened again after a conversion.
+    pub(crate) fn from_reopened(r: crate::root::Reopened) -> Library {
+        Library {
+            db: r.db,
+            read_only: r.read_only,
+            opener: r.opener,
+            thumb_keys: r.thumb_keys,
+        }
+    }
+
     /// From the proof of a successful unlock (see `root::unlock_blocking`).
     pub(crate) fn from_unlocked(u: crate::root::Unlocked) -> Library {
         Library {
@@ -415,6 +434,30 @@ impl crate::root::Lockable for JizzApp {
 
     fn take_lock_request(&mut self) -> bool {
         std::mem::take(&mut self.lock_requested)
+    }
+
+    fn take_convert_request(&mut self) -> Option<crate::root::ConvertRequest> {
+        self.convert_request.take()
+    }
+
+    fn keys(&self) -> Option<crate::root::Keep> {
+        Some((self.opener.key.clone()?, self.thumb_keys.clone()?))
+    }
+
+    fn conversion_finished(
+        &mut self,
+        kind: crate::root::ConvertKind,
+        outcome: crate::root::ConvertOutcome,
+    ) {
+        use crate::root::ConvertOutcome as O;
+        let k = if outcome == O::Done {
+            ToastKind::Info
+        } else {
+            ToastKind::Error
+        };
+        self.toast(k, vault_ui::finished_text(kind, outcome));
+        // A new window, a fresh idle clock.
+        self.autolock = vault_ui::AutoLock::new(Instant::now());
     }
 }
 
@@ -530,6 +573,7 @@ impl JizzApp {
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
         settings::register(&mut registry);
+        vault_ui::register(&mut registry);
         #[cfg(feature = "network")]
         {
             downloads::register(&mut registry);
@@ -547,6 +591,9 @@ impl JizzApp {
             jobs,
             lock_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             lock_requested: false,
+            convert_request: None,
+            vault_ui: vault_ui::VaultUi::default(),
+            autolock: vault_ui::AutoLock::new(Instant::now()),
             registry: Rc::new(registry),
             cfg,
             persist_cfg,
@@ -1039,6 +1086,11 @@ impl JizzApp {
         } else {
             self.ctx
                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        // Optional: the boss key also locks an encrypted library (the same
+        // path as the menu and the inactivity timer).
+        if self.cfg.boss_locks {
+            self.lock_vault();
         }
     }
 
@@ -2677,6 +2729,11 @@ impl eframe::App for JizzApp {
         let ctx = ui.ctx().clone();
         self.frame_no += 1;
         self.sync_appearance(&ctx);
+        let playing = matches!(
+            &self.view,
+            View::Player(pv) if pv.player.state() == PlayState::Playing
+        );
+        self.autolock_tick(&ctx, playing);
         // Jokes never show on a shared screen, in discreet mode or disguised.
         // Comedy, like this app, is best enjoyed alone.
         crate::fun::set_enabled(
@@ -2803,6 +2860,7 @@ impl eframe::App for JizzApp {
             self.browser_tick();
         }
         self.settings_window(&ctx);
+        self.vault_windows(&ctx);
 
         self.drain_queue();
         self.drive_bench(&ctx, t0);
@@ -4175,6 +4233,208 @@ mod tests {
 
         drop(app);
         assert!(key.upgrade().is_none(), "the database key is gone");
+    }
+
+    /// A real app on an encrypted library, built without a window.
+    fn encrypted_app(dir: &std::path::Path) -> (JizzApp, PathBuf) {
+        use jizzcraft_core::vault::KdfParams;
+        let db_path = dir.join("library.db");
+        drop(Db::open(&db_path).unwrap());
+        let fast = KdfParams {
+            m_cost: 19456,
+            t_cost: 2,
+            p_cost: 1,
+        };
+        jizzcraft_core::vault_convert::enable(&db_path, "a long enough passphrase", fast).unwrap();
+        let unlocked = crate::root::unlock_blocking(&db_path, "a long enough passphrase").unwrap();
+        let app = JizzApp::open(
+            &egui::Context::default(),
+            None,
+            scripted_opts(&db_path),
+            Library::from_unlocked(unlocked),
+        )
+        .unwrap();
+        (app, db_path)
+    }
+
+    fn secret(s: &str) -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(s.to_owned())
+    }
+
+    #[test]
+    fn a_conversion_is_refused_while_a_job_runs_and_in_the_wrong_mode() {
+        use crate::root::{ConvertKind, ConvertRequest};
+        use vault_ui::FormError;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _p) = encrypted_app(dir.path());
+        let req = |kind| ConvertRequest {
+            kind,
+            pass: secret("a long enough passphrase"),
+            new_pass: None,
+        };
+        // Already encrypted: enabling again makes no sense.
+        assert_eq!(
+            app.request_convert(req(ConvertKind::Enable)),
+            Err(FormError::Unavailable)
+        );
+        // A running job holds the library: wait for it.
+        let held = JobTicket::new(&app.jobs);
+        assert_eq!(
+            app.request_convert(req(ConvertKind::Disable)),
+            Err(FormError::BusyJobs)
+        );
+        assert!(!app.take_convert_request().is_some());
+        drop(held);
+        assert_eq!(app.request_convert(req(ConvertKind::Disable)), Ok(()));
+        // One at a time.
+        assert_eq!(
+            app.request_convert(req(ConvertKind::Change)),
+            Err(FormError::Unavailable)
+        );
+        let taken = app.take_convert_request().expect("picked up by the root");
+        assert_eq!(taken.kind, ConvertKind::Disable);
+        assert!(
+            app.keys().is_some(),
+            "keys are kept for a refused conversion"
+        );
+    }
+
+    #[test]
+    fn a_clear_library_cannot_be_disabled_or_changed() {
+        use crate::root::{ConvertKind, ConvertRequest};
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let lib = Library::open_plain(&db_path).unwrap();
+        let mut app = JizzApp::open(
+            &egui::Context::default(),
+            None,
+            scripted_opts(&db_path),
+            lib,
+        )
+        .unwrap();
+        for kind in [ConvertKind::Disable, ConvertKind::Change] {
+            let r = ConvertRequest {
+                kind,
+                pass: secret("x"),
+                new_pass: None,
+            };
+            assert!(app.request_convert(r).is_err());
+        }
+        let r = ConvertRequest {
+            kind: ConvertKind::Enable,
+            pass: secret("a long enough passphrase"),
+            new_pass: None,
+        };
+        assert_eq!(app.request_convert(r), Ok(()));
+        assert!(app.keys().is_none());
+    }
+
+    #[test]
+    fn auto_lock_uses_the_same_path_as_the_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _p) = encrypted_app(dir.path());
+        let ctx = egui::Context::default();
+        let long_ago = Instant::now() - Duration::from_secs(3600);
+
+        // Never: idle forever, nothing happens.
+        app.cfg.autolock_minutes = Some(0);
+        app.autolock = vault_ui::AutoLock::new(long_ago);
+        app.autolock_tick(&ctx, false);
+        assert!(!app.take_lock_request());
+
+        // A playing video is activity.
+        app.cfg.autolock_minutes = Some(5);
+        app.autolock_tick(&ctx, true);
+        assert!(!app.take_lock_request());
+
+        // Idle past the delay: one lock request, taken like the menu's.
+        app.autolock = vault_ui::AutoLock::new(long_ago);
+        app.autolock_tick(&ctx, false);
+        assert!(app.take_lock_request());
+        assert!(!app.take_lock_request());
+    }
+
+    #[test]
+    fn auto_lock_does_nothing_on_a_clear_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let lib = Library::open_plain(&db_path).unwrap();
+        let mut app = JizzApp::open(
+            &egui::Context::default(),
+            None,
+            scripted_opts(&db_path),
+            lib,
+        )
+        .unwrap();
+        app.cfg.autolock_minutes = Some(1);
+        app.autolock = vault_ui::AutoLock::new(Instant::now() - Duration::from_secs(3600));
+        app.autolock_tick(&egui::Context::default(), false);
+        assert!(!app.take_lock_request());
+    }
+
+    #[test]
+    fn boss_key_locks_only_when_the_option_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _p) = encrypted_app(dir.path());
+        assert!(!app.cfg.boss_locks, "off by default");
+        app.boss_key();
+        assert!(!app.take_lock_request());
+        app.run("app.vault.settings", json!({ "boss_locks": true }));
+        assert!(app.cfg.boss_locks);
+        app.boss_key();
+        assert!(app.take_lock_request());
+    }
+
+    #[test]
+    fn vault_settings_command_clamps_and_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _p) = encrypted_app(dir.path());
+        assert_eq!(app.cfg.autolock_minutes(), 15);
+        app.run("app.vault.settings", json!({ "autolock_minutes": 30 }));
+        assert_eq!(app.cfg.autolock_minutes(), 30);
+        app.run("app.vault.settings", json!({ "autolock_minutes": 0 }));
+        assert_eq!(app.cfg.autolock_minutes(), 0);
+        app.run("app.vault.settings", json!({ "autolock_minutes": 999_999 }));
+        assert_eq!(app.cfg.autolock_minutes(), 24 * 60);
+    }
+
+    #[test]
+    fn clear_export_asks_first_on_an_encrypted_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _p) = encrypted_app(dir.path());
+        assert!(app.vault_ui.export_warn.as_ref().is_none());
+        app.run("meta.export", json!({}));
+        let held = app.vault_ui.export_warn.as_ref().cloned().expect("warned");
+        assert_eq!(held, json!({}));
+        assert!(app.jobs_finished(), "no job was started");
+        assert!(app.vault_ui.dialog.is_none());
+        // A scripted export with a destination is an explicit choice.
+        let dest = dir.path().join("meta.json");
+        app.vault_ui.export_warn = None;
+        app.run("meta.export", json!({ "dest": dest }));
+        assert!(app.vault_ui.export_warn.as_ref().is_none());
+        for _ in 0..400 {
+            if app.jobs_finished() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.jobs_finished());
+    }
+
+    #[test]
+    fn the_one_toast_of_a_finished_conversion_has_no_name_or_path() {
+        use crate::root::{ConvertKind, ConvertOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, p) = encrypted_app(dir.path());
+        app.conversion_finished(ConvertKind::Enable, ConvertOutcome::Done);
+        assert_eq!(app.toasts.len(), 1);
+        let t = &app.toasts[0].text;
+        assert!(!t.contains(&p.to_string_lossy().to_string()));
+        assert_eq!(
+            t,
+            vault_ui::finished_text(ConvertKind::Enable, ConvertOutcome::Done)
+        );
     }
 
     #[test]

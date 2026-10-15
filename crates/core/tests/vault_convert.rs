@@ -32,6 +32,7 @@ impl Lib {
         ConvertOptions {
             cache_dir: Some(self.cache.clone()),
             fail_at: fail,
+            ..Default::default()
         }
     }
     fn dir(&self) -> &Path {
@@ -654,6 +655,7 @@ fn convert_child() {
     let opts = ConvertOptions {
         cache_dir: std::env::var_os(KILL_CACHE).map(PathBuf::from),
         fail_at: None,
+        ..Default::default()
     };
     loop {
         match recover_with(&db, &opts) {
@@ -725,4 +727,37 @@ fn kill_nine_during_conversion_leaves_one_consistent_mode() {
         }
     }
     eprintln!("kill -9 outcomes: plain {} encrypted {}", seen[0], seen[1]);
+}
+
+#[test]
+fn cancel_before_the_commit_point_changes_nothing_and_after_it_is_ignored() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    let lib = library(0);
+    let before = snap(&lib, None);
+    let cancel = Arc::new(AtomicBool::new(true));
+    let committed = Arc::new(AtomicBool::new(false));
+    let mut o = lib.opts(None);
+    o.cancel = Some(cancel.clone());
+    o.committed = Some(committed.clone());
+    let r = enable_with(&lib.db, PASS, FAST, &o);
+    assert_eq!(r.err(), Some(VaultError::Cancelled));
+    assert!(!committed.load(SeqCst));
+    assert_eq!(probe_format(&lib.db).unwrap(), FileFormat::Plain);
+    assert!(leftovers(&lib).is_empty(), "{:?}", leftovers(&lib));
+    assert_eq!(snap(&lib, None).tables, before.tables);
+
+    // Not cancelled: it commits and says so.
+    cancel.store(false, SeqCst);
+    enable_with(&lib.db, PASS, FAST, &o).unwrap();
+    assert!(committed.load(SeqCst));
+    assert_eq!(probe_format(&lib.db).unwrap(), FileFormat::Encrypted);
+
+    // A cancelled disable leaves the encrypted library and no marker.
+    cancel.store(true, SeqCst);
+    committed.store(false, SeqCst);
+    let r = disable_with(&lib.db, PASS, &o);
+    assert_eq!(r.err(), Some(VaultError::Cancelled));
+    assert_eq!(probe_format(&lib.db).unwrap(), FileFormat::Encrypted);
+    assert!(leftovers(&lib).is_empty(), "{:?}", leftovers(&lib));
 }

@@ -304,6 +304,16 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
         "meta.export",
         "Export favorites, ratings, markers: {dest?, include_history?, include_names?}",
         |app, args| {
+            // An encrypted library exports a clear file: say so first, once,
+            // in front of the file dialog. Scripted calls with a `dest` (or
+            // `ack_clear`) are the user's explicit choice and go through.
+            if app.opener.key.is_some()
+                && args.get("dest").is_none()
+                && args.get("ack_clear").and_then(Value::as_bool) != Some(true)
+            {
+                app.vault_ui.warn_export(args.clone());
+                return Ok(json!({ "warning": "export is not encrypted" }));
+            }
             let args2 = args.clone();
             let o = jizzcraft_core::portability::ExportOpts {
                 include_history: args

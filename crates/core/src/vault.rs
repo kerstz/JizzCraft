@@ -78,6 +78,8 @@ pub enum VaultError {
     /// A valid vault header exists next to a clear or missing library and no
     /// interrupted disable explains it: nothing was deleted, nothing is created.
     HeaderOrphan,
+    /// The caller cancelled before the commit point; nothing was changed.
+    Cancelled,
     /// A test fail point stopped the conversion (never returned otherwise).
     Interrupted,
 }
@@ -104,6 +106,7 @@ impl fmt::Display for VaultError {
                 "a vault header exists but the library is not encrypted, nothing was changed"
             }
             VaultError::Interrupted => "conversion interrupted",
+            VaultError::Cancelled => "conversion cancelled, nothing was changed",
         })
     }
 }

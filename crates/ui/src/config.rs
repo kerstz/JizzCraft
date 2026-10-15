@@ -51,6 +51,11 @@ pub struct Config {
     /// separate tracks: a tag (`"fr"`), `""` for the stream's own default
     /// track. None: the interface language.
     pub audio_lang: Option<String>,
+    /// Minutes of inactivity before an encrypted library locks itself.
+    /// None: the default (15). `Some(0)`: never.
+    pub autolock_minutes: Option<u32>,
+    /// The boss key also locks an encrypted library.
+    pub boss_locks: bool,
 }
 
 /// Language codes offered for the audio preference, in menu order.
@@ -64,6 +69,13 @@ fn clean_tag(s: &str) -> Option<String> {
 }
 
 impl Config {
+    /// Effective inactivity delay in minutes (0 = never), clamped to a day.
+    pub fn autolock_minutes(&self) -> u32 {
+        self.autolock_minutes
+            .unwrap_or(crate::app::DEFAULT_AUTOLOCK_MINUTES)
+            .min(crate::app::MAX_AUTOLOCK_MINUTES)
+    }
+
     /// The language to ask a stream for: the saved one, else the interface
     /// language. `None` means "the stream's default track".
     pub fn effective_audio_lang(&self, interface: &str) -> Option<String> {

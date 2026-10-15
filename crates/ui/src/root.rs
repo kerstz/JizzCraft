@@ -26,11 +26,12 @@
 //! text layout caches are outside this guarantee, like RAM in general
 //! (see `docs/vault.md`).
 
-use jizzcraft_core::db::{FileFormat, LibraryOpener};
-use jizzcraft_core::vault::{DbKey, ThumbKeys, VaultError};
+use jizzcraft_core::db::{FileFormat, LibraryOpener, probe_format};
+use jizzcraft_core::vault::{DbKey, KdfParams, ThumbKeys, VaultError};
 use jizzcraft_core::{Db, Error, vault_convert};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, Zeroizing};
@@ -183,6 +184,245 @@ pub trait Lockable {
     fn jobs_finished(&self) -> bool;
     /// The user asked for a lock since the last call.
     fn take_lock_request(&mut self) -> bool;
+    /// A conversion (encrypt, decrypt, change passphrase) was asked for since
+    /// the last call. The app has already refused it while jobs run.
+    fn take_convert_request(&mut self) -> Option<ConvertRequest> {
+        None
+    }
+    /// The keys the library is open with, to reopen it after a conversion
+    /// that did not change them.
+    fn keys(&self) -> Option<Keep> {
+        None
+    }
+    /// The conversion ended and the library is open again: the one toast.
+    fn conversion_finished(&mut self, _kind: ConvertKind, _outcome: ConvertOutcome) {}
+}
+
+/// Keys kept across a conversion so a refused one reopens without asking.
+pub type Keep = (Arc<DbKey>, Arc<ThumbKeys>);
+
+/// What a conversion does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvertKind {
+    Enable,
+    Disable,
+    Change,
+}
+
+/// How a conversion ended. Fixed values, translated by the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvertOutcome {
+    Done,
+    /// Cancelled before the commit point: nothing changed.
+    Cancelled,
+    WrongPassphrase,
+    /// Another program holds the library: nothing changed.
+    Busy,
+    Failed,
+}
+
+impl ConvertOutcome {
+    pub fn from_vault(e: VaultError) -> ConvertOutcome {
+        match e {
+            VaultError::Cancelled => ConvertOutcome::Cancelled,
+            VaultError::WrongPassphrase => ConvertOutcome::WrongPassphrase,
+            VaultError::Busy => ConvertOutcome::Busy,
+            _ => ConvertOutcome::Failed,
+        }
+    }
+}
+
+/// Shortest accepted new passphrase, in characters (same as the CLI).
+pub const MIN_PASSPHRASE_CHARS: usize = 12;
+
+/// A passphrase buffer with a fixed capacity: no reallocation while typing,
+/// wiped on drop.
+pub fn secret_buf() -> Zeroizing<String> {
+    Zeroizing::new(String::with_capacity(MAX_PASSPHRASE_BYTES))
+}
+
+/// A conversion asked for from Settings. The secrets live in `Zeroizing`
+/// buffers and are moved, never copied, to the worker.
+pub struct ConvertRequest {
+    pub kind: ConvertKind,
+    /// The current passphrase (to enable: the new one).
+    pub pass: Zeroizing<String>,
+    /// The new passphrase of a change.
+    pub new_pass: Option<Zeroizing<String>>,
+}
+
+impl std::fmt::Debug for ConvertRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ConvertRequest({:?}, <redacted>)", self.kind)
+    }
+}
+
+/// The library opened again after a conversion.
+pub struct Reopened {
+    pub db: Db,
+    pub read_only: bool,
+    pub opener: LibraryOpener,
+    pub thumb_keys: Option<Arc<ThumbKeys>>,
+}
+
+/// What the conversion worker answers. `lib` is the library opened again in
+/// whatever mode the disk is in now.
+pub struct Converted {
+    pub outcome: ConvertOutcome,
+    pub lib: Result<Reopened, Fail>,
+}
+
+fn open_opener(opener: &LibraryOpener) -> Result<(Db, bool), Fail> {
+    match opener.open() {
+        Ok(db) => Ok((db, false)),
+        Err(Error::FutureSchema { .. }) => opener
+            .open_read_only()
+            .map(|d| (d, true))
+            .map_err(|_| Fail::Other),
+        Err(Error::Vault(e)) => Err(Fail::from_vault(e)),
+        Err(_) => Err(Fail::Other),
+    }
+}
+
+fn reopen_plain(db_path: &Path) -> Result<Reopened, Fail> {
+    let opener = LibraryOpener::new(db_path, None);
+    let (db, read_only) = open_opener(&opener)?;
+    Ok(Reopened {
+        db,
+        read_only,
+        opener,
+        thumb_keys: None,
+    })
+}
+
+fn reopen_keyed(db_path: &Path, keep: Option<Keep>) -> Result<Reopened, Fail> {
+    let (k, t) = keep.ok_or(Fail::Other)?;
+    let opener = LibraryOpener::new(db_path, Some(k));
+    let (db, read_only) = open_opener(&opener)?;
+    Ok(Reopened {
+        db,
+        read_only,
+        opener,
+        thumb_keys: Some(t),
+    })
+}
+
+fn reopen_unlocked(db_path: &Path, pass: &str) -> Result<Reopened, Fail> {
+    let u = unlock_blocking(db_path, pass)?;
+    Ok(Reopened {
+        db: u.db,
+        read_only: u.read_only,
+        opener: u.opener,
+        thumb_keys: Some(u.thumb_keys),
+    })
+}
+
+/// Run one conversion and reopen the library. Slow (Argon2id, a full copy):
+/// workers only. The library must not be open in this process. `keep` are the
+/// keys of an encrypted library, used to reopen it when the conversion is
+/// refused (wrong passphrase, busy, cancelled) without asking again.
+pub fn convert_blocking(
+    db_path: &Path,
+    req: ConvertRequest,
+    keep: Option<Keep>,
+    cancel: &Arc<AtomicBool>,
+    committed: &Arc<AtomicBool>,
+    params: KdfParams,
+) -> Converted {
+    let opts = vault_convert::ConvertOptions {
+        cancel: Some(Arc::clone(cancel)),
+        committed: Some(Arc::clone(committed)),
+        ..Default::default()
+    };
+    let short = |p: &str| p.chars().count() < MIN_PASSPHRASE_CHARS;
+    let result = match (req.kind, req.new_pass.as_ref()) {
+        (ConvertKind::Enable, _) if short(&req.pass) => Err(VaultError::EmptyPassphrase),
+        (ConvertKind::Change, Some(n)) if short(n) => Err(VaultError::EmptyPassphrase),
+        (ConvertKind::Change, None) => Err(VaultError::EmptyPassphrase),
+        (ConvertKind::Enable, _) => vault_convert::enable_with(db_path, &req.pass, params, &opts),
+        (ConvertKind::Disable, _) => vault_convert::disable_with(db_path, &req.pass, &opts),
+        (ConvertKind::Change, Some(n)) => {
+            vault_convert::change_passphrase_with(db_path, &req.pass, n, &opts)
+        }
+    };
+    let (outcome, ok) = match result {
+        Ok(()) => (ConvertOutcome::Done, true),
+        Err(e) => (ConvertOutcome::from_vault(e), false),
+    };
+    // The disk decides which way the library opens now.
+    let lib = match (req.kind, ok) {
+        (ConvertKind::Enable, true) => reopen_unlocked(db_path, &req.pass),
+        (ConvertKind::Enable, false) | (ConvertKind::Disable, true) => reopen_plain(db_path),
+        (ConvertKind::Change, true) => {
+            let n = req.new_pass.as_deref().map_or("", |n| n.as_str());
+            reopen_unlocked(db_path, n)
+        }
+        (ConvertKind::Disable, false) | (ConvertKind::Change, false) => reopen_keyed(db_path, keep),
+    };
+    Converted { outcome, lib }
+}
+
+type ConvertWorker = Receiver<Converted>;
+
+/// Run [`convert_blocking`] on a worker thread. `wake` is called when it ends.
+pub fn spawn_convert(
+    db_path: PathBuf,
+    req: ConvertRequest,
+    keep: Option<Keep>,
+    cancel: Arc<AtomicBool>,
+    committed: Arc<AtomicBool>,
+    wake: Box<dyn FnOnce() + Send>,
+) -> ConvertWorker {
+    let (tx, rx) = channel();
+    let _ = std::thread::Builder::new()
+        .name("jizzcraft-convert".into())
+        .spawn(move || {
+            let r = convert_blocking(
+                &db_path,
+                req,
+                keep,
+                &cancel,
+                &committed,
+                KdfParams::default(),
+            );
+            let _ = tx.send(r);
+            wake();
+        });
+    rx
+}
+
+enum ConvPhase<A> {
+    /// The app is closing: jobs finish, then it is dropped.
+    Quiesce {
+        app: Box<A>,
+        req: ConvertRequest,
+        keep: Option<Keep>,
+    },
+    Running(ConvertWorker),
+}
+
+/// A conversion in progress. The library is closed in this process while it
+/// runs: no other job can start.
+pub struct Converting<A> {
+    phase: ConvPhase<A>,
+    kind: ConvertKind,
+    cancel: Arc<AtomicBool>,
+    committed: Arc<AtomicBool>,
+}
+
+impl<A> Converting<A> {
+    pub fn kind(&self) -> ConvertKind {
+        self.kind
+    }
+
+    /// Past the commit point: cancelling is no longer possible.
+    pub fn committed(&self) -> bool {
+        self.committed.load(Ordering::SeqCst)
+    }
+
+    pub fn cancelling(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
 }
 
 /// The lock screen's own state: the passphrase buffer and the soft limit.
@@ -250,6 +490,8 @@ pub enum State<A> {
     Unlocking(Unlocking),
     Open(Box<A>),
     Locking(Box<A>),
+    /// Encrypting, decrypting or changing the passphrase (the app is closed).
+    Converting(Converting<A>),
     /// Unrecoverable on this start: error text only, no prompt.
     Failed(Fail),
 }
@@ -261,6 +503,7 @@ impl<A> State<A> {
             State::Unlocking(_) => "unlocking",
             State::Open(_) => "open",
             State::Locking(_) => "locking",
+            State::Converting(_) => "converting",
             State::Failed(_) => "failed",
         }
     }
@@ -370,6 +613,143 @@ impl<A: Lockable> Gate<A> {
             self.state = State::Locking(app);
         }
         true
+    }
+
+    /// Take a pending conversion from an open app and start closing it.
+    /// Returns whether one started. Needs an open app; the app itself has
+    /// refused the request while jobs run.
+    pub fn start_convert(&mut self) -> bool {
+        let State::Open(app) = &mut self.state else {
+            return false;
+        };
+        let Some(req) = app.take_convert_request() else {
+            return false;
+        };
+        let ok = match req.kind {
+            ConvertKind::Enable => !app.vault_active(),
+            ConvertKind::Disable | ConvertKind::Change => app.vault_active(),
+        };
+        if !ok {
+            return false;
+        }
+        let keep = app.keys();
+        app.begin_lock();
+        let kind = req.kind;
+        if let State::Open(app) =
+            std::mem::replace(&mut self.state, State::Locked(LockScreen::new()))
+        {
+            self.state = State::Converting(Converting {
+                phase: ConvPhase::Quiesce { app, req, keep },
+                kind,
+                cancel: Arc::new(AtomicBool::new(false)),
+                committed: Arc::new(AtomicBool::new(false)),
+            });
+        }
+        true
+    }
+
+    /// Ask the running conversion to stop. Only possible before its commit
+    /// point; returns whether the request was recorded.
+    pub fn cancel_convert(&mut self) -> bool {
+        match &self.state {
+            State::Converting(c) if !c.committed() => {
+                c.cancel.store(true, Ordering::SeqCst);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Advance a conversion: when the app's jobs ended it is dropped (its
+    /// connection closes) and the worker starts; when the worker answered the
+    /// library is open again with the one toast.
+    pub fn poll_convert(
+        &mut self,
+        spawn: impl FnOnce(
+            PathBuf,
+            ConvertRequest,
+            Option<Keep>,
+            Arc<AtomicBool>,
+            Arc<AtomicBool>,
+        ) -> ConvertWorker,
+        build: impl FnOnce(Reopened) -> Result<A, String>,
+    ) {
+        let State::Converting(c) = &self.state else {
+            return;
+        };
+        let quiescing = match &c.phase {
+            ConvPhase::Quiesce { app, .. } => Some(app.jobs_finished()),
+            ConvPhase::Running(_) => None,
+        };
+        if let Some(ready) = quiescing {
+            if !ready {
+                return;
+            }
+            let State::Converting(c) =
+                std::mem::replace(&mut self.state, State::Failed(Fail::Other))
+            else {
+                return;
+            };
+            let Converting {
+                phase,
+                kind,
+                cancel,
+                committed,
+            } = c;
+            let ConvPhase::Quiesce { app, req, keep } = phase else {
+                return;
+            };
+            // Closes the database and releases this app's key references.
+            drop(app);
+            let rx = spawn(
+                self.db_path.clone(),
+                req,
+                keep,
+                Arc::clone(&cancel),
+                Arc::clone(&committed),
+            );
+            self.state = State::Converting(Converting {
+                phase: ConvPhase::Running(rx),
+                kind,
+                cancel,
+                committed,
+            });
+            return;
+        }
+        let ConvPhase::Running(rx) = &c.phase else {
+            return;
+        };
+        let kind = c.kind;
+        let answer = match rx.try_recv() {
+            Ok(a) => a,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Converted {
+                outcome: ConvertOutcome::Failed,
+                lib: Err(Fail::Other),
+            },
+        };
+        let outcome = answer.outcome;
+        let next = match answer.lib {
+            Ok(lib) => match build(lib) {
+                Ok(mut app) => {
+                    app.conversion_finished(kind, outcome);
+                    State::Open(Box::new(app))
+                }
+                Err(_) => self.after_failed_reopen(),
+            },
+            Err(Fail::Header) => State::Failed(Fail::Header),
+            Err(_) => self.after_failed_reopen(),
+        };
+        self.state = next;
+    }
+
+    /// The library could not be opened again: encrypted on disk means the
+    /// lock screen (the passphrase may well work), anything else an error.
+    fn after_failed_reopen(&self) -> State<A> {
+        match probe_format(&self.db_path) {
+            Ok(FileFormat::Encrypted) => State::Locked(LockScreen::new()),
+            _ => State::Failed(Fail::Other),
+        }
     }
 
     /// Drop the app once its jobs have ended; only then show "Locked".
@@ -483,6 +863,25 @@ impl eframe::App for Root {
             JizzApp::open(&ctx2, rs.clone(), opts.clone(), lib)
         });
         self.gate.poll_lock();
+        {
+            let wake = ctx.clone();
+            self.gate.poll_convert(
+                |path, req, keep, cancel, committed| {
+                    spawn_convert(
+                        path,
+                        req,
+                        keep,
+                        cancel,
+                        committed,
+                        Box::new(move || wake.request_repaint()),
+                    )
+                },
+                |r| {
+                    let lib = Library::from_reopened(r);
+                    JizzApp::open(&ctx2, rs.clone(), opts.clone(), lib)
+                },
+            );
+        }
         if matches!(self.gate.state, State::Open(_)) {
             // Start-up work (`--import`, `--cmd`, a pre-opened item, bench and
             // screenshot) runs once, not again after a lock and an unlock.
@@ -499,10 +898,51 @@ impl eframe::App for Root {
         match &mut self.gate.state {
             State::Open(app) => {
                 eframe::App::ui(&mut **app, ui, frame);
-                if app.take_lock_request() {
+                let lock = app.take_lock_request();
+                if lock {
                     self.gate.request_lock();
                     ctx.request_repaint();
+                } else if self.gate.start_convert() {
+                    ctx.request_repaint();
                 }
+            }
+            State::Converting(c) => {
+                let (kind, committed, cancelling) = (c.kind(), c.committed(), c.cancelling());
+                self.neutral_window(&ctx);
+                let mut cancel = false;
+                Self::screen(ui, |ui| {
+                    let title = match kind {
+                        ConvertKind::Enable => crate::i18n::tr("Encrypting…"),
+                        ConvertKind::Disable => crate::i18n::tr("Decrypting…"),
+                        ConvertKind::Change => crate::i18n::tr("Changing passphrase…"),
+                    };
+                    widgets::mono_label(ui, title, MUTED);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(crate::i18n::tr(
+                                "Keep this window open until it finishes.",
+                            ))
+                            .size(13.0)
+                            .color(FAINT),
+                        )
+                        .wrap(),
+                    );
+                    if cancelling && !committed {
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr("Cancelling…"))
+                                .size(13.0)
+                                .color(FAINT),
+                        );
+                    } else if !committed
+                        && widgets::button_outline(ui, crate::i18n::tr("Cancel")).clicked()
+                    {
+                        cancel = true;
+                    }
+                });
+                if cancel {
+                    self.gate.cancel_convert();
+                }
+                ctx.request_repaint_after(Duration::from_millis(100));
             }
             State::Locking(_) => {
                 self.neutral_window(&ctx);
@@ -632,6 +1072,9 @@ mod tests {
         jobs: Arc<AtomicU32>,
         cancel: Arc<AtomicBool>,
         request: bool,
+        convert: Option<ConvertRequest>,
+        keys: Option<Keep>,
+        finished: Rc<Cell<Option<(ConvertKind, ConvertOutcome)>>>,
     }
 
     impl Lockable for Fake {
@@ -648,6 +1091,15 @@ mod tests {
         fn take_lock_request(&mut self) -> bool {
             std::mem::take(&mut self.request)
         }
+        fn take_convert_request(&mut self) -> Option<ConvertRequest> {
+            self.convert.take()
+        }
+        fn keys(&self) -> Option<Keep> {
+            self.keys.clone()
+        }
+        fn conversion_finished(&mut self, kind: ConvertKind, outcome: ConvertOutcome) {
+            self.finished.set(Some((kind, outcome)));
+        }
     }
 
     fn fake(vault: bool) -> Fake {
@@ -657,6 +1109,9 @@ mod tests {
             jobs: Arc::new(AtomicU32::new(0)),
             cancel: Arc::new(AtomicBool::new(false)),
             request: false,
+            convert: None,
+            keys: None,
+            finished: Rc::new(Cell::new(None)),
         }
     }
 
@@ -891,5 +1346,246 @@ mod tests {
         assert_eq!(Fail::from_vault(VaultError::WrongPassphrase), Fail::Wrong);
         assert_eq!(Fail::from_vault(VaultError::HeaderOrphan), Fail::Header);
         assert_eq!(Fail::from_vault(VaultError::DbCorrupt), Fail::Other);
+    }
+
+    // ---- conversion state machine -------------------------------------------
+
+    const FAST: KdfParams = KdfParams {
+        m_cost: 19456,
+        t_cost: 2,
+        p_cost: 1,
+    };
+    type Record = Rc<Cell<Option<(ConvertKind, ConvertOutcome)>>>;
+
+    fn req(kind: ConvertKind, pass_: &str, new: Option<&str>) -> ConvertRequest {
+        ConvertRequest {
+            kind,
+            pass: pass(pass_),
+            new_pass: new.map(pass),
+        }
+    }
+
+    fn keys_of(path: &Path) -> Keep {
+        let v = vault_convert::unlock_library(path, PASS).unwrap();
+        (Arc::new(v.db_key()), Arc::new(v.thumb_keys()))
+    }
+
+    fn open_gate(path: &Path, app: Fake) -> Gate<Fake> {
+        Gate::open_plain(path.to_path_buf(), app)
+    }
+
+    /// Poll like frames do until the conversion left `Converting`. Returns
+    /// the keyed-ness of the reopened library, if one was built.
+    fn run_convert(g: &mut Gate<Fake>, rec: &Record) -> Option<bool> {
+        let built = Cell::new(None);
+        for _ in 0..4000 {
+            g.poll_convert(
+                |path, r, keep, cancel, committed| {
+                    let (tx, rx) = channel();
+                    std::thread::spawn(move || {
+                        let _ =
+                            tx.send(convert_blocking(&path, r, keep, &cancel, &committed, FAST));
+                    });
+                    rx
+                },
+                |r| {
+                    built.set(Some(r.opener.key.is_some()));
+                    let mut f = fake(r.opener.key.is_some());
+                    f.finished = rec.clone();
+                    Ok(f)
+                },
+            );
+            if !matches!(g.state, State::Converting(_)) {
+                return built.get();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("conversion did not finish");
+    }
+
+    fn plain_library() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let mut db = Db::open(&path).unwrap();
+        db.add_folder(dir.path()).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn enabling_closes_the_app_converts_on_a_worker_and_reopens_with_the_key() {
+        let (_d, path) = plain_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let began = app.began.clone();
+        let jobs = app.jobs.clone();
+        jobs.store(1, Ordering::SeqCst); // a job still holds the library
+        let mut g = open_gate(&path, app);
+
+        assert!(g.start_convert());
+        assert_eq!(g.state.name(), "converting");
+        assert_eq!(began.get(), 1, "jobs were told to stop");
+        // Nothing converts while a job holds the connection.
+        for _ in 0..3 {
+            g.poll_convert(
+                |_, _, _, _, _| panic!("worker must not start"),
+                |_| Err(String::new()),
+            );
+        }
+        assert_eq!(
+            probe_format(&path).unwrap(),
+            FileFormat::Plain,
+            "still clear while quiescing"
+        );
+        jobs.store(0, Ordering::SeqCst);
+        assert_eq!(run_convert(&mut g, &rec), Some(true));
+        assert_eq!(g.state.name(), "open");
+        assert_eq!(rec.get(), Some((ConvertKind::Enable, ConvertOutcome::Done)));
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Encrypted);
+    }
+
+    #[test]
+    fn wrong_passphrase_on_disable_changes_nothing_and_reopens_without_asking() {
+        let (_d, path) = encrypted_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(true);
+        app.keys = Some(keys_of(&path));
+        app.convert = Some(req(ConvertKind::Disable, "definitely not it", None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert_eq!(
+            run_convert(&mut g, &rec),
+            Some(true),
+            "reopened with the old key"
+        );
+        assert_eq!(
+            rec.get(),
+            Some((ConvertKind::Disable, ConvertOutcome::WrongPassphrase))
+        );
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Encrypted);
+        assert_eq!(g.state.name(), "open");
+    }
+
+    #[test]
+    fn disable_with_the_right_passphrase_reopens_clear() {
+        let (_d, path) = encrypted_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(true);
+        app.keys = Some(keys_of(&path));
+        app.convert = Some(req(ConvertKind::Disable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert_eq!(run_convert(&mut g, &rec), Some(false));
+        assert_eq!(
+            rec.get(),
+            Some((ConvertKind::Disable, ConvertOutcome::Done))
+        );
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Plain);
+    }
+
+    #[test]
+    fn change_passphrase_moves_to_the_new_one() {
+        let (_d, path) = encrypted_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(true);
+        app.keys = Some(keys_of(&path));
+        app.convert = Some(req(
+            ConvertKind::Change,
+            PASS,
+            Some("another long passphrase 2"),
+        ));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert_eq!(run_convert(&mut g, &rec), Some(true));
+        assert_eq!(rec.get(), Some((ConvertKind::Change, ConvertOutcome::Done)));
+        assert_eq!(
+            unlock_blocking(&path, PASS).err(),
+            Some(Fail::Wrong),
+            "the old passphrase is refused"
+        );
+        assert!(unlock_blocking(&path, "another long passphrase 2").is_ok());
+    }
+
+    #[test]
+    fn a_short_new_passphrase_never_reaches_the_engine() {
+        let (_d, path) = plain_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, "short", None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert_eq!(run_convert(&mut g, &rec), Some(false));
+        assert_eq!(
+            rec.get(),
+            Some((ConvertKind::Enable, ConvertOutcome::Failed))
+        );
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Plain);
+    }
+
+    #[test]
+    fn cancelling_before_the_commit_point_changes_nothing() {
+        let (_d, path) = plain_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert!(g.cancel_convert(), "recorded while not committed");
+        assert_eq!(run_convert(&mut g, &rec), Some(false));
+        assert_eq!(
+            rec.get(),
+            Some((ConvertKind::Enable, ConvertOutcome::Cancelled))
+        );
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Plain);
+        assert!(!vault_header(&path).exists());
+    }
+
+    #[test]
+    fn cancel_is_refused_after_the_commit_point() {
+        let (_d, path) = plain_library();
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        if let State::Converting(c) = &g.state {
+            c.committed.store(true, Ordering::SeqCst);
+            assert!(c.committed());
+        }
+        assert!(!g.cancel_convert());
+        if let State::Converting(c) = &g.state {
+            assert!(!c.cancelling(), "the flag was not raised");
+        }
+    }
+
+    #[test]
+    fn only_a_matching_open_app_converts() {
+        let (_d, path) = plain_library();
+        // Enable on an app that is already encrypted: refused, request consumed.
+        let mut app = fake(true);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(!g.start_convert());
+        assert_eq!(g.state.name(), "open");
+        // Disable on a clear app: refused too.
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Disable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(!g.start_convert());
+        // Not open: nothing to convert.
+        let mut g: Gate<Fake> = Gate::locked(path);
+        assert!(!g.start_convert());
+        assert!(!g.cancel_convert());
+        assert_eq!(g.state.name(), "locked");
+    }
+
+    #[test]
+    fn a_request_never_prints_its_secret() {
+        let r = req(
+            ConvertKind::Change,
+            "hunter2 hunter2",
+            Some("another one 12345"),
+        );
+        let shown = format!("{r:?}");
+        assert!(!shown.contains("hunter2") && !shown.contains("another"));
     }
 }
