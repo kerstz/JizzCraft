@@ -28,11 +28,11 @@ manifest, so an Online user is never downgraded by an update.
 `jizzcraft-cli --version` and the first lines of `jizzcraft-cli doctor` say which
 edition runs. `Settings → General` shows it too.
 
-## Branches
+## One branch
 
-`main` is where both editions are developed. `edition/offline` and
-`edition/online` are release channels: a workflow fast-forwards them to each
-released commit. They are not separate code lines, so nothing diverges.
+Both editions are developed and released from `main`. A release builds the two
+tarballs from the same tagged commit; the only difference is the `network`
+Cargo feature. There are no per-edition branches, so nothing can diverge.
 
 ## The browser
 
