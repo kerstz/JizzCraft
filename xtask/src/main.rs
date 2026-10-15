@@ -2,10 +2,11 @@
 //! Everything generated here is synthetic and SFW.
 //! The most explicit thing in the fixtures is a test pattern with ambitions.
 
+mod art;
 mod e2e;
 mod perf;
 
-use image::{Rgb, RgbImage};
+use image::RgbImage;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -40,53 +41,6 @@ fn main() -> ExitCode {
     }
 }
 
-fn hsv(h: f32, s: f32, v: f32) -> Rgb<u8> {
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-    let (r, g, b) = match (h / 60.0) as u32 % 6 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    Rgb([
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    ])
-}
-
-fn gradient(w: u32, h: u32, hue: f32) -> RgbImage {
-    RgbImage::from_fn(w, h, |x, y| {
-        let t = x as f32 / w as f32;
-        let u = y as f32 / h as f32;
-        hsv(
-            (hue + t * 60.0) % 360.0,
-            0.55 + 0.3 * u,
-            0.35 + 0.6 * (1.0 - u),
-        )
-    })
-}
-
-fn pattern(w: u32, h: u32, kind: u32, hue: f32) -> RgbImage {
-    let a = hsv(hue, 0.6, 0.9);
-    let b = hsv((hue + 180.0) % 360.0, 0.4, 0.2);
-    RgbImage::from_fn(w, h, |x, y| {
-        let on = match kind % 3 {
-            0 => ((x / 40) + (y / 40)) % 2 == 0,
-            1 => ((x + y) / 30) % 2 == 0,
-            _ => {
-                let (dx, dy) = (x as f32 - w as f32 / 2.0, y as f32 - h as f32 / 2.0);
-                (((dx * dx + dy * dy).sqrt() / 36.0) as u32).is_multiple_of(2)
-            }
-        };
-        if on { a } else { b }
-    })
-}
-
 fn has_element(name: &str) -> bool {
     Command::new("gst-inspect-1.0")
         .args([name])
@@ -116,19 +70,60 @@ struct VideoSpec {
     secs: u32,
     h264: bool,
     audio: bool,
+    /// Animated artwork rendered at (width, height, variant) and scaled up by
+    /// GStreamer; `None` keeps the plain test pattern (bench clips).
+    art: Option<(Art, u32, u32, u32)>,
+}
+
+type Art = fn(u32, u32, u32, f32) -> RgbImage;
+
+/// Raw RGB frames of an animated artwork, for `rawvideoparse`.
+fn art_frames(path: &Path, v: &VideoSpec) -> Result<Vec<String>, String> {
+    use std::io::Write;
+    let Some((render, w, h, variant)) = v.art else {
+        return Ok(Vec::new());
+    };
+    let f = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut f = std::io::BufWriter::new(f);
+    for i in 0..v.fps * v.secs {
+        let img = render(w, h, variant, i as f32 / v.fps as f32);
+        f.write_all(img.as_raw()).map_err(|e| e.to_string())?;
+    }
+    f.flush().map_err(|e| e.to_string())?;
+    Ok(vec![
+        "filesrc".into(),
+        format!("location={}", path.to_string_lossy()),
+        "!".into(),
+        "rawvideoparse".into(),
+        format!("width={w}"),
+        format!("height={h}"),
+        "format=rgb".into(),
+        format!("framerate={}/1", v.fps),
+        "!".into(),
+        "videoconvert".into(),
+        "!".into(),
+        "videoscale".into(),
+        "!".into(),
+    ])
 }
 
 fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
     let path = out.join(v.file).to_string_lossy().into_owned();
     let frames = v.fps * v.secs;
-    let mut a: Vec<String> = vec![
-        "videotestsrc".into(),
-        format!("num-buffers={frames}"),
-        "pattern=ball".into(),
-        // Craft palette: raised-surface background, accent-blue ball.
-        "background-color=0xff1e2327".into(),
-        "foreground-color=0xff7aa2f7".into(),
-        "!".into(),
+    let raw = out.join(format!(".{}.rgb", v.file));
+    let mut a = art_frames(&raw, v)?;
+    if a.is_empty() {
+        a.extend([
+            "videotestsrc".into(),
+            format!("num-buffers={frames}"),
+            "pattern=ball".into(),
+            // Craft palette: raised-surface background, accent-blue ball.
+            "background-color=0xff1e2327".into(),
+            "foreground-color=0xff7aa2f7".into(),
+            "!".into(),
+        ]);
+    }
+    a.extend([
         format!(
             "video/x-raw,width={},height={},framerate={}/1",
             v.w, v.h, v.fps
@@ -141,7 +136,7 @@ fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
         // getting away with it since the eighties.
         "video/x-raw,format=I420".into(),
         "!".into(),
-    ];
+    ]);
     let (venc, mux, aenc): (&[&str], &str, &[&str]) = if v.h264 {
         (
             &[
@@ -162,6 +157,7 @@ fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
                 "vp8enc",
                 "deadline=1",
                 "cpu-used=8",
+                "target-bitrate=2500000",
                 "keyframe-max-dist=60",
                 "!",
                 "queue",
@@ -197,7 +193,9 @@ fn video(out: &Path, v: &VideoSpec) -> Result<(), String> {
         a.extend(aenc.iter().map(|s| s.to_string()));
         a.extend(["!".into(), "m.".into()]);
     }
-    gst(&a)
+    let res = gst(&a);
+    let _ = std::fs::remove_file(&raw);
+    res
 }
 
 fn fixtures(out: &Path) -> Result<(), String> {
@@ -212,32 +210,29 @@ fn fixtures(out: &Path) -> Result<(), String> {
         (640, 480),
         (1024, 683),
     ];
+    // Six families of procedural artwork, four palettes each, so the grid,
+    // the name filter and the viewer have something to show.
     let mut n = 0;
     for i in 0..24u32 {
-        let (w, h) = sizes[i as usize % sizes.len()];
-        let hue = (i * 37) as f32 % 360.0;
-        let img = if i % 2 == 0 {
-            gradient(w, h, hue)
-        } else {
-            pattern(w, h, i, hue)
-        };
+        let (family, v) = (art::FAMILIES[i as usize % 6], i / 6);
+        let (w, h) = sizes[(i + v) as usize % sizes.len()];
+        let img = art::still(family, w, h, v);
         let ext = ["png", "jpg", "png", "bmp"][i as usize % 4];
         let sub = if i % 5 == 0 {
             "images/été ünï"
         } else {
             "images"
         };
-        let kind = if i % 2 == 0 { "gradient" } else { "pattern" };
-        let path = out.join(sub).join(format!("{kind}-{i:02}.{ext}"));
+        let path = out.join(sub).join(format!("{family}-{:02}.{ext}", v + 1));
         img.save(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         n += 1;
     }
     // A GIF and a WebP for format coverage.
-    let g = pattern(320, 240, 2, 200.0);
-    g.save(out.join("images/circles.gif"))
+    let g = art::rings(320, 240);
+    g.save(out.join("images/rings.gif"))
         .map_err(|e| e.to_string())?;
-    g.save(out.join("images/circles.webp"))
+    g.save(out.join("images/rings.webp"))
         .map_err(|e| e.to_string())?;
     n += 2;
     println!("images: {n}");
@@ -251,6 +246,8 @@ fn fixtures(out: &Path) -> Result<(), String> {
     }
     let h264 = has_element("x264enc") && has_element("mp4mux") && has_element("h264parse");
     let aac = has_element("avenc_aac");
+    // Without rawvideoparse (gst-plugins-bad) the clips fall back to the ball.
+    let raw = has_element("rawvideoparse");
     let mut specs = vec![
         VideoSpec {
             file: "clip-320x240-vp8.webm",
@@ -260,6 +257,17 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 6,
             h264: false,
             audio: has_element("vorbisenc"),
+            art: raw.then_some((art::bokeh as Art, 320, 240, 1)),
+        },
+        VideoSpec {
+            file: "clip-640x360-vp8.webm",
+            w: 640,
+            h: 360,
+            fps: 30,
+            secs: 8,
+            h264: false,
+            audio: has_element("vorbisenc"),
+            art: raw.then_some((art::sunset as Art, 640, 360, 1)),
         },
         VideoSpec {
             file: "clip-720p30-vp8.webm",
@@ -269,6 +277,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 10,
             h264: false,
             audio: has_element("vorbisenc"),
+            art: raw.then_some((art::aurora as Art, 640, 360, 0)),
         },
     ];
     if h264 {
@@ -280,6 +289,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 35,
             h264: true,
             audio: aac,
+            art: None,
         });
         specs.push(VideoSpec {
             file: "bench-1080p60.mp4",
@@ -289,6 +299,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 35,
             h264: true,
             audio: aac,
+            art: None,
         });
         specs.push(VideoSpec {
             file: "bench-4k30.mp4",
@@ -298,6 +309,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 35,
             h264: true,
             audio: aac,
+            art: None,
         });
     } else {
         println!("x264enc not available: encoding bench clips with vp8 instead");
@@ -309,6 +321,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 35,
             h264: false,
             audio: false,
+            art: None,
         });
         specs.push(VideoSpec {
             file: "bench-1080p60.webm",
@@ -318,6 +331,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 35,
             h264: false,
             audio: false,
+            art: None,
         });
         specs.push(VideoSpec {
             file: "bench-4k30.webm",
@@ -327,6 +341,7 @@ fn fixtures(out: &Path) -> Result<(), String> {
             secs: 35,
             h264: false,
             audio: false,
+            art: None,
         });
     }
     for s in &specs {
@@ -410,7 +425,10 @@ fn icons() -> Result<(), String> {
 }
 
 /// README screenshots: rendered by the app itself (`--screenshot`) on the
-/// synthetic fixtures, with a throw-away library and config.
+/// synthetic fixtures, with a throw-away library, config and cache, in English
+/// at the default 1280x800 window (on a tiling compositor, run a nested one,
+/// see `docs/media/make-demo.sh`). The library is imported once, so no shot
+/// carries the import toast.
 fn screenshots() -> Result<(), String> {
     if !Path::new("fixtures/images").exists() {
         return Err("run `cargo xtask fixtures` first".into());
@@ -424,122 +442,170 @@ fn screenshots() -> Result<(), String> {
     }
     let out = PathBuf::from("docs/screenshots");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let tmp = PathBuf::from("target/xtask-screenshots");
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let tmp = std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .join("target/xtask-screenshots");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let home = tmp.join("home");
     let bin = "target/release/jizzcraft";
 
-    struct Shot {
-        file: &'static str,
-        args: Vec<&'static str>,
-        fresh_db: bool,
-        adult: bool,
-    }
-    let shots = [
-        Shot {
-            file: "gate.png",
-            args: vec![],
-            fresh_db: true,
-            adult: false,
-        },
-        Shot {
-            file: "empty.png",
-            args: vec![],
-            fresh_db: true,
-            adult: true,
-        },
-        Shot {
-            file: "library.png",
-            args: vec!["--import", "fixtures"],
-            fresh_db: true,
-            adult: true,
-        },
-        Shot {
-            file: "viewer.png",
-            args: vec![
-                "--import",
-                "fixtures/images",
-                "--tab",
-                "images",
-                "--open",
-                "17",
-            ],
-            fresh_db: true,
-            adult: true,
-        },
-        Shot {
-            file: "player.png",
-            args: vec![
-                "--import",
-                "fixtures/videos",
-                "--tab",
-                "videos",
-                "--open",
-                "1",
-                "--cmd",
-                "player.seek={\"pos\":12}",
-                "--cmd",
-                "markers.add={\"pos_ms\":20000,\"label\":\"scene\"}",
-                "--cmd",
-                "player.loop={\"a_ms\":8000,\"b_ms\":16000}",
-                "--cmd",
-                "player.speed={\"value\":1.5}",
-                "--cmd",
-                "player.preview={\"pos\":22}",
-            ],
-            fresh_db: true,
-            adult: true,
-        },
-        Shot {
-            file: "triage.png",
-            args: vec!["--import", "fixtures/images", "--cmd", "triage.start"],
-            fresh_db: true,
-            adult: true,
-        },
-        Shot {
-            file: "rating.png",
-            args: vec![
-                "--import",
-                "fixtures/images",
-                "--cmd",
-                "view.select.move={\"dx\":2,\"dy\":1}",
-                "--cmd",
-                "media.rate={\"rating\":4}",
-            ],
-            fresh_db: true,
-            adult: true,
-        },
-        Shot {
-            file: "discreet.png",
-            args: vec![
-                "--import",
-                "fixtures/images",
-                "--cmd",
-                "app.discreet.toggle",
-            ],
-            fresh_db: true,
-            adult: true,
-        },
-    ];
-    for s in shots {
-        let db = tmp.join(format!("{}.db", s.file));
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{ext}", db.display()));
+    // The fixture images and the short artwork clips; the bench clips are
+    // plain test patterns and would only fill the grid.
+    let lib = tmp.join("Media");
+    copy_tree(Path::new("fixtures/images"), &lib.join("images"))?;
+    std::fs::create_dir_all(lib.join("videos")).map_err(|e| e.to_string())?;
+    for e in std::fs::read_dir("fixtures/videos").map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("clip-") {
+            std::fs::copy(e.path(), lib.join("videos").join(&name)).map_err(|e| e.to_string())?;
         }
-        let _ = s.fresh_db;
+    }
+
+    // Screenshot runs use the default config (inspector open) and never
+    // read or write one; `--home` keeps the thumbnails out of the user's cache.
+    let run = |db: &Path, adult: bool, args: &[&str], png: &Path| {
         let mut cmd = Command::new(bin);
-        cmd.arg("--db")
-            .arg(&db)
-            .args(&s.args)
+        cmd.arg("--home")
+            .arg(&home)
+            .args(["--lang", "en", "--db"])
+            .arg(db)
+            .args(args)
             .arg("--screenshot")
-            .arg(out.join(s.file));
-        if s.adult {
+            .arg(png);
+        if adult {
             cmd.arg("--assume-adult");
         }
         let st = cmd.status().map_err(|e| e.to_string())?;
-        if !st.success() {
-            return Err(format!("screenshot {} failed", s.file));
+        if st.success() && png.exists() {
+            Ok(())
+        } else {
+            Err(format!("screenshot {} failed", png.display()))
         }
+    };
+    let base = tmp.join("base.db");
+    let lib_s = lib.to_string_lossy().into_owned();
+    run(&base, true, &["--import", &lib_s], &tmp.join("import.png"))?;
+
+    // Library sorted by name: aurora 0-3, bokeh 4-7, clips 8-10, dunes 11-14,
+    // mesh 15-18, ribbons 19-22, rings 23-24, sunset 25-28.
+    const FIRST: &str = r#"view.select.move={"dx":1,"dy":0}"#; // selects item 0
+    const NEXT2: &str = r#"view.select.move={"dx":2,"dy":0}"#;
+    struct Shot {
+        file: &'static str,
+        args: Vec<&'static str>,
+        /// `false`: empty library, never imported.
+        library: bool,
+        adult: bool,
+    }
+    let shot = |file, args: &[&'static str]| Shot {
+        file,
+        args: args.to_vec(),
+        library: true,
+        adult: true,
+    };
+    let shots = [
+        Shot {
+            library: false,
+            adult: false,
+            ..shot("gate.png", &[])
+        },
+        Shot {
+            library: false,
+            ..shot("empty.png", &[])
+        },
+        shot(
+            "library.png",
+            &[
+                "--cmd",
+                FIRST,
+                "--cmd",
+                NEXT2,
+                "--cmd",
+                r#"media.rate={"rating":5}"#,
+                "--cmd",
+                "media.favorite.toggle",
+            ],
+        ),
+        shot("viewer.png", &["--tab", "images", "--open", "23"]),
+        // Without the inspector: the player bar needs the width.
+        shot(
+            "player.png",
+            &[
+                "--cmd",
+                "inspector.toggle",
+                "--tab",
+                "videos",
+                "--open",
+                "2",
+                "--cmd",
+                r#"markers.add={"pos_ms":2500,"label":"glow"}"#,
+                "--cmd",
+                r#"markers.add={"pos_ms":7600,"label":"curtain"}"#,
+                "--cmd",
+                r#"player.loop={"a_ms":2000,"b_ms":8500}"#,
+                "--cmd",
+                r#"player.speed={"value":1.5}"#,
+                "--cmd",
+                r#"player.seek={"pos":5}"#,
+                "--cmd",
+                r#"player.preview={"pos":7.6}"#,
+            ],
+        ),
+        shot(
+            "triage.png",
+            &["--cmd", "triage.start", "--cmd", "triage.keep"],
+        ),
+        shot(
+            "rating.png",
+            &[
+                "--cmd",
+                FIRST,
+                "--cmd",
+                NEXT2,
+                "--cmd",
+                r#"media.rate={"rating":4}"#,
+            ],
+        ),
+        shot(
+            "discreet.png",
+            &[
+                "--cmd",
+                FIRST,
+                "--cmd",
+                NEXT2,
+                "--cmd",
+                "app.discreet.toggle",
+            ],
+        ),
+    ];
+    for s in shots {
+        let db = tmp.join(format!("{}.db", s.file));
+        if s.library {
+            for ext in ["", "-wal", "-shm"] {
+                let from = PathBuf::from(format!("{}{ext}", base.display()));
+                if from.exists() {
+                    std::fs::copy(&from, format!("{}{ext}", db.display()))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        run(&db, s.adult, &s.args, &out.join(s.file))?;
         println!("screenshot: {}", s.file);
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    for e in std::fs::read_dir(from).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let dest = to.join(e.file_name());
+        if e.file_type().map_err(|e| e.to_string())?.is_dir() {
+            copy_tree(&e.path(), &dest)?;
+        } else {
+            std::fs::copy(e.path(), dest).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
