@@ -156,8 +156,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: brew install gstreamer pkgconf
+      # The cached *-sys build outputs hold the Cellar path of the GStreamer
+      # that was installed when they were built; key the cache on it so a
+      # Homebrew bump does not link against a path that no longer exists.
+      - id: gst
+        run: echo "ver=$(brew list --versions gstreamer | tr ' ' '-')" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ steps.gst.outputs.ver }}" }
       - run: ./packaging/macos/build-app.sh
       - uses: actions/upload-artifact@v4
         with: { name: macos, path: "dist/*.zip" }
