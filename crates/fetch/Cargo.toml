@@ -26,7 +26,7 @@ quick-xml.workspace = true
 librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros", "io-util"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"], optional = true }
-aes = { version = "0.8", optional = true }
+aes = { version = "0.9", optional = true }
 cbc = { version = "0.1", features = ["alloc"], optional = true }
 tempfile = { workspace = true, optional = true }
 
