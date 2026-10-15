@@ -178,12 +178,15 @@ impl JizzApp {
         };
         let mut keep = true;
         let mut confirm = false;
+        // Read every frame: discreet mode can switch on while this is open.
+        let discreet = self.discreet();
         egui::Window::new(crate::i18n::tr("REMOVE FOLDER"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new(&name).color(TEXT));
+                let shown = if discreet { "—" } else { name.as_str() };
+                ui.label(egui::RichText::new(shown).color(TEXT));
                 ui.add_space(S);
                 ui.label(
                     egui::RichText::new(crate::i18n::trf(
