@@ -84,6 +84,10 @@ pub enum VaultError {
     HeaderOrphan,
     /// The caller cancelled before the commit point; nothing was changed.
     Cancelled,
+    /// The library was encrypted (the commit point passed) but the key file
+    /// could not be finalised. Nothing was lost: unlock again, which finishes
+    /// the job from `library.vault.new`.
+    FinishFailed,
     /// A test fail point stopped the conversion (never returned otherwise).
     Interrupted,
 }
@@ -108,6 +112,9 @@ impl fmt::Display for VaultError {
             VaultError::VerifyFailed => "the converted library did not verify, nothing was changed",
             VaultError::HeaderOrphan => {
                 "a vault header exists but the library is not encrypted, nothing was changed"
+            }
+            VaultError::FinishFailed => {
+                "the library is encrypted but the key file was not finalised: unlock it again, do not delete library.vault.new"
             }
             VaultError::Interrupted => "conversion interrupted",
             VaultError::Cancelled => "conversion cancelled, nothing was changed",

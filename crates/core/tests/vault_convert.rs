@@ -761,3 +761,161 @@ fn cancel_before_the_commit_point_changes_nothing_and_after_it_is_ignored() {
     assert_eq!(probe_format(&lib.db).unwrap(), FileFormat::Encrypted);
     assert!(leftovers(&lib).is_empty(), "{:?}", leftovers(&lib));
 }
+
+// ---- audit round 2: H1, M3, L7, header parameters ------------------------
+
+fn header_new_path(lib: &Lib) -> PathBuf {
+    let mut p = header_path(&lib.db).into_os_string();
+    p.push(".new");
+    PathBuf::from(p)
+}
+
+#[test]
+fn lost_header_new_after_the_commit_is_rewritten_from_memory() {
+    let lib = library(0);
+    let before = snap(&lib, None);
+    // What a racing `recover` used to do right after the commit rename.
+    let r = enable_with(
+        &lib.db,
+        PASS,
+        FAST,
+        &lib.opts(Some(FailPoint::LoseHeaderNew)),
+    );
+    assert_eq!(r, Ok(()));
+    assert!(header_path(&lib.db).exists());
+    assert!(!header_new_path(&lib).exists());
+    assert_eq!(snap(&lib, Some(PASS)), before);
+    assert_eq!(
+        unlock_library_with(&lib.db, "not the passphrase", &lib.opts(None)).unwrap_err(),
+        VaultError::WrongPassphrase
+    );
+}
+
+#[test]
+fn recover_during_a_stage_is_busy_and_deletes_nothing() {
+    let lib = library(0);
+    let before = snap(&lib, None);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let opts = ConvertOptions {
+        pause: Some((FailPoint::Export, barrier.clone())),
+        ..lib.opts(None)
+    };
+    let db = lib.db.clone();
+    let h = std::thread::spawn(move || enable_with(&db, PASS, FAST, &opts));
+    barrier.wait(); // the stage is past the export: staged files exist
+    let staged: Vec<String> = leftovers(&lib);
+    assert!(
+        staged.iter().any(|n| n.ends_with(".vault.new")),
+        "{staged:?}"
+    );
+    assert!(staged.iter().any(|n| n.ends_with("-tmp")), "{staged:?}");
+    assert_eq!(
+        recover_with(&lib.db, &lib.opts(None)),
+        Err(VaultError::Busy)
+    );
+    assert_eq!(
+        unlock_library_with(&lib.db, PASS, &lib.opts(None)).err(),
+        Some(VaultError::Busy)
+    );
+    assert_eq!(leftovers(&lib), staged, "recover must not delete anything");
+    barrier.wait(); // release the conversion
+    assert_eq!(h.join().unwrap(), Ok(()));
+    assert_eq!(snap(&lib, Some(PASS)), before);
+}
+
+#[test]
+fn an_external_holder_of_the_lock_makes_recover_busy() {
+    let lib = library(0);
+    let lock_path = lib.dir().join("library.lock");
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    f.try_lock().unwrap();
+    std::fs::write(lib.dir().join("library.db.enc-tmp"), b"x").unwrap();
+    assert_eq!(
+        recover_with(&lib.db, &lib.opts(None)),
+        Err(VaultError::Busy)
+    );
+    assert!(lib.dir().join("library.db.enc-tmp").exists());
+    drop(f);
+    assert_eq!(
+        recover_with(&lib.db, &lib.opts(None)),
+        Ok(FileFormat::Plain)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn private_files_and_directories_after_enable() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let lib = library(0);
+    enable_with(&lib.db, PASS, FAST, &lib.opts(None)).unwrap();
+    // A write through a keyed connection creates the -wal file.
+    let key = unlock_library_with(&lib.db, PASS, &lib.opts(None)).unwrap();
+    let db = Db::open_with(&lib.db, Some(&key.db_key())).unwrap();
+    db.conn_for_tests()
+        .execute("UPDATE media SET rating = 2 WHERE id = 1", [])
+        .unwrap();
+    let backup = lib.dir().join("backup-copy.db");
+    jizzcraft_core::portability::backup(&db, &backup).unwrap();
+    let mut wal = lib.db.as_os_str().to_os_string();
+    wal.push("-wal");
+    let wal = PathBuf::from(wal);
+    assert!(wal.exists(), "the test needs a -wal file");
+    for p in [
+        lib.db.clone(),
+        wal,
+        header_path(&lib.db),
+        backup.clone(),
+        header_path(&backup),
+        lib.dir().join("library.lock"),
+    ] {
+        assert_eq!(mode(&p) & 0o077, 0, "{p:?} is {:o}", mode(&p));
+    }
+    // A pre-migration style backup too.
+    let tagged = db.backup_tagged("pre-check").unwrap().unwrap();
+    assert_eq!(mode(&tagged) & 0o077, 0);
+    // The library directory was created by `Db::open`.
+    assert_eq!(mode(lib.dir()) & 0o077, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_old_world_readable_library_is_tightened_on_open() {
+    use std::os::unix::fs::PermissionsExt;
+    let lib = library(0);
+    std::fs::set_permissions(&lib.db, std::fs::Permissions::from_mode(0o644)).unwrap();
+    drop(Db::open(&lib.db).unwrap());
+    let m = std::fs::metadata(&lib.db).unwrap().permissions().mode();
+    assert_eq!(m & 0o077, 0);
+}
+
+#[test]
+fn production_parameters_are_written_in_the_header() {
+    let lib = library(0);
+    // `KdfParams::default()` is what the CLI and the GUI pass.
+    enable_with(&lib.db, PASS, KdfParams::default(), &lib.opts(None)).unwrap();
+    let h = std::fs::read(header_path(&lib.db)).unwrap();
+    let p = jizzcraft_core::vault::validate_header(&h).unwrap();
+    assert_eq!((p.m_cost, p.t_cost, p.p_cost), (65_536, 3, 1));
+    assert_eq!(p, KdfParams::default());
+    // A passphrase change keeps the cost.
+    change_passphrase_with(&lib.db, PASS, NEW_PASS, &lib.opts(None)).unwrap();
+    let h = std::fs::read(header_path(&lib.db)).unwrap();
+    assert_eq!(jizzcraft_core::vault::validate_header(&h).unwrap(), p);
+}
+
+#[test]
+fn default_options_never_point_at_the_global_cache() {
+    let lib = library(0);
+    let d = ConvertOptions::default();
+    let c = d.cache_for(&lib.db);
+    assert_eq!(c, lib.dir().join("cache"));
+    assert_ne!(c, jizzcraft_core::paths::cache_dir());
+    // An explicit directory always wins.
+    assert_eq!(lib.opts(None).cache_for(&lib.db), lib.cache);
+}

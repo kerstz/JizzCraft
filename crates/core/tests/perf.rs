@@ -144,8 +144,11 @@ fn suite(rep: &mut Report, lib: &Path, media: &Path, key: Option<&DbKey>) {
     old_schema_db(&old);
     let opened = if v {
         let pass = "perf-passphrase-0123456789";
-        vault_convert::enable(&old, pass, KdfParams::default()).unwrap();
-        let dk = vault_convert::unlock_library(&old, pass).unwrap().db_key();
+        let o = scratch_opts(&old);
+        vault_convert::enable_with(&old, pass, KdfParams::default(), &o).unwrap();
+        let dk = vault_convert::unlock_library_with(&old, pass, &o)
+            .unwrap()
+            .db_key();
         let t = Instant::now();
         let m = Db::open_with(&old, Some(&dk)).unwrap();
         (t.elapsed().as_secs_f64() * 1000.0, m)
@@ -224,6 +227,15 @@ fn suite(rep: &mut Report, lib: &Path, media: &Path, key: Option<&DbKey>) {
     rep.record(&k("cold_fts_two_words"), ms);
 }
 
+/// Conversion options whose cache directory sits next to the scratch library:
+/// a test must never clean the user's real cache.
+fn scratch_opts(db: &std::path::Path) -> vault_convert::ConvertOptions {
+    vault_convert::ConvertOptions {
+        cache_dir: Some(db.parent().unwrap().join("cache-scratch")),
+        ..Default::default()
+    }
+}
+
 #[test]
 #[ignore = "run through `cargo xtask perf` (release build)"]
 fn budgets_hold_on_10k_library() {
@@ -247,19 +259,20 @@ fn budgets_hold_on_10k_library() {
     std::fs::copy(clear.path().join("library.db"), &cdb).unwrap();
     let pass = "perf-passphrase-0123456789";
     let t = Instant::now();
-    vault_convert::enable(&cdb, pass, KdfParams::default()).unwrap();
+    let o = scratch_opts(&cdb);
+    vault_convert::enable_with(&cdb, pass, KdfParams::default(), &o).unwrap();
     rep.record(
         "vault_convert_enable_10k",
         t.elapsed().as_secs_f64() * 1000.0,
     );
     let t = Instant::now();
-    let key = vault_convert::unlock_library(&cdb, pass).unwrap();
+    let key = vault_convert::unlock_library_with(&cdb, pass, &o).unwrap();
     rep.record("vault_unlock", t.elapsed().as_secs_f64() * 1000.0);
     let db = Db::open_with(&cdb, Some(&key.db_key())).unwrap();
     assert_eq!(db.count(&Filter::default()).unwrap(), N as u64);
     drop(db);
     let t = Instant::now();
-    vault_convert::disable(&cdb, pass).unwrap();
+    vault_convert::disable_with(&cdb, pass, &o).unwrap();
     rep.record(
         "vault_convert_disable_10k",
         t.elapsed().as_secs_f64() * 1000.0,

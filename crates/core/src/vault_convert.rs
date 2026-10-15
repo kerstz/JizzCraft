@@ -56,6 +56,9 @@ pub enum FailPoint {
     Header,
     /// Clear leftovers half removed.
     Cleanup,
+    /// Test action, not a stop: right after the commit, `library.vault.new`
+    /// is deleted (what a racing `recover` used to do).
+    LoseHeaderNew,
 }
 
 /// Where to look for the clear thumbnail caches, plus test hooks.
@@ -72,13 +75,35 @@ pub struct ConvertOptions {
     /// Set by the engine just before the commit point (the rename): from then
     /// on a cancel request has no effect.
     pub committed: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Test synchronisation: when the conversion reaches the point it waits
+    /// on the barrier twice (reached, then released).
+    #[doc(hidden)]
+    pub pause: Option<(FailPoint, std::sync::Arc<std::sync::Barrier>)>,
 }
 
 impl ConvertOptions {
-    fn cache(&self) -> PathBuf {
-        self.cache_dir
-            .clone()
-            .unwrap_or_else(crate::paths::cache_dir)
+    /// Cache directory to clean. An explicit `cache_dir` wins. Otherwise the
+    /// global cache is used only when `db_path` is the library the process
+    /// resolves by itself (default location or `--home`); a library given
+    /// with `--db` / `JIZZCRAFT_DB` gets a `cache` directory next to it, so
+    /// converting it never wipes the cache of another library.
+    fn cache(&self, db_path: &Path) -> PathBuf {
+        if let Some(c) = &self.cache_dir {
+            return c.clone();
+        }
+        let env_db = std::env::var_os("JIZZCRAFT_DB").is_some();
+        let resolved = db_path == crate::paths::db_path();
+        if resolved && (!env_db || crate::paths::home().is_some()) {
+            crate::paths::cache_dir()
+        } else {
+            dir_of(db_path).join("cache")
+        }
+    }
+
+    /// The cache directory these options clean for `db_path`.
+    #[doc(hidden)]
+    pub fn cache_for(&self, db_path: &Path) -> PathBuf {
+        self.cache(db_path)
     }
 
     /// `Cancelled` when the caller asked to stop (only valid before commit).
@@ -101,6 +126,12 @@ impl ConvertOptions {
     }
 
     fn hit(&self, p: FailPoint) -> Res<()> {
+        if let Some((at, b)) = &self.pause
+            && *at == p
+        {
+            b.wait();
+            b.wait();
+        }
         if self.fail_at == Some(p) {
             Err(VaultError::Interrupted)
         } else {
@@ -132,6 +163,35 @@ fn header_new(db: &Path) -> PathBuf {
 /// lets `recover` delete the header of a library that is found clear.
 fn disabling_marker(db: &Path) -> PathBuf {
     suffixed(&header_path(db), ".disabling")
+}
+
+/// Advisory lock `library.lock` next to the library, held for the whole of a
+/// conversion, a passphrase change or a recovery. Another holder (a
+/// conversion in another thread or process) makes the call `Busy`: `recover`
+/// must never delete what a live conversion is about to commit. It is
+/// best effort where the lock file cannot be created (read-only directory):
+/// nothing can be converted there anyway.
+struct ConvertLock(#[allow(dead_code)] Option<fs::File>);
+
+fn lock_path(db: &Path) -> PathBuf {
+    header_path(db).with_extension("lock")
+}
+
+fn acquire(db: &Path) -> Res<ConvertLock> {
+    let f = crate::fsutil::private_file_options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path(db));
+    let Ok(f) = f else {
+        return Ok(ConvertLock(None));
+    };
+    match f.try_lock() {
+        Ok(()) => Ok(ConvertLock(Some(f))),
+        Err(fs::TryLockError::WouldBlock) => Err(VaultError::Busy),
+        Err(fs::TryLockError::Error(_)) => Ok(ConvertLock(None)),
+    }
 }
 
 fn sqlite_err(e: rusqlite::Error) -> VaultError {
@@ -184,7 +244,7 @@ fn remove(p: &Path) {
 fn write_synced(dst: &Path, bytes: &[u8], torn: bool) -> Res<()> {
     use std::io::Write;
     remove(dst);
-    let mut f = fs::OpenOptions::new()
+    let mut f = crate::fsutil::private_file_options()
         .write(true)
         .create_new(true)
         .open(dst)
@@ -381,6 +441,9 @@ fn stage(
 ) -> Res<Staged> {
     opts.check_cancel()?;
     remove(tmp);
+    // The copy is owner-only from its first byte (an empty file is a new
+    // database for ATTACH).
+    crate::fsutil::precreate_private(tmp);
     // CREATE is needed so ATTACH can create the copy (it inherits the flags);
     // the source exists, `require_format` checked.
     let src = open_keyed(
@@ -502,7 +565,8 @@ pub fn enable_with(
     params: KdfParams,
     opts: &ConvertOptions,
 ) -> Res<()> {
-    recover_with(db_path, opts)?;
+    let _lock = acquire(db_path)?;
+    recover_locked(db_path, opts)?;
     require_format(db_path, FileFormat::Plain)?;
     let (dek, header) = crate::vault::create(passphrase, params)?;
     let key = dek.db_key();
@@ -525,13 +589,32 @@ pub fn enable_with(
         }
     }
     opts.hit(FailPoint::Commit)?;
-    // 7. header, then 8. leftovers.
-    crate::fsutil::replace(&header_new(db_path), &header_path(db_path)).map_err(io_err)?;
-    sync_dir(dir_of(db_path));
+    if opts.fail_at == Some(FailPoint::LoseHeaderNew) {
+        remove(&header_new(db_path));
+    }
+    // 7. header, then 8. leftovers. The library is encrypted from here on: the
+    // header bytes are still in memory, so a lost `.vault.new` is rewritten
+    // rather than leaving a database nobody can open.
+    publish_header(db_path, &header)?;
     opts.hit(FailPoint::Header)?;
     remove_backups(db_path, FileFormat::Plain);
     opts.hit(FailPoint::Cleanup)?;
-    remove_clear_caches(&opts.cache());
+    remove_clear_caches(&opts.cache(db_path));
+    Ok(())
+}
+
+/// After the commit: make `library.vault` the header. Falls back to writing
+/// the in-memory bytes again when the staged file cannot be renamed.
+fn publish_header(db_path: &Path, header: &[u8; HEADER_LEN]) -> Res<()> {
+    let (new, dst) = (header_new(db_path), header_path(db_path));
+    if crate::fsutil::replace(&new, &dst).is_ok() {
+        sync_dir(dir_of(db_path));
+        return Ok(());
+    }
+    write_synced(&new, header, false)
+        .and_then(|()| crate::fsutil::replace(&new, &dst).map_err(io_err))
+        .map_err(|_| VaultError::FinishFailed)?;
+    sync_dir(dir_of(db_path));
     Ok(())
 }
 
@@ -542,7 +625,8 @@ pub fn disable(db_path: &Path, passphrase: &str) -> Res<()> {
 }
 
 pub fn disable_with(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> Res<()> {
-    let dek = unlock_library_with(db_path, passphrase, opts)?;
+    let _lock = acquire(db_path)?;
+    let dek = unlock_locked(db_path, passphrase, opts)?;
     let key = dek.db_key();
     let tmp = plain_tmp(db_path);
     let marker = disabling_marker(db_path);
@@ -570,7 +654,7 @@ pub fn disable_with(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> 
     opts.hit(FailPoint::Header)?;
     remove_backups(db_path, FileFormat::Encrypted);
     opts.hit(FailPoint::Cleanup)?;
-    let _ = fs::remove_dir_all(opts.cache().join("vault-thumbs"));
+    let _ = fs::remove_dir_all(opts.cache(db_path).join("vault-thumbs"));
     remove(&marker);
     sync_dir(dir_of(db_path));
     Ok(())
@@ -590,7 +674,8 @@ pub fn change_passphrase_with(
     new: &str,
     opts: &ConvertOptions,
 ) -> Res<()> {
-    let dek = unlock_library_with(db_path, old, opts)?;
+    let _lock = acquire(db_path)?;
+    let dek = unlock_locked(db_path, old, opts)?;
     // The key must really open the library before the envelope changes.
     open_keyed(
         db_path,
@@ -634,6 +719,13 @@ pub fn recover(db_path: &Path) -> Res<FileFormat> {
 }
 
 pub fn recover_with(db_path: &Path, opts: &ConvertOptions) -> Res<FileFormat> {
+    // A conversion in progress owns every leftover: `Busy`, nothing deleted.
+    let _lock = acquire(db_path)?;
+    recover_locked(db_path, opts)
+}
+
+/// `recover_with` for a caller that already holds the `library.lock`.
+fn recover_locked(db_path: &Path, opts: &ConvertOptions) -> Res<FileFormat> {
     let fmt = probe_format(db_path).map_err(|_| VaultError::ConvertFailed)?;
     let (vault, new, marker) = (
         header_path(db_path),
@@ -680,7 +772,7 @@ pub fn recover_with(db_path: &Path, opts: &ConvertOptions) -> Res<FileFormat> {
                 // Interrupted disable after the commit: the encrypted
                 // leftovers are unreadable now, finish the cleanup.
                 remove_backups(db_path, FileFormat::Encrypted);
-                let _ = fs::remove_dir_all(opts.cache().join("vault-thumbs"));
+                let _ = fs::remove_dir_all(opts.cache(db_path).join("vault-thumbs"));
                 remove(&marker);
                 sync_dir(dir_of(db_path));
             }
@@ -706,7 +798,7 @@ pub fn recover_with(db_path: &Path, opts: &ConvertOptions) -> Res<FileFormat> {
                 }
             }
             remove_backups(db_path, FileFormat::Plain);
-            remove_clear_caches(&opts.cache());
+            remove_clear_caches(&opts.cache(db_path));
         }
     }
     Ok(fmt)
@@ -725,7 +817,12 @@ pub fn unlock_library_with(
     passphrase: &str,
     opts: &ConvertOptions,
 ) -> Res<VaultKey> {
-    if recover_with(db_path, opts)? != FileFormat::Encrypted {
+    let _lock = acquire(db_path)?;
+    unlock_locked(db_path, passphrase, opts)
+}
+
+fn unlock_locked(db_path: &Path, passphrase: &str, opts: &ConvertOptions) -> Res<VaultKey> {
+    if recover_locked(db_path, opts)? != FileFormat::Encrypted {
         return Err(VaultError::NotEncrypted);
     }
     let (vault, new) = (header_path(db_path), header_new(db_path));
