@@ -83,7 +83,8 @@ tags, ratings, history and every other piece of data in the database are lost.
   `cache/vault-thumbs/`, with names that are keyed hashes, so neither content
   nor path appears on disk.
 - Changing the passphrase re-wraps the DEK only. A copy of the old header file
-  stays openable with the old passphrase.
+  stays openable with the old passphrase (see "Changing the passphrase does
+  not rotate the key" below).
 - No homemade cryptography: only audited primitives from maintained crates.
 - Secrets never go through argv, environment variables, `--cmd` JSON, logs,
   toasts, errors or crash reports.
@@ -113,6 +114,69 @@ The associated data of the AEAD is the first 39 bytes. Defaults: 64 MiB
 cannot exhaust memory. The passphrase is NFC-normalised and never trimmed.
 A wrong passphrase fails the AEAD check; a good key that SQLCipher still
 refuses means a corrupt database.
+
+### Changing the passphrase does not rotate the key
+
+`change-passphrase` unwraps the data key (DEK) and wraps the **same** DEK under
+the new passphrase with a fresh salt and nonce. The database is not
+re-encrypted. Consequences:
+
+- Anyone who kept a copy of the old `library.vault` (a backup, a cloud-synced
+  folder, a disk image) together with a copy of the database can still open
+  that database with the **old** passphrase, and so can anyone who learned the
+  old passphrase and obtains the old header. The change protects the live
+  header only.
+- The DEK, and therefore the database key and the thumbnail keys, stay the
+  same for the life of the vault.
+- **Remedy when the old passphrase or an old header copy is compromised:**
+  `vault disable` (decrypts to a plain database), then `vault enable` with the
+  new passphrase. That draws a new random DEK. Do it on a machine you trust,
+  and destroy the old header copies and old backups: they remain valid for the
+  old data.
+
+### Concurrency: `library.lock`
+
+`enable`, `disable`, `change-passphrase`, `recover` and `unlock_library` take
+an exclusive advisory lock on `library.lock` (a zero-byte file, mode 0600, next
+to the database; `File::try_lock`, `flock` on Unix and `LockFileEx` on
+Windows) for their whole duration. When another conversion holds it, the call
+returns `Busy` and **deletes nothing**: a `recover` started in parallel with an
+`enable` used to be able to remove `library.vault.new` right after the commit
+rename and leave an encrypted database without its header. The lock is
+released by the operating system when the process dies, so a `kill -9` never
+leaves it held. The file is kept after the operation (empty). Where the lock
+file cannot be created (read-only directory) the operation is not locked, and
+no conversion can happen there anyway.
+
+If the header rename that follows the commit fails, the engine writes the
+header again from the bytes it still holds in memory (`library.vault.new`, then
+rename). Only if that fails too does `enable` return `FinishFailed` ("the
+library is encrypted but the key file was not finalised: unlock it again, do
+not delete library.vault.new"); unlocking then finishes the job. That error is
+never presented as "library intact": the commit point has passed.
+
+### Permissions
+
+On Unix, directories created by the engine (library, data, cache) are 0700 and
+the sensitive files are 0600: `library.db` and its `-wal`, `-shm` and
+`-journal`, `library.vault` and its `.new` / `.disabling` files,
+`library.lock`, the conversion copies, every `pre-*` backup, the `backup` copy
+and its header, JSON exports and crash notes. A library written by an older
+build with mode 0644 is tightened the next time it is opened. Existing
+directories (a folder you pointed `--db` at) are never changed. Windows ACLs
+are those inherited from the user profile; nothing is set explicitly.
+
+### Cache directory of a conversion
+
+`enable` and `disable` delete the clear thumbnail caches (`thumbs/`,
+`previews/`), and `disable` deletes `vault-thumbs/`. The directory comes from
+`ConvertOptions::cache_dir` when the caller sets it. Otherwise the global cache
+(`--home`, or the default location) is used only when the library is the one
+the process resolves by itself; a library opened with `--db` or
+`JIZZCRAFT_DB` uses a `cache/` directory next to it, so converting one
+library never empties the cache of another. Limit: with `--db`, clear
+thumbnails the CLI wrote to the global cache before the conversion stay there
+(use `cache.clear` or `--home`).
 
 ## Step 1: SQLCipher, and what changed
 
@@ -317,7 +381,8 @@ Limits, honestly:
   is wiped from our buffer and the edit state is dropped after each attempt,
   but copies in the toolkit's memory, in the allocator or in swap are not
   tracked (RAM is out of scope, see the threat model).
-- The Argon2 working memory inside the crate is not zeroed.
+- The Argon2 working memory is zeroed on drop (`argon2` built with its
+  `zeroize` feature); the passphrase copies we hold are `Zeroizing`.
 - The state machine and the unlocking logic are unit-tested without a window
   (`crates/ui/src/root.rs`, `crates/ui/tests/vault_open.rs`, and a test that
   builds the real app without a window and drops it, checking that the key is
@@ -409,9 +474,12 @@ Limits, honestly:
 - The passphrase is typed in egui text fields: toolkit caches and RAM are
   outside the guarantees (see the threat model). The conversion buffers are
   `Zeroizing` and moved, never cloned, to the worker.
-- Argon2 working memory inside the crate is not zeroed.
-- Changing the passphrase rewrites the header only; a copy of the old header
-  still opens with the old passphrase (key rotation is a later item).
+- Changing the passphrase rewrites the header only and does **not** rotate the
+  data key: a copy of the old header still opens with the old passphrase.
+  Turn the vault off and on again to rotate (see "Changing the passphrase does
+  not rotate the key").
+- A passphrase is at most `vault::MAX_PASSPHRASE_CHARS` = 1024 characters, in
+  the dialogs and on the command line alike.
 
 ## Step 6: command line
 
@@ -427,11 +495,16 @@ jizzcraft-cli --passphrase-stdin stats < pass.txt  # any command on an encrypted
 
 - **Secret input.** A terminal (no echo, asked twice for a new passphrase),
   `--passphrase-fd N` or `--passphrase-stdin` (read to the end, exactly one
-  trailing `\n` or `\r\n` removed, nothing else trimmed, 4 KiB at most), and
-  `--new-passphrase-fd N` for `enable` and `change-passphrase` (`enable` also
-  accepts the primary source as the new passphrase). There is no argument and
-  no environment variable for a secret. A new passphrase has at least 12
-  characters.
+  trailing `\n` or `\r\n` removed, nothing else trimmed, 1024 characters at
+  most, the limit of the app), and `--new-passphrase-fd N` for `enable` and
+  `change-passphrase` (`enable` also accepts the primary source as the new
+  passphrase). There is no argument and no environment variable for a secret.
+  A new passphrase has at least 12 characters. Descriptors 0, 1 and 2 are
+  refused for both flags (use `--passphrase-stdin`).
+  `--passphrase-stdin` is also refused when stdin is a terminal for `enable`
+  and `change-passphrase` ("use the interactive prompt instead"): it would be
+  one silent entry with no confirmation. The prompt asks twice and asks again
+  (three attempts) when the entries differ or are too short.
 - **`enable`** prints the permanent-loss warning. Without a terminal it needs
   `--i-understand-no-recovery`; on a terminal you type `YES`.
 - **Exit codes.** `3` wrong passphrase; `4` the library is encrypted and no
@@ -460,8 +533,13 @@ thumbnails, prune), then reads every file under the home directory (data,
 cache, state, `-wal`, `-journal`, backups) and every captured stdout and
 stderr for the names, the passphrase and the database key in hex and raw. A
 positive control proves the scanner finds the name in the clear library.
-Documented exceptions: `config/config.json`, and the media file (outside the
-home). Output of commands that print data on purpose (`search`, `tag create`)
+`config/config.json` is scanned too: every key must be on an allow list (the
+fields of the app's `Config`), and none of the synthetic names may appear in
+it. Note that `panic_video` can hold a path the owner chose (a clear text
+setting, out of the vault's scope, see the threat model): it is never a
+library item, but it can name a file. The only exception is the media file
+(outside the home). The test also reads the header and checks the production
+cost parameters, 65536 KiB / 3 / 1. Output of commands that print data on purpose (`search`, `tag create`)
 is only checked for the passphrase and the key.
 
 The test also searches for the data key (DEK) and the two thumbnail sub-keys,
@@ -494,8 +572,10 @@ read-only and can take a while on a big library.
   `vault enable --passphrase-stdin --i-understand-no-recovery`,
   `doctor --report` says `vault: on` and names no item, the same report
   without a passphrase says `vault: locked`, `vault verify` passes and a wrong
-  passphrase fails, no name is left in clear under the home, `vault disable`
-  gives `vault: off`. The passphrase is random per run and goes through
+  passphrase exits with code 3 exactly, no name is left in clear under the
+  home (a `grep` error is told apart from "nothing found"), the header says
+  65536 / 3 / 1, no sensitive file or directory is open to group or others,
+  `vault disable` gives `vault: off`. The passphrase is random per run and goes through
   `printf` into stdin: it is in no argument, no environment variable and no
   log, and the script never prints the output of a command that handles it.
 - **Windows CI.** The `windows` job runs `cargo test --workspace`, which

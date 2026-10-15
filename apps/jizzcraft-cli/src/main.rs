@@ -639,6 +639,9 @@ fn run(cli: &Cli) -> Result<(), Fail> {
     if let Some(h) = cli.home.clone().or_else(paths::home_from_env) {
         paths::set_home(h);
     }
+    // Private (0700) from the first creation: the home and cache directories
+    // hold the library and the thumbnails.
+    let _ = jizzcraft_core::fsutil::create_private_dir_all(&paths::cache_dir());
     jizzcraft_media::prepare_bundled_env();
 
     if matches!(cli.cmd, Cmd::Commands) {

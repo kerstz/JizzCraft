@@ -11,6 +11,26 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault, audit round 2 (issue #13). **Fixed a total-loss race:** a
+  `recover` running in parallel with an `enable` could delete
+  `library.vault.new` just after the commit rename, leaving an encrypted
+  database without header. Conversions, passphrase changes, recovery and
+  unlock now share an advisory lock (`library.lock`): a holder makes `recover`
+  return `Busy` and delete nothing. `enable` rewrites the header from memory if
+  its rename fails after the commit, and a failure past the commit point is a
+  new `VaultError::FinishFailed` instead of "library intact". Sensitive files
+  are 0600 and the data, cache and home directories 0700 on Unix (database,
+  `-wal`, backups, header, exports, crash notes). The command line refuses
+  `--passphrase-stdin` on a terminal for `vault enable` and
+  `change-passphrase` and asks again on a typo; the passphrase limit is 1024
+  characters everywhere (`vault::MAX_PASSPHRASE_CHARS`); descriptors 0, 1 and
+  2 are refused for `--passphrase-fd`. Argon2 memory is zeroed
+  (`argon2/zeroize`). A library opened with `--db` no longer makes a
+  conversion empty the global cache. The canary now scans `config.json` with
+  a key allow list; the smoke test requires exit code 3 for a wrong
+  passphrase, the 65536/3/1 header and the permissions. `docs/vault.md`
+  documents that changing the passphrase does not rotate the data key
+  (remedy: disable, then enable).
 - Encrypted vault, step 8 of issue #13: finishing. `cargo xtask perf` now
   measures the clear and the encrypted 10k library side by side (`vault_`
   budgets), the timed conversion in both directions and one unlock; measured

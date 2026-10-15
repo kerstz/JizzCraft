@@ -71,11 +71,37 @@ rep=$(vcli doctor --report 2>/dev/null </dev/null)
 set -e
 printf '%s\n' "$rep" | grep -q 'vault: locked' || die "locked library is not reported as 'vault: locked'"
 printf '%s\n' "$pw" | vcli --passphrase-stdin vault verify >/dev/null 2>&1 || die "vault verify failed"
-if printf '%s\n' "not-the-passphrase-at-all" | vcli --passphrase-stdin vault verify >/dev/null 2>&1; then
-    die "vault verify accepted a wrong passphrase"
-fi
+# A wrong passphrase is exit code 3 exactly (not just "failed").
+set +e
+printf '%s\n' "not-the-passphrase-at-all" | vcli --passphrase-stdin vault verify >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" = 3 ] || die "wrong passphrase must exit 3, got $rc"
 # The clear name must not be on disk any more (database, wal, backups, caches).
-if grep -rqF "$canary" "$vh" 2>/dev/null; then die "library name found in clear under the home after enable"; fi
+# grep: 0 found, 1 nothing found, anything else is an error of grep itself.
+set +e
+grep -rqF "$canary" "$vh" 2>/dev/null
+rc=$?
+set -e
+case "$rc" in
+    0) die "library name found in clear under the home after enable" ;;
+    1) : ;;
+    *) die "grep failed (exit $rc) while looking for the library name" ;;
+esac
+# Header: Argon2id cost must be the production default, 65536 KiB / 3 / 1.
+hdr=$(find "$vh" -name 'library.vault' -type f | head -n 1)
+[ -n "$hdr" ] || die "no library.vault under the home after enable"
+[ "$(wc -c <"$hdr" | tr -d ' ')" = 111 ] || die "library.vault is not 111 bytes"
+le32() { set -- $(od -An -tx1 -j "$1" -N4 "$hdr"); printf '%s' "$((0x$4$3$2$1))"; }
+[ "$(le32 11)" = 65536 ] || die "header m_cost is not 65536 (got $(le32 11))"
+[ "$(le32 15)" = 3 ] || die "header t_cost is not 3 (got $(le32 15))"
+[ "$(le32 19)" = 1 ] || die "header p_cost is not 1 (got $(le32 19))"
+# Nothing sensitive is group- or world-accessible (database, header, backups).
+perm_bad=$(find "$vh" -type f \( -name 'library.*' -o -name '*.db' -o -name '*.db-wal' -o -name '*.vault' \) \
+    -perm /077 2>/dev/null | wc -l | tr -d ' ')
+[ "$perm_bad" = 0 ] || die "$perm_bad sensitive file(s) are readable by group or others"
+dir_bad=$(find "$vh" -type d -perm /077 2>/dev/null | wc -l | tr -d ' ')
+[ "$dir_bad" = 0 ] || die "$dir_bad directory(ies) under the home are open to group or others"
 printf '%s\n' "$pw" | vcli --passphrase-stdin vault disable >/dev/null 2>&1 || die "vault disable failed"
 vcli vault status 2>/dev/null | grep -q 'vault: off' || die "vault is not off after disable"
 unset pw rep
