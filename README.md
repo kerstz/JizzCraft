@@ -32,19 +32,12 @@ JizzCraft ships as two editions of the same code base. Pick the one that fits ho
 
 A fast native app for your own images and videos: browse, search, rate, tag and play, with your files left exactly where they are. Open source, offline by default, no account, no telemetry. Written in Rust for Linux, Windows and macOS.
 
-![100% Rust](https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square)
-![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-2f7bf5?style=flat-square)
-![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3a3a3a?style=flat-square)
-![Status](https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square)
-
-> "100% Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
-
 > [!WARNING]
 > **18+ only.** JizzCraft is intended for adults managing media they own or are entitled to keep. It ships no media. The default build downloads nothing and opens no network connections. All test data, fixtures and screenshots in this repository are synthetic and safe for work.
 
 The claims below are checked by tests: the default build links no network code, and your files are only ever read.
 
-> "Written in Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer and the library uses SQLite (bundled by `rusqlite`); both are C.
+> "Written in Rust" is about the code in this repository. Video decoding is delegated to the system's GStreamer, and the library uses SQLCipher 4.14 (an SQLite fork) built against a vendored OpenSSL, both through `rusqlite`; all of these are C. SQLCipher is linked, but the library is **not encrypted today**: the encrypted vault is not delivered (see [Privacy guarantees](#privacy-guarantees)).
 
 ## A look around
 
@@ -64,7 +57,7 @@ Screenshots are rendered by the app itself (`cargo xtask screenshots`) from synt
 ## Why JizzCraft
 
 - 🎛️ **Simple by design.** A top bar, a grid, an inspector. Add a folder and see your files; everything is reachable with the mouse and with the keyboard.
-- ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs.
+- ⌨️ **Keyboard first.** Arrow keys move through the grid, `Enter` opens, `/` searches, `1`–`4` switch tabs, `V` triages new imports, `R` opens a random item.
 - ✋ **One hand is enough.** A left-hand preset puts browsing, opening, playback, seeking, volume, favorites, ratings and the boss key around `WASD`. [Details and honest footnote below](#one-hand-is-enough).
 - ⚡ **Native and fast.** egui + wgpu, SQLite, a virtualized grid that never loads the whole library, GStreamer playback paced by the pipeline clock.
 - 🔒 **Private by default.** No account, no telemetry, and the default build makes no network connections: GStreamer's network-capable elements are switched off inside the app, so even a streaming playlist renamed to `.mp4` is refused, not fetched. A boss key, a discreet mode and a screen-share-safe mode are built in.
@@ -88,7 +81,7 @@ Run with no flags in a terminal and it asks which edition you want (Offline is t
 | Arch / CachyOS / Manjaro | `makepkg -si` in `packaging/arch/jizzcraft` (not on the AUR yet) | pull, run it again | `sudo pacman -Rns jizzcraft` |
 | Fedora / openSUSE | build with `packaging/fedora/jizzcraft.spec` (no prebuilt rpm yet) | rebuild | `sudo dnf remove jizzcraft` |
 | Flatpak, AppImage | recipes in `packaging/`, not built or published yet | n/a | n/a |
-| Windows 10/11 | portable zip and installer on the release page (**experimental**, never run on real hardware) | download the new one | uninstaller, or delete the folder |
+| Windows 10/11 | build from source (**experimental**, never run on real hardware; no binary is published) | n/a | delete the folder |
 | macOS | build from source (no bundle is published) | n/a | n/a |
 
 Honest status: the `install.sh` flow, the `.deb` contents, the staging tree, the desktop and AppStream files and `doctor` are exercised on Arch/CachyOS and by the CI job *install*. The Arch, RPM, Flatpak and AppImage recipes are written against the same staging tree (`cargo xtask dist`) but are not built by CI yet; Windows and macOS have never run on a real machine (a build nobody has run is like a letter nobody has opened: probably fine). See [docs/audit-untested.md](docs/audit-untested.md).
@@ -122,8 +115,10 @@ Rust 1.95 or newer (the minimum of egui 0.36; developed with 1.98), GStreamer wi
 
 ### Dependencies (Arch / CachyOS)
 
+Building from source needs a C compiler, `make` and `perl` (SQLCipher's vendored OpenSSL is compiled by your toolchain), hence `base-devel` and `perl`; the Debian list below has them through `build-essential`.
+
 ```sh
-sudo pacman -S --needed rust gstreamer gst-plugins-base gst-plugins-good \
+sudo pacman -S --needed base-devel perl rust gstreamer gst-plugins-base gst-plugins-good \
   gst-plugins-bad gst-plugins-ugly gst-libav vulkan-icd-loader \
   xdg-desktop-portal xdg-desktop-portal-gtk
 # plus a Vulkan driver for your GPU, e.g. vulkan-radeon, vulkan-intel or nvidia-utils
@@ -139,7 +134,7 @@ sudo apt install build-essential pkg-config libgstreamer1.0-dev \
   gstreamer1.0-libav libvulkan1 mesa-vulkan-drivers xdg-desktop-portal xdg-desktop-portal-gtk
 
 # Fedora (untested; H.264 needs RPM Fusion's gstreamer1-libav)
-sudo dnf install gcc pkgconf-pkg-config gstreamer1-devel gstreamer1-plugins-base-devel \
+sudo dnf install gcc make perl pkgconf-pkg-config gstreamer1-devel gstreamer1-plugins-base-devel \
   gstreamer1-plugins-base-tools gstreamer1-plugins-good gstreamer1-plugins-bad-free \
   gstreamer1-plugins-ugly-free vulkan-loader mesa-vulkan-drivers \
   xdg-desktop-portal xdg-desktop-portal-gtk
@@ -191,15 +186,15 @@ Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+
 - Turning the preset on: one click in the `?` window, or the `--cmd` above.
 - Keys on the right side of the keyboard: `?`, `/` and typing a search, `Home` / `End`, `Alt+0` (clear a rating).
 - The folder picker behind `Ctrl+O`: it is the system dialog, not ours.
-- Dragging the timeline and its hover previews, panning a zoomed image, the sidebar (views, folder tree), sorting, shuffle, *Save view*, the *Library* menu, the inspector and the player-bar chips (speed, A-B loop, autoplay).
-- Starting triage (`jizzcraft --cmd triage.start`, no key yet) and seeking during triage (`Shift+←` / `Shift+→`).
+- Dragging the timeline and its hover previews, panning a zoomed image, the sidebar (views, folder tree), sorting, shuffle, the *Library* menu, the inspector and the player-bar chips (speed, A-B loop, autoplay; speed and loop also have keys, listed in `?`).
+- Seeking during triage (`Shift+←` / `Shift+→`).
 - The bindings are checked by tests as a table (no duplicate chords, physical keys on AZERTY) but have not yet been verified by hand; see [Status](#status).
 
 ## Features
 
 ### A library that stays out of your way
 
-Import a folder (native dialog), and JizzCraft indexes images and videos recursively. Symbolic links inside the folder are skipped, your files are only read (never modified, moved or deleted), and a file that went missing stays flagged instead of silently dropped. Search by filename, filter All / Images / Videos / Favorites, sort by name, date added, size, duration, rating or play history, and rescan on demand. No ads, no account, nothing to log into.
+Import a folder (native dialog), and JizzCraft indexes images and videos recursively. Symbolic links inside the folder are skipped, your files are only read (never modified, moved or deleted), and a file that went missing stays flagged instead of silently dropped. Search by file name, tag, category or marker label (full text, accent-insensitive), filter All / Images / Videos / Favorites, sort by name, date added, size, duration, rating or play history, and rescan on demand. No ads, no account, nothing to log into.
 
 ![Empty state](docs/screenshots/empty.png)
 
@@ -229,17 +224,18 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 
 - **Ratings and hiding.** 0–5 stars (`Alt+0`–`Alt+5` or the inspector), and a reversible *hide* that is only a database flag.
 - **Views.** Built-in views (Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers), saved views of any filter (*Save view*), and a folder tree with counts.
-- **Inbox triage.** Review new imports one at a time: keep, hide, favorite, undo. Nothing is ever deleted. Start it with `jizzcraft --cmd triage.start` (no button yet).
+- **Inbox triage.** Review new imports one at a time: keep, hide, favorite, undo. Nothing is ever deleted. Start it with `V` in the library (or `jizzcraft --cmd triage.start`); `→` keeps, `↓` hides, `↑` favorites, `←` undoes, `Esc` leaves.
 - **Moves are recognised.** Once files are fingerprinted (*Library → Fingerprint files*, or `jizzcraft-cli fingerprint`), a renamed or moved file keeps its favorite, rating, history and markers at the next rescan. The fingerprint is the size plus the first and last 64 KiB: it judges a file by its cover and its last page.
-- **Shuffle** (a stable order that never repeats or skips while paging), plus a **random pick** and a **slideshow** available as commands (`view.random`, `view.slideshow`).
+- **Shuffle** (a stable order that never repeats or skips while paging), plus a **random pick** (`R`) and a **slideshow** (`T`, `Space` pauses), also available as commands (`view.random`, `view.slideshow`).
 
 ![Inbox triage](docs/screenshots/triage.png)
 
 ### A player that remembers
 
 - **Resume and history**, with a pause switch, a clear button and a setting that hides history in the UI. History is aggregate (count, last played, resume point), never an event log.
-- **Speed** from the player bar (cycles 0.5×–2×; `player.speed` accepts 0.25×–4×), pitch preserved when `scaletempo` (gst-plugins-good) is installed. **A-B loop** from the player bar. **Markers** show as timeline ticks and in the inspector (click to seek, × to remove). Adding markers, jumping between them and **frame step** are commands for now (`markers.add`, `player.marker.jump`, `player.frame`).
+- **Speed** from the player bar (cycles 0.5×–2×; `-` / `+` step it, `Backspace` resets; `player.speed` accepts 0.25×–4×), pitch preserved when `scaletempo` (gst-plugins-good) is installed. **A-B loop** from the player bar or with `L` (start, end, clear). **Markers** show as timeline ticks and in the inspector (click to seek, × to remove); `K` adds one at the playhead, `N` / `Shift+N` jump to the next / previous. **Frame step** with `,` / `.`. The left-hand preset has its own keys for all of these (see [One hand is enough](#one-hand-is-enough) and `?`).
 - **Subtitles**: a `.srt` or `.vtt` sidecar with the same base name (`clip.fr.srt` for a language) is shown as an overlay. `V` cycles tracks then off, `Alt+←` / `Alt+→` shift timing by 0.1 s, and the `Subs` chip in the bar has the menu. Local files only; the choice is remembered.
+- **Audio tracks** (Online edition, streams that keep several audio tracks apart): an *Audio* chip in the bar switches track and reopens the stream at the same position. *Settings → Audio language* picks the preferred language (default: the interface language). Local files play with the default track of the container.
 - **Scrub previews** on the timeline, decoded on demand into a cache and blurred in discreet and share-safe modes.
 - **Autoplay-next** with a three-second countdown that Esc cancels. Three seconds is enough time to reconsider your choices, or not.
 
@@ -256,11 +252,11 @@ Fit, 100 %, wheel zoom around the cursor, pan, `←`/`→` for previous and next
 | --- | --- |
 | Library | recursive indexing, symlinks skipped, hidden dirs skipped, Unicode names, duplicate imports are no-ops, missing files flagged, permission errors counted not fatal |
 | Grid | virtualized (only visible rows are rendered, only a window of rows is loaded from SQLite), type badge, duration or resolution, favorite star |
-| Search | case-insensitive Unicode filename substring |
+| Search | full text (SQLite FTS5) over file names, tag names, category names and marker labels: case and accent insensitive, every word a prefix, words ANDed. Private tags and categories are not indexed |
 | Images | PNG, JPEG, WebP, GIF, BMP |
 | Videos | whatever your GStreamer can decode (MP4/H.264, WebM/VP8/VP9, MKV, …) |
 | Inspector | name, path, type, size, resolution, duration, codec, added date |
-| Shortcuts | `?` lists every binding (generated from one table). Anywhere: `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Alt+0`–`5` rate. Library: arrows move, `Enter` opens, `Home`/`End`, `/` search, `1`–`4` tabs, `S` favorite. Viewer: `←`/`→`, `0` fit, `1` 100 %, `+`/`-` zoom, `X` hide. Player: `Space`, `←`/`→` ±5 s, `↑`/`↓` volume, `M` mute, `F` fullscreen, `Page Up`/`Page Down` previous/next, `Home` restart. Triage: `→` keep, `↓` hide, `↑` favorite, `←` undo. A left-hand preset keeps everything on `WASD` (see [One hand is enough](#one-hand-is-enough)). Digits and left-hand keys match the physical key, so they work on AZERTY. Shuffle, saved views, speed, A-B loop and autoplay are on-screen controls; random pick, slideshow, triage, frame step and markers have no shortcut yet |
+| Shortcuts | `?` lists every binding (generated from one table). Anywhere: `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Alt+0`–`5` rate. Library: arrows move, `Enter` opens, `Home`/`End`, `/` search, `1`–`4` tabs, `S` favorite. Viewer: `←`/`→`, `0` fit, `1` 100 %, `+`/`-` zoom, `X` hide. Player: `Space`, `←`/`→` ±5 s, `↑`/`↓` volume, `M` mute, `F` fullscreen, `Page Up`/`Page Down` previous/next, `Home` restart. Triage: `→` keep, `↓` hide, `↑` favorite, `←` undo. A left-hand preset keeps everything on `WASD` (see [One hand is enough](#one-hand-is-enough)). Digits and left-hand keys match the physical key, so they work on AZERTY. Also: `V` triage, `R` random pick, `T` slideshow, `Ctrl+S` save view, `P` add to a playlist, tag or category; in the player `K` add marker, `N` / `Shift+N` next / previous marker, `,` / `.` frame step, `-` / `+` speed, `L` A-B loop, `V` subtitles. Shuffle and autoplay are on-screen controls only |
 | Privacy | 18+ age gate, boss key, discreet mode, share-safe mode, history pause/clear/hide, no network connections in the default build |
 
 ## Built for agents
@@ -282,7 +278,7 @@ jizzcraft-cli commands                # list registered commands
 
 # drive the desktop app
 jizzcraft --import ~/Videos --cmd 'view.filter={"tab":"Videos"}' --cmd 'media.open={"index":0}'
-jizzcraft --cmd triage.start          # commands without a button or shortcut yet
+jizzcraft --cmd triage.start          # any registered command, with or without a key
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the conventions agents (and humans) should follow.
@@ -335,7 +331,7 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 
 **"missing GStreamer plugin: …"** — install the plugin sets listed above (`gst-plugins-good/bad/ugly`, `gst-libav`). The error names what is missing. Check with `gst-inspect-1.0 avdec_h264`.
 
-**"refused: this file refers to network media…"** — the file is a streaming playlist (HLS, DASH, Smooth Streaming) or SDP description, not a video. JizzCraft does not follow the URLs inside it, by design; installing plugins will not change that, and neither will asking nicely.
+**"refused: this file refers to network media…"** — the file is a streaming playlist (HLS, DASH, Smooth Streaming) or SDP description, not a video. The Offline edition does not follow the URLs inside it, by design (the Online edition opens streams you give it explicitly, see [docs/streaming.md](docs/streaming.md)); installing plugins will not change that, and neither will asking nicely.
 
 **Black window or wgpu error at startup** — check your Vulkan driver (`vulkaninfo` should list your GPU) and install the right `vulkan-*` package for your hardware. Vulkan is the only backend that has been tested. A black window is discreet, but not the kind of discreet we were going for.
 
@@ -354,9 +350,9 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 >
 > **Only checked through commands and screenshots, not by hand**: mouse wheel zoom, drag-panning, timeline dragging, keyboard shortcuts, fullscreen, boss-key minimize behaviour under different compositors, the native folder dialog, the sidebar, triage, the player bar chips, autoplay-next, slideshow.
 >
-> **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); no subtitles, no audio-track selection; no file watching (rescan is manual); no way yet to remove a folder from the library in the UI; triage, random pick, slideshow, frame step and adding markers have no button or shortcut yet (`--cmd` only); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only (Windows and macOS builds exist but have not been run).
+> **Known gaps**: CPU use on high-resolution video is several times `gst-play-1.0` (CPU colour conversion); subtitles are local `.srt` / `.vtt` sidecars only (none embedded in the container, none for streams); no file watching (rescan is manual); fingerprints are computed on request, not automatically; AVIF images are not decoded; GStreamer parses every imported video for thumbnails without a sandbox; tested on one Linux machine only (Windows and macOS builds exist but have not been run).
 >
-> **Streaming scope (Online edition only, experimental)**: direct video addresses, HLS (on demand and live) and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Not supported: live DASH, separate audio and video tracks, DRM, subtitles, saving a stream to disk as a feature.
+> **Streaming scope (Online edition only, experimental)**: direct video addresses, HLS (on demand and live) and DASH on demand, through sources and resolvers you configure yourself (see [`docs/streaming.md`](docs/streaming.md)). Live HLS and separate fragmented-MP4 audio and video tracks are supported. Not supported: live DASH, low-latency HLS, TS or WebM audio tracks, live HLS with a separate audio group, DRM, subtitles for streams, saving a stream to disk as a feature.
 
 ## Privacy guarantees
 
@@ -368,7 +364,7 @@ See [`docs/organise.md`](docs/organise.md) for how they behave when files move, 
 - Ratings, hidden flags, history and markers live only in the library database. No sidecar files are written, and exports leave out names and history unless you ask.
 - Watch history can be paused, cleared (and truncated out of the WAL file) or hidden in the UI; the boss key hides it too.
 - Fingerprints read 128 KiB per file and only for files that carry your data by default. Integrity checks and checksums are opt-in and read-only.
-- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are **not encrypted** today. An encrypted vault is in progress (issue #13, [`docs/vault.md`](docs/vault.md)) and is not delivered yet; until it ships, use full-disk encryption if the library must be protected.
+- The 18+ age gate, discreet mode and share-safe mode are conveniences, not security boundaries: the library database and cache are **not encrypted** today. An encrypted vault is in progress (issue #13, [`docs/vault.md`](docs/vault.md)): the key wrapping, the conversion engine and crash recovery are written and tested, but nothing in the app calls them, so it is **not delivered**; until it ships, use full-disk encryption if the library must be protected.
 
 ## The Online edition
 
@@ -385,7 +381,7 @@ cargo build --release -p jizzcraft -p jizzcraft-cli --features online
 | Tool | What it does |
 | --- | --- |
 | **One box** | `Ctrl+J`: paste a video link, a `.m3u8`/`.mpd`, a page address, a magnet, a `.torrent`, a `.json` source, or search words. It picks the right path. |
-| **Streaming** | Seekable HTTP (Range), HLS and DASH on demand (AES-128, quality chip, buffered band), nothing written to disk. Live streams and separate audio/video tracks are refused with a plain sentence. |
+| **Streaming** | Seekable HTTP (Range), HLS and DASH on demand (AES-128, quality chip, buffered band), nothing written to disk. Live HLS and separate fragmented-MP4 audio/video tracks play; live DASH, low-latency HLS, TS or WebM audio, a live HLS stream with a separate audio group and DRM are refused with a plain sentence. |
 | **Play videos from web pages** | Paste a page address; a tool **you** installed (a yt-dlp-class program) turns it into a video address. *Settings → Web pages* finds the tool and adds it in one click. Fixed sentences for the usual failures (age or sign-in required on the site, region, rate limit, tool out of date). It never bypasses a site's age check, sign-in, region block or DRM, and never reads another browser's cookies. |
 | **Send to JizzCraft** | `jizzcraft --send URL` hands an address to the running app, which shows a confirmation card; it never plays by itself. |
 | **Torrents** | Play while it downloads, magnet probe with a peer counter, resume policy, disk-space check, optional seeding rules, optional binding to a VPN interface. |
@@ -410,9 +406,8 @@ What it exposes: your IP is visible to the indexers you configure, to BitTorrent
 
 ## Roadmap
 
-- Reachability: buttons and shortcuts for what is only a command today (triage, random pick, slideshow, frame step, markers).
-- Player and library: YUV to RGB in a shader, subtitles and audio tracks, tags and full-text search, multi-select, encrypted vault (in progress, not delivered), sandboxed decoding.
-- Distribution and validation: Flatpak, AppImage, and real-hardware runs on Windows and macOS.
+- Player and library: YUV to RGB in a shader, embedded subtitles and an audio-track picker for local files, perceptual-hash duplicates, file watching, encrypted vault (in progress, not delivered: the conversion engine exists but nothing in the app calls it), sandboxed decoding.
+- Distribution and validation: AUR packages, Flatpak, AppImage, and real-hardware runs on Windows and macOS.
 
 The full list, including what is explicitly not planned, is in [`ROADMAP.md`](ROADMAP.md).
 
