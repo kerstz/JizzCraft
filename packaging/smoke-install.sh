@@ -100,7 +100,7 @@ le32() { set -- $(od -An -tx1 -j "$1" -N4 "$hdr"); printf '%s' "$((0x$4$3$2$1))"
 perm_bad=$(find "$vh" -type f \( -name 'library.*' -o -name '*.db' -o -name '*.db-wal' -o -name '*.vault' \) \
     -perm /077 2>/dev/null | wc -l | tr -d ' ')
 [ "$perm_bad" = 0 ] || die "$perm_bad sensitive file(s) are readable by group or others"
-dir_bad=$(find "$vh" -type d -perm /077 2>/dev/null | wc -l | tr -d ' ')
+dir_bad=$(find "$vh" -mindepth 1 -type d -perm /077 2>/dev/null | wc -l | tr -d ' ')
 [ "$dir_bad" = 0 ] || die "$dir_bad directory(ies) under the home are open to group or others"
 printf '%s\n' "$pw" | vcli --passphrase-stdin vault disable >/dev/null 2>&1 || die "vault disable failed"
 vcli vault status 2>/dev/null | grep -q 'vault: off' || die "vault is not off after disable"

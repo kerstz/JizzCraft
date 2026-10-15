@@ -12,6 +12,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::OnceLock;
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -70,14 +71,34 @@ impl Lang {
     }
 }
 
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 
+// Unit tests run on parallel threads and several build a whole app, which
+// sets the language: keep it per thread there so they cannot race.
+#[cfg(test)]
+thread_local! {
+    static CURRENT_TL: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(not(test))]
 pub fn set(l: Lang) {
     CURRENT.store(l as u8, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+pub fn set(l: Lang) {
+    CURRENT_TL.with(|c| c.set(l as u8));
+}
+
+#[cfg(not(test))]
 pub fn current() -> Lang {
     ALL[CURRENT.load(Ordering::Relaxed) as usize % ALL.len()]
+}
+
+#[cfg(test)]
+pub fn current() -> Lang {
+    ALL[CURRENT_TL.with(|c| c.get()) as usize % ALL.len()]
 }
 
 /// The first supported language among the usual locale variables.

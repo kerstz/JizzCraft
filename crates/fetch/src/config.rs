@@ -266,7 +266,7 @@ impl FetchConfig {
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         use std::io::Write;
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            jizzcraft_core::fsutil::create_private_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
         let mut opts = std::fs::OpenOptions::new();

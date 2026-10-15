@@ -69,7 +69,7 @@ const WANTED: &[(&str, &str, &str, &[&str])] = &[
 ];
 
 fn dir_writable(p: &std::path::Path) -> bool {
-    if std::fs::create_dir_all(p).is_err() {
+    if jizzcraft_core::fsutil::create_private_dir_all(p).is_err() {
         return false;
     }
     let probe = p.join(".jizzcraft-doctor");
