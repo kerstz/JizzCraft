@@ -125,9 +125,16 @@ enum JobMsg {
     /// The start-up check found something that will stop files from playing.
     Codecs,
     /// The start-up integrity check failed.
-    DbProblem,
+    DbProblem {
+        backup_kept: bool,
+    },
     /// The export dialog of a playlist closed (None: cancelled).
     OrgExport(i64, Option<PathBuf>),
+    /// A folder removal job ended: counts only, or an error.
+    Removed {
+        root: PathBuf,
+        result: Result<jizzcraft_core::RemoveReport, String>,
+    },
     /// A maintenance job finished: one-line summary or error.
     Done {
         label: &'static str,
@@ -247,6 +254,8 @@ pub struct JizzApp {
     save_view: Option<String>,
     /// Folder waiting for the remove-from-library confirmation: `(root, name, items)`.
     remove_folder: Option<(PathBuf, String, u64)>,
+    /// Cancel flag of the running folder-removal job, if any.
+    remove_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     sidebar: Option<sidebar::SidebarCache>,
     /// Playlists, categories, tags: marks, picker, undo (in memory only).
     org: organize::OrgState,
@@ -353,11 +362,17 @@ impl JizzApp {
             // and the cache trimmed at most once a day.
             let (tx, ctx, path) = (tx.clone(), cc.egui_ctx.clone(), db_path.clone());
             std::thread::spawn(move || {
-                let bad = Db::open_read_only(&path)
-                    .map(|d| d.quick_check().is_err())
-                    .unwrap_or(false);
-                if bad {
-                    let _ = tx.send(JobMsg::DbProblem);
+                // On a failed check, copy the library aside (same mechanism
+                // as the pre-remove backup) and say so only if it worked.
+                let kept = Db::open_read_only(&path).ok().and_then(|d| {
+                    d.quick_check().is_err().then(|| {
+                        d.backup_tagged("pre-check")
+                            .map(|b| b.is_some())
+                            .unwrap_or(false)
+                    })
+                });
+                if let Some(backup_kept) = kept {
+                    let _ = tx.send(JobMsg::DbProblem { backup_kept });
                     ctx.request_repaint();
                 }
             });
@@ -437,6 +452,7 @@ impl JizzApp {
             triage: None,
             save_view: None,
             remove_folder: None,
+            remove_cancel: None,
             sidebar: None,
             org: organize::OrgState::default(),
             tree_expanded: HashSet::new(),
@@ -993,6 +1009,51 @@ impl JizzApp {
         }
     }
 
+    /// End of a folder-removal job: reset the view, one toast, counts only.
+    fn finish_remove(
+        &mut self,
+        root: &std::path::Path,
+        result: Result<jizzcraft_core::RemoveReport, String>,
+    ) {
+        match result {
+            Ok(r) => {
+                // A view that pointed inside the removed root would now be empty.
+                if self
+                    .extra
+                    .as_ref()
+                    .and_then(|f| f.dir.as_ref())
+                    .is_some_and(|d| d.starts_with(root))
+                {
+                    self.extra = None;
+                    self.view_label.clear();
+                }
+                self.selected = None;
+                self.selected_index = None;
+                self.refresh();
+                let n = r.removed.to_string();
+                let text = if r.cancelled {
+                    crate::i18n::trf(
+                        "Folder removal cancelled after {} items. A backup was kept.",
+                        &[&n],
+                    )
+                } else {
+                    crate::i18n::trf(
+                        "Folder removed from the library: {} items. Files on disk were not deleted.",
+                        &[&n],
+                    )
+                };
+                self.toast(ToastKind::Info, text);
+            }
+            Err(_) => {
+                self.refresh();
+                self.toast(
+                    ToastKind::Error,
+                    crate::i18n::tr("Removing the folder failed. Files on disk were not touched."),
+                );
+            }
+        }
+    }
+
     fn start_scan(&mut self, dir: Option<PathBuf>) {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
@@ -1060,10 +1121,23 @@ impl JizzApp {
                         }
                     }
                 }
-                JobMsg::DbProblem => self.toast(
+                JobMsg::DbProblem { backup_kept } => self.toast(
                     ToastKind::Error,
-                    "The library database reported a problem. A backup was kept.",
+                    if backup_kept {
+                        crate::i18n::tr(
+                            "The library database reported a problem. A backup was kept.",
+                        )
+                    } else {
+                        crate::i18n::tr(
+                            "The library database reported a problem. No backup could be made.",
+                        )
+                    },
                 ),
+                JobMsg::Removed { root, result } => {
+                    self.busy = self.busy.saturating_sub(1);
+                    self.remove_cancel = None;
+                    self.finish_remove(&root, result);
+                }
                 JobMsg::Done { label, result } => {
                     self.busy = self.busy.saturating_sub(1);
                     match result {
@@ -2365,10 +2439,10 @@ impl JizzApp {
                     );
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(
+                            egui::RichText::new(crate::i18n::tr(
                                 "This application is for adults only and manages local media. \
                                  Nothing leaves this machine. By continuing you confirm that you are at least 18 years old.",
-                            )
+                            ))
                             .size(13.0)
                             .color(MUTED),
                         )
@@ -2643,29 +2717,39 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 ));
             }
             let root = PathBuf::from(path);
-            let removed = app
-                .db
-                .remove_folder(&root)?
-                .ok_or_else(|| jizzcraft_core::Error::NotFound("imported folder".into()))?;
-            // A view that pointed inside the removed root would now be empty.
-            if app
-                .extra
-                .as_ref()
-                .and_then(|f| f.dir.as_ref())
-                .is_some_and(|d| d.starts_with(&root))
-            {
-                app.extra = None;
-                app.view_label.clear();
+            if !app.db.folders()?.iter().any(|(_, p)| *p == root) {
+                return Err(jizzcraft_core::Error::NotFound("imported folder".into()));
             }
-            app.selected = None;
-            app.selected_index = None;
-            app.refresh();
-            let text = crate::i18n::trf(
-                "Folder removed from the library: {} items. Files on disk were not deleted.",
-                &[&removed.to_string()],
+            // Backup, chunked delete and FTS triggers run off the UI thread
+            // with a private connection; one toast with counts at the end.
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            app.remove_cancel = Some(cancel.clone());
+            app.busy += 1;
+            let (tx, ctx, db_path, r) = (
+                app.tx.clone(),
+                app.ctx.clone(),
+                app.db_path.clone(),
+                root.clone(),
             );
-            app.toast(ToastKind::Info, text);
-            Ok(json!({ "removed_media": removed }))
+            std::thread::spawn(move || {
+                let result = Db::open(&db_path)
+                    .and_then(|mut db| db.remove_folder_safely(&r, &cancel, &mut |_| {}))
+                    .map_err(|e| e.to_string())
+                    .and_then(|o| o.ok_or_else(|| "not found".to_owned()));
+                let _ = tx.send(JobMsg::Removed { root: r, result });
+                ctx.request_repaint();
+            });
+            Ok(json!({ "started": true }))
+        },
+    );
+    reg.register(
+        "library.remove.cancel",
+        "Stop the folder removal in progress (rows already dropped stay dropped; a backup was kept)",
+        |app, _| {
+            if let Some(c) = &app.remove_cancel {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(json!({ "cancelling": app.remove_cancel.is_some() }))
         },
     );
     reg.register(

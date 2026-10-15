@@ -48,6 +48,14 @@ impl JizzApp {
             "library.rescan",
             json!({}),
         );
+        if self.remove_cancel.is_some() {
+            item(
+                ui,
+                crate::i18n::tr("Cancel folder removal"),
+                "library.remove.cancel",
+                json!({}),
+            );
+        }
         ui.separator();
         item(
             ui,
