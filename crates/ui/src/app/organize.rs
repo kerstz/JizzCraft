@@ -1379,7 +1379,17 @@ impl JizzApp {
 
     // ---- export --------------------------------------------------------------
 
-    fn org_export(&mut self, id: i64) {
+    pub(super) fn org_export(&mut self, id: i64) {
+        // An `.m3u8` lists media paths in clear: an encrypted library asks
+        // first, like the JSON export does.
+        if self.opener.key.is_some() {
+            self.vault_ui.m3u_warn = Some(id);
+            return;
+        }
+        self.org_export_confirmed(id);
+    }
+
+    pub(super) fn org_export_confirmed(&mut self, id: i64) {
         let name = if self.org_discreet() {
             "playlist.m3u8".to_owned()
         } else {

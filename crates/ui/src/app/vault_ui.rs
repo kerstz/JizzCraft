@@ -223,6 +223,9 @@ pub(super) struct VaultUi {
     pub(super) dialog: Option<Dialog>,
     /// `meta.export` arguments waiting for the user to accept a clear file.
     pub(super) export_warn: Option<Value>,
+    /// Playlist whose `.m3u8` export waits for the user to accept that the
+    /// file lists media paths in clear.
+    pub(super) m3u_warn: Option<i64>,
 }
 
 impl VaultUi {
@@ -286,6 +289,48 @@ impl JizzApp {
     pub(super) fn vault_windows(&mut self, ctx: &egui::Context) {
         self.vault_dialog(ctx);
         self.export_warning_window(ctx);
+        self.m3u_warning_window(ctx);
+    }
+
+    fn m3u_warning_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.vault_ui.m3u_warn else {
+            return;
+        };
+        let mut open = true;
+        let mut proceed = false;
+        let mut cancel = false;
+        egui::Window::new(tr("Playlist file in clear"))
+            .open(&mut open)
+            .id(egui::Id::new("vault-m3u-warning"))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::Label::new(tr(
+                        "This M3U8 file is not encrypted, even though your library is. \
+                         It lists the paths of your files in clear. Anyone who can read \
+                         the file can read them.",
+                    ))
+                    .wrap(),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if widgets::button_solid(ui, tr("Export anyway")).clicked() {
+                        proceed = true;
+                    }
+                    if widgets::button_outline(ui, tr("Cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if proceed {
+            self.vault_ui.m3u_warn = None;
+            self.org_export_confirmed(id);
+        } else if cancel || !open {
+            self.vault_ui.m3u_warn = None;
+        }
     }
 
     fn vault_dialog(&mut self, ctx: &egui::Context) {

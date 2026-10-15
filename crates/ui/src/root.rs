@@ -513,6 +513,21 @@ impl<A> State<A> {
 pub struct Gate<A> {
     pub state: State<A>,
     db_path: PathBuf,
+    /// The user asked to close the window during a conversion and has not
+    /// answered the warning yet.
+    close_asked: bool,
+    /// The user accepted to interrupt the conversion: the next close goes
+    /// through.
+    close_confirmed: bool,
+}
+
+/// What to do with a window close request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseVerdict {
+    /// Let the window close.
+    Allow,
+    /// Keep the window open (a conversion is running and the warning is up).
+    Hold,
 }
 
 impl<A: Lockable> Gate<A> {
@@ -520,6 +535,8 @@ impl<A: Lockable> Gate<A> {
         Gate {
             state: State::Locked(LockScreen::new()),
             db_path,
+            close_asked: false,
+            close_confirmed: false,
         }
     }
 
@@ -527,6 +544,8 @@ impl<A: Lockable> Gate<A> {
         Gate {
             state: State::Failed(why),
             db_path,
+            close_asked: false,
+            close_confirmed: false,
         }
     }
 
@@ -535,6 +554,8 @@ impl<A: Lockable> Gate<A> {
         Gate {
             state: State::Open(Box::new(app)),
             db_path,
+            close_asked: false,
+            close_confirmed: false,
         }
     }
 
@@ -646,6 +667,36 @@ impl<A: Lockable> Gate<A> {
             });
         }
         true
+    }
+
+    /// A conversion owns the library right now (closing the app, running, or
+    /// finishing). Closing the process then interrupts it.
+    pub fn converting(&self) -> bool {
+        matches!(self.state, State::Converting(_))
+    }
+
+    /// The window was asked to close. During a conversion the close is held
+    /// and a warning is raised; once the user confirmed it, it goes through.
+    /// The engine is crash-safe: an interrupted conversion is finished or
+    /// undone by `recover` at the next start, and the user starts it again.
+    pub fn on_close_request(&mut self) -> CloseVerdict {
+        if !self.converting() || self.close_confirmed {
+            return CloseVerdict::Allow;
+        }
+        self.close_asked = true;
+        CloseVerdict::Hold
+    }
+
+    /// The close warning has to be shown.
+    pub fn close_warning(&self) -> bool {
+        self.close_asked && self.converting()
+    }
+
+    /// The user answered the close warning. `close` true: interrupt the
+    /// conversion, the caller then asks the window to close again.
+    pub fn answer_close(&mut self, close: bool) {
+        self.close_asked = false;
+        self.close_confirmed = close;
     }
 
     /// Ask the running conversion to stop. Only possible before its commit
@@ -855,6 +906,13 @@ impl eframe::App for Root {
         let ctx = ui.ctx().clone();
         let now = Instant::now();
 
+        // A close during a conversion is held until the user confirms.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.gate.on_close_request() == CloseVerdict::Hold
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+
         // Transitions first, so this frame already draws the new state.
         let ctx2 = ctx.clone();
         let (opts, rs) = (&self.opts, &self.render_state);
@@ -941,6 +999,43 @@ impl eframe::App for Root {
                 });
                 if cancel {
                     self.gate.cancel_convert();
+                }
+                if self.gate.close_warning() {
+                    let mut answer = None;
+                    egui::Window::new(crate::i18n::tr("Conversion in progress"))
+                        .id(egui::Id::new("vault-close-warning"))
+                        .collapsible(false)
+                        .resizable(false)
+                        .default_width(420.0)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .show(&ctx, |ui| {
+                            ui.add(
+                                egui::Label::new(crate::i18n::tr(
+                                    "A conversion is in progress. Closing interrupts the \
+                                     operation. This is safe, but you will have to start it again.",
+                                ))
+                                .wrap(),
+                            );
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if widgets::button_solid(ui, crate::i18n::tr("Close anyway"))
+                                    .clicked()
+                                {
+                                    answer = Some(true);
+                                }
+                                if widgets::button_outline(ui, crate::i18n::tr("Keep waiting"))
+                                    .clicked()
+                                {
+                                    answer = Some(false);
+                                }
+                            });
+                        });
+                    if let Some(close) = answer {
+                        self.gate.answer_close(close);
+                        if close {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
                 }
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
@@ -1555,6 +1650,48 @@ mod tests {
         if let State::Converting(c) = &g.state {
             assert!(!c.cancelling(), "the flag was not raised");
         }
+    }
+
+    #[test]
+    fn closing_during_a_conversion_is_held_until_confirmed() {
+        let (_d, path) = plain_library();
+        // Not converting: the close goes through, no warning.
+        let mut g = open_gate(&path, fake(false));
+        assert_eq!(g.on_close_request(), CloseVerdict::Allow);
+        assert!(!g.close_warning());
+
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert!(g.converting());
+        // Held, and the warning is up.
+        assert_eq!(g.on_close_request(), CloseVerdict::Hold);
+        assert!(g.close_warning());
+        // Kept waiting: the warning goes, the next close asks again.
+        g.answer_close(false);
+        assert!(!g.close_warning());
+        assert_eq!(g.on_close_request(), CloseVerdict::Hold);
+        // Confirmed: the close goes through.
+        g.answer_close(true);
+        assert_eq!(g.on_close_request(), CloseVerdict::Allow);
+        // Nothing was written to the disk by the question itself.
+        assert_eq!(probe_format(&path).unwrap(), FileFormat::Plain);
+    }
+
+    #[test]
+    fn warning_goes_away_when_the_conversion_ends() {
+        let (_d, path) = plain_library();
+        let rec: Record = Rc::new(Cell::new(None));
+        let mut app = fake(false);
+        app.convert = Some(req(ConvertKind::Enable, PASS, None));
+        let mut g = open_gate(&path, app);
+        assert!(g.start_convert());
+        assert_eq!(g.on_close_request(), CloseVerdict::Hold);
+        assert_eq!(run_convert(&mut g, &rec), Some(true));
+        assert!(!g.converting());
+        assert!(!g.close_warning(), "no stale warning on the open library");
+        assert_eq!(g.on_close_request(), CloseVerdict::Allow);
     }
 
     #[test]

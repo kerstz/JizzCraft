@@ -247,6 +247,27 @@ mod tests {
     }
 
     #[test]
+    fn vault_warnings_are_translated_in_every_language() {
+        let sentences = [
+            "Conversion in progress",
+            "A conversion is in progress. Closing interrupts the operation. This is safe, but you will have to start it again.",
+            "Close anyway",
+            "Keep waiting",
+            "Playlist file in clear",
+            "This M3U8 file is not encrypted, even though your library is. It lists the paths of your files in clear. Anyone who can read the file can read them.",
+        ];
+        for l in ALL.into_iter().filter(|l| *l != Lang::En) {
+            for s in sentences {
+                assert!(
+                    l.table().iter().any(|(en, t)| *en == s && !t.is_empty()),
+                    "{}: {s}",
+                    l.code()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn catalogs_keep_their_placeholders_and_have_no_duplicates() {
         for l in ALL {
             let mut seen = std::collections::HashSet::new();

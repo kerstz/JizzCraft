@@ -4399,6 +4399,16 @@ mod tests {
     }
 
     #[test]
+    fn m3u8_export_asks_first_on_an_encrypted_library_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _p) = encrypted_app(dir.path());
+        assert!(app.vault_ui.m3u_warn.is_none());
+        app.org_export(7);
+        assert_eq!(app.vault_ui.m3u_warn, Some(7), "warned, no dialog opened");
+        assert!(app.jobs_finished());
+    }
+
+    #[test]
     fn clear_export_asks_first_on_an_encrypted_library() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _p) = encrypted_app(dir.path());

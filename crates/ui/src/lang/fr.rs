@@ -1145,6 +1145,18 @@ pub const TABLE: &[(&str, &str)] = &[
         "Saisissez à nouveau votre phrase secrète pour confirmer.",
     ),
     ("Export anyway", "Exporter quand même"),
+    ("Conversion in progress", "Conversion en cours"),
+    (
+        "A conversion is in progress. Closing interrupts the operation. This is safe, but you will have to start it again.",
+        "Une conversion est en cours. Fermer interrompt l'opération. C'est sans danger, mais il faudra la relancer.",
+    ),
+    ("Close anyway", "Fermer quand même"),
+    ("Keep waiting", "Continuer d'attendre"),
+    ("Playlist file in clear", "Fichier de playlist en clair"),
+    (
+        "This M3U8 file is not encrypted, even though your library is. It lists the paths of your files in clear. Anyone who can read the file can read them.",
+        "Ce fichier M3U8 n'est pas chiffré, même si votre bibliothèque l'est. Il contient les chemins de vos fichiers en clair. Toute personne pouvant lire le fichier peut les lire.",
+    ),
     ("Export in clear", "Export en clair"),
     (
         "If I forget this passphrase, my library (tags, notes, history, playlists) is lost permanently. No recovery exists.",
