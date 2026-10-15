@@ -7,7 +7,7 @@
 
 #define MyVersion GetEnv("JIZZCRAFT_VERSION")
 #if MyVersion == ""
-  #define MyVersion "0.1.0"
+  #define MyVersion "0.2.0"
 #endif
 
 [Setup]

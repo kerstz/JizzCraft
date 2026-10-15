@@ -9,7 +9,7 @@ name: Edition channels
 # release published by hand (`release: published`) and manual repair:
 #
 #   gh workflow run channels.yml                 # latest release
-#   gh workflow run channels.yml -f tag=v0.1.0   # a given release tag
+#   gh workflow run channels.yml -f tag=v0.2.0   # a given release tag
 #
 # It always moves the channels to the commit of a release tag, never to HEAD.
 

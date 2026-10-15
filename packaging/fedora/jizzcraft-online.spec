@@ -3,7 +3,7 @@
 # Needs rust, cargo and the GStreamer development packages. H.264 and HEVC need
 # the RPM Fusion free repository on Fedora (gstreamer1-plugin-libav).
 Name:           jizzcraft-online
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Private, local-first media library and player
 License:        MIT OR Apache-2.0

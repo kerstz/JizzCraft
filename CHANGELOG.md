@@ -7,6 +7,46 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
+Second alpha, Linux first. Highlights:
+
+- **Search**: full-text search (SQLite FTS5) over names, tags, categories and
+  marker notes, ignoring case and accents (schema v4).
+- **Player**: local `.srt` / `.vtt` subtitles; separate audio and video tracks
+  for DASH and HLS, with an "Audio" menu and an audio-language setting; live
+  HLS streams.
+- **Library**: grouped selection with bulk rate, favorite, hide and "Add to";
+  removing an imported folder from the library, as a cancellable job with a
+  backup first.
+- **Encrypted vault (alpha)**: SQLCipher-encrypted library with passphrase,
+  lock screen, auto-lock, encrypted thumbnails and a `vault` CLI. Off until
+  you turn it on; no recovery.
+- **Downloads**: a full disk pauses torrents with a clear status instead of
+  hanging after an engine panic, and resumes once space is back.
+- **Quality**: performance budgets (`cargo xtask perf`) and 18 end-to-end
+  scenarios (`cargo xtask e2e`), a required CI check.
+
+### Upgrading from 0.1.0
+- A 0.1.0 library opens as is: the first start migrates it to schema v4 (the
+  full-text index is built) after writing a `library.pre-v3.db` backup next to
+  it. Ratings, favorites, hidden flags, tags and playlists are unchanged.
+  Checked with a library created by the 0.1.0 binary. 0.1.0 cannot open a
+  migrated library again ("library schema v4 is newer"); restore the backup to
+  go back.
+
+### Known limits
+- Windows has never been validated on real hardware; the portable zip and
+  installer are built by CI as experimental and may be absent from a release.
+- macOS compiles but ships no app bundle and has never run on real hardware.
+- The encrypted vault has never been seen on screen by the maintainers: the
+  lock screen and Settings flow are covered by tests only. Treat it as alpha
+  and keep a copy of anything you cannot lose.
+- `config.json` (and `fetch.json`, the online state directory) are not
+  encrypted: they stay in clear even with the vault on, so settings such as
+  the interface language are readable. See `docs/vault.md`.
+- Live DASH, DRM streams and TS or WebM separate audio are still refused.
+
 ### Fixed
 - Torrents on a full disk (issue #21): librqbit panics on the partial write of
   a real ENOSPC and the torrent used to stay "downloading" forever. The fetch
