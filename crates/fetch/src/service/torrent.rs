@@ -424,7 +424,11 @@ impl FetchService {
                 }),
                 bind_device_name: cfg.bind_interface.clone().filter(|n| !n.is_empty()),
                 connect: Some(ConnectionOptions {
-                    proxy_url: cfg.proxy.as_ref().map(|p| p.expose().to_owned()),
+                    proxy_url: cfg
+                        .proxy
+                        .as_ref()
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.expose().to_owned()),
                     ..Default::default()
                 }),
                 disable_local_service_discovery: true,

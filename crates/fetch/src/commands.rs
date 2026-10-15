@@ -187,7 +187,9 @@ impl FetchHost {
         let num = |k: &str| a.get(k).and_then(Value::as_u64).map(|n| n as u32);
         let text = |k: &str| a.get(k).and_then(Value::as_str).map(str::to_owned);
         let flag = |k: &str| a.get(k).and_then(Value::as_bool);
-        let proxy = text("proxy");
+        // Blanks around the address (a paste, the CLI) are not part of it;
+        // blanks only mean "no proxy".
+        let proxy = text("proxy").map(|p| p.trim().to_owned());
         if let Some(p) = &proxy
             && !p.is_empty()
             && !p.starts_with("socks5://")

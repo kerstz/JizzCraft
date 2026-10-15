@@ -331,7 +331,8 @@ fn test<C: WebHost>(app: &mut C, a: Value) -> Res {
             .find(|r| r.id == id)
             .cloned()
             .ok_or_else(|| invalid("no such resolver"))?;
-        let blocked = cfg.require_proxy && (cfg.proxy.is_none() || !def.proxy_aware());
+        let no_proxy = cfg.proxy.as_ref().is_none_or(|p| p.is_empty());
+        let blocked = cfg.require_proxy && (no_proxy || !def.proxy_aware());
         (def, blocked)
     };
     let (tx, rx) = channel();

@@ -27,6 +27,16 @@ fn yes() -> bool {
     true
 }
 
+/// A hand-edited `"proxy": ""` (or blanks) is no proxy, not a broken one:
+/// without this the torrent session got an empty proxy URL and failed.
+/// Surrounding blanks are trimmed.
+fn blank_proxy_is_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Secret>, D::Error> {
+    let s = Option::<String>::deserialize(d)?;
+    Ok(s.map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(Secret::new))
+}
+
 /// What to do with torrents left unfinished by the previous run.
 /// Nothing restarts silently: the default asks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,8 +119,9 @@ pub struct FetchConfig {
     #[serde(default)]
     pub seed_after_complete: bool,
     /// `socks5://[user:pass@]host:port`; every outgoing peer connection goes
-    /// through it when set.
-    #[serde(default)]
+    /// through it when set. Optional: absent, `null`, `""` or blanks all mean
+    /// "no proxy" (direct connections), never an invalid proxy.
+    #[serde(default, deserialize_with = "blank_proxy_is_none")]
     pub proxy: Option<Secret>,
     /// Kill switch: nothing connects unless a proxy is set (use it with a
     /// VPN or Tor SOCKS endpoint so a dropped proxy never falls back to the

@@ -153,3 +153,26 @@ fn download_folder_is_created_and_imported_as_a_library_root() {
     assert!(dl.is_dir());
     assert_eq!(c.fetch.config().download_dir.as_deref(), Some(dl.as_path()));
 }
+
+#[test]
+fn proxy_setting_is_optional_and_trimmed() {
+    let d = tempfile::tempdir().unwrap();
+    let (reg, mut c) = setup(d.path());
+    assert!(c.fetch.config().proxy.is_none() && !c.fetch.config().require_proxy);
+    reg.run(
+        &mut c,
+        "fetch.settings",
+        json!({"proxy": "  socks5://127.0.0.1:9050  "}),
+    )
+    .unwrap();
+    let p = c.fetch.config().proxy.clone().unwrap();
+    assert_eq!(p.expose(), "socks5://127.0.0.1:9050");
+    // Blanks clear it: back to direct connections, not an error.
+    reg.run(&mut c, "fetch.settings", json!({"proxy": "   "}))
+        .unwrap();
+    assert!(c.fetch.config().proxy.is_none());
+    assert!(
+        reg.run(&mut c, "fetch.settings", json!({"proxy": "http://x:1"}))
+            .is_err()
+    );
+}

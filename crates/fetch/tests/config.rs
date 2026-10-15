@@ -98,3 +98,30 @@ fn a_proxy_switches_off_everything_it_cannot_carry() {
     };
     assert!(empty.net_policy().dht);
 }
+
+/// The proxy is optional: the defaults have none and no kill switch, and a
+/// blank or `null` proxy in a hand-edited file is "no proxy", never an
+/// invalid one that would make the network fail.
+#[test]
+fn no_proxy_is_the_default_and_blank_means_none() {
+    let c = FetchConfig::default();
+    assert!(c.proxy.is_none() && !c.require_proxy);
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("fetch.json");
+    for raw in [
+        r#"{}"#,
+        r#"{"proxy":null}"#,
+        r#"{"proxy":""}"#,
+        r#"{"proxy":"   "}"#,
+    ] {
+        std::fs::write(&p, raw).unwrap();
+        let c = FetchConfig::load(&p);
+        assert!(!c.load_error, "{raw}");
+        assert!(c.proxy.is_none() && !c.require_proxy, "{raw}");
+        let pol = c.net_policy();
+        assert!(pol.dht && pol.trackers, "{raw}");
+    }
+    std::fs::write(&p, r#"{"proxy":" socks5://127.0.0.1:9050 "}"#).unwrap();
+    let c = FetchConfig::load(&p);
+    assert_eq!(c.proxy.unwrap().expose(), "socks5://127.0.0.1:9050");
+}
