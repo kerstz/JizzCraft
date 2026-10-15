@@ -8,6 +8,18 @@ updates:
       cargo-minor-patch:
         update-types: [minor, patch]
     open-pull-requests-limit: 5
+    ignore:
+      # Both are 0.x crates: Dependabot files 0.8 -> 0.9 and 0.1 -> 0.2 as
+      # "minor", so minor is ignored too (patches still flow).
+      # aes 0.9 and cbc 0.2 drop the RustCrypto 0.8/0.1 trait layout
+      # (BlockDecryptMut, KeyIvInit) that the HLS AES-128 decryption in
+      # crates/fetch is written against: the major bump does not compile
+      # as-is and a rushed port risks silently breaking segment decryption.
+      # Migrate both together, by hand, with the HLS tests (swarm/hls) green.
+      - dependency-name: aes
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: cbc
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
