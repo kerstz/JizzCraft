@@ -1,16 +1,87 @@
-"area: library":   ["crates/core/**"]
-"area: player":    ["crates/media/**", "crates/ui/src/player_view.rs"]
-"area: streaming": ["crates/fetch/src/{stream,segmented,hls,dash,sources,resolver,sniff}.rs", "crates/fetch/src/service/open.rs"]
-"area: torrents":  ["crates/fetch/src/service/torrent.rs", "crates/fetch/tests/swarm*.rs"]
-"area: browser":   ["apps/jizzcraft-browser/**", "crates/bridge/**", "docs/browser.md"]
-"area: ui":        ["crates/ui/**"]
-"area: cli":       ["apps/jizzcraft-cli/**"]
-"area: install":   ["packaging/install.sh", "packaging/smoke-install.sh", "xtask/**"]
-"area: packaging": ["packaging/**", "assets/**", "about.*"]
-"area: security":  ["SECURITY.md", "deny.toml", "crates/fetch/tests/security.rs", "crates/fetch/tests/socks5_mock.rs"]
-"area: i18n":      ["crates/ui/src/lang/**", "crates/ui/src/i18n.rs"]
-"area: windows":   ["packaging/windows/**", "docs/windows.md", "apps/jizzcraft/windows/**"]
-"area: macos":     ["packaging/macos/**"]
-"area: organise":  ["crates/core/src/organize.rs", "crates/ui/src/app/organize.rs", "docs/organise.md"]
-"type: docs":      ["README.md", "docs/**", "CHANGELOG.md", "ROADMAP.md"]
-"type: chore":     [".github/**", "Cargo.lock", "deny.toml"]
+# actions/labeler v5 format: each label maps to a list of match rules.
+"area: library":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/core/**"
+"area: player":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/media/**"
+          - "crates/ui/src/player_view.rs"
+"area: streaming":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/fetch/src/{stream,segmented,hls,dash,sources,resolver,sniff}.rs"
+          - "crates/fetch/src/service/open.rs"
+"area: torrents":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/fetch/src/service/torrent.rs"
+          - "crates/fetch/tests/swarm*.rs"
+"area: browser":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "apps/jizzcraft-browser/**"
+          - "crates/bridge/**"
+          - "docs/browser.md"
+"area: ui":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/ui/**"
+"area: cli":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "apps/jizzcraft-cli/**"
+"area: install":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packaging/install.sh"
+          - "packaging/smoke-install.sh"
+          - "xtask/**"
+"area: packaging":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packaging/**"
+          - "assets/**"
+          - "about.*"
+"area: security":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "SECURITY.md"
+          - "deny.toml"
+          - "crates/fetch/tests/security.rs"
+          - "crates/fetch/tests/socks5_mock.rs"
+"area: i18n":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/ui/src/lang/**"
+          - "crates/ui/src/i18n.rs"
+"area: windows":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packaging/windows/**"
+          - "docs/windows.md"
+          - "apps/jizzcraft/windows/**"
+"area: macos":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packaging/macos/**"
+"area: organise":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/core/src/organize.rs"
+          - "crates/ui/src/app/organize.rs"
+          - "docs/organise.md"
+"type: docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "README.md"
+          - "docs/**"
+          - "CHANGELOG.md"
+          - "ROADMAP.md"
+"type: chore":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "Cargo.lock"
+          - "deny.toml"
