@@ -21,6 +21,8 @@ clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
 jizzcraft-fetch = { workspace = true, optional = true }
+rpassword = "7"
+zeroize = "1.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
@@ -33,3 +35,7 @@ online = ["network"]
 [dev-dependencies]
 tempfile.workspace = true
 image.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

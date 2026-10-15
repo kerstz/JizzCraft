@@ -11,6 +11,25 @@ anything may change between minor versions.
 - e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
 
 ### Security
+- Encrypted vault, step 6 of issue #13: the command line. `jizzcraft-cli vault
+  status|enable|disable|change-passphrase|verify`. The passphrase is read from
+  a terminal without echo (`rpassword`, CLI only), or from `--passphrase-fd N`
+  / `--passphrase-stdin` (one trailing newline removed), with
+  `--new-passphrase-fd` for enable and change; never from argv or an
+  environment variable. `enable` shows the no-recovery warning, asks the
+  passphrase twice on a terminal, wants at least 12 characters and, without a
+  terminal, `--i-understand-no-recovery`. Exit codes: 3 wrong passphrase, 4
+  locked and no way to ask, 5 header missing, damaged or orphaned. Every CLI
+  command opens the library through `LibraryOpener` with the key; the new
+  `thumbs` command builds the cache through `ThumbService::with_keys`, and
+  `cache.prune` in vault mode prunes `vault-thumbs` against keyed names. The
+  registry gains `vault.status` and `vault.lock`; command arguments with
+  passphrase-like fields are refused. `doctor --report` prints `vault:
+  on|off|locked` and no statistics when locked. A canary test scans every byte
+  under the home directory and all captured output for a synthetic file name,
+  tags, category, note, playlist, the passphrase and the database key after
+  `vault enable`.
+
 - Encrypted vault, step 0 and 1 of issue #13. **Nothing is encrypted yet**:
   the vault is not delivered and `SECURITY.md` and the README say so.
   `docs/vault.md` records the threat model, the `library.vault` header format,

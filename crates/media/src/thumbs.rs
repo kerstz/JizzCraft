@@ -551,9 +551,22 @@ pub fn register_cache_prune<C: jizzcraft_core::HasLibrary>(reg: &mut jizzcraft_c
                 .get("max_bytes")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(DEFAULT_CACHE_LIMIT);
-            let live = live_keys(c.db()).map_err(jizzcraft_core::Error::Invalid)?;
-            let rep = prune_cache_in(&jizzcraft_core::paths::cache_dir(), Some(&live), max);
-            Ok(rep.to_json())
+            let root = jizzcraft_core::paths::cache_dir();
+            let keys = c.thumb_keys();
+            let encrypted = c.db().is_encrypted();
+            // Encrypted library without keys (a host that cannot name keyed
+            // files): size limit only, never an orphan check against clear
+            // names, which would delete every vault thumbnail.
+            let (store, live) = match (&keys, encrypted) {
+                (None, true) => (ThumbStore::new(root, None), None),
+                _ => {
+                    let store = ThumbStore::new(root, keys);
+                    let live = live_keys_for(c.db(), Some(&store))
+                        .map_err(jizzcraft_core::Error::Invalid)?;
+                    (store, Some(live))
+                }
+            };
+            Ok(prune_store(&store, live.as_ref(), max).to_json())
         },
     );
 }

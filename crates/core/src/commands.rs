@@ -51,6 +51,12 @@ impl<C> Registry<C> {
             .cmds
             .get(name)
             .ok_or_else(|| Error::NotFound(format!("command `{name}`")))?;
+        if has_secret_field(&args) {
+            // Fixed text: the value is never echoed.
+            return Err(Error::Invalid(
+                "secret fields are not accepted in command arguments".into(),
+            ));
+        }
         (cmd.handler)(ctx, args)
     }
 
@@ -63,9 +69,38 @@ impl<C> Registry<C> {
     }
 }
 
+/// A passphrase must never travel in command JSON (`--cmd`, `run`, scripts),
+/// where shells, logs and history would keep it.
+fn has_secret_field(v: &Value) -> bool {
+    match v {
+        Value::Object(m) => m.iter().any(|(k, v)| {
+            let k = k.to_ascii_lowercase();
+            k.contains("passphrase")
+                || k.contains("password")
+                || k == "secret"
+                || k == "dek"
+                || has_secret_field(v)
+        }),
+        Value::Array(a) => a.iter().any(has_secret_field),
+        _ => false,
+    }
+}
+
 /// Anything that owns a library can host the core commands.
 pub trait HasLibrary {
     fn db(&mut self) -> &mut Db;
+
+    /// Thumbnail keys when the library is open in vault mode, `None` otherwise.
+    /// Cache commands use them to name and check encrypted files.
+    fn thumb_keys(&self) -> Option<std::sync::Arc<crate::vault::ThumbKeys>> {
+        None
+    }
+
+    /// Drop the vault keys and lock. Returns whether the host could lock; the
+    /// one-shot CLI cannot (its process ends right after the command).
+    fn lock_vault(&mut self) -> bool {
+        false
+    }
 }
 
 impl HasLibrary for Db {
@@ -87,6 +122,28 @@ pub mod names {
 
 pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     use names::*;
+    // Neither vault command takes or returns a secret: there is no command
+    // that accepts a passphrase, so `--cmd` and `run` can never carry one.
+    reg.register(
+        "vault.status",
+        "Is the library encrypted and open (no secret involved)",
+        |c, _| {
+            let unlocked = c.db().is_encrypted();
+            let path = c.db().file_path().map(std::path::Path::to_path_buf);
+            let encrypted = unlocked
+                || path
+                    .as_deref()
+                    .and_then(|p| crate::db::probe_format(p).ok())
+                    == Some(crate::db::FileFormat::Encrypted);
+            let header = path
+                .as_deref()
+                .is_some_and(crate::vault::valid_header_exists);
+            Ok(json!({ "encrypted": encrypted, "unlocked": unlocked, "header": header }))
+        },
+    );
+    reg.register("vault.lock", "Lock the vault and drop its keys", |c, _| {
+        Ok(json!({ "locked": c.lock_vault() }))
+    });
     reg.register(
         LIBRARY_IMPORT,
         "Import and scan a folder: {path}",
