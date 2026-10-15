@@ -1088,10 +1088,10 @@ impl JizzApp {
                     ui.add_space(8.0);
                     widgets::eyebrow(ui, "", crate::i18n::tr("Search needs an indexer"), "");
                     ui.label(
-                        RichText::new(
+                        RichText::new(crate::i18n::tr(
                             "Nothing is bundled. Use your own Jackett or Prowlarr (Torznab). \
                              Magnet links and .torrent files work without one.",
-                        )
+                        ))
                         .color(MUTED),
                     );
                     if ui
@@ -1216,10 +1216,10 @@ impl JizzApp {
                         if t.progress() >= 1.0
                             && ui
                                 .small_button(crate::i18n::tr("External"))
-                                .on_hover_text(
+                                .on_hover_text(crate::i18n::tr(
                                     "Open in mpv or VLC. That program is not covered by \
                                      JizzCraft's network protection.",
-                                )
+                                ))
                                 .clicked()
                         {
                             cmds.push(("fetch.external", json!({ "id": t.id })));
@@ -1257,10 +1257,10 @@ impl JizzApp {
                 ui.add_space(8.0);
                 ui.collapsing(crate::i18n::tr("Advanced"), |ui| {
                     ui.label(
-                        RichText::new(
+                        RichText::new(crate::i18n::tr(
                             "Connects only to the indexers you add and to BitTorrent peers. \
                              Your IP is visible to them.",
-                        )
+                        ))
                         .color(MUTED),
                     );
                     ui.horizontal(|ui| {

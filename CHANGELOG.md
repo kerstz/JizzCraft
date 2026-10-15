@@ -7,6 +7,9 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Tests
+- e2e scenario s15: a full disk ends in a fixed sentence, leaves no partial file and recovers once space is freed; the e2e CI job is a required check (issue #18).
+
 ### Security
 - Encrypted vault, step 0 and 1 of issue #13. **Nothing is encrypted yet**:
   the vault is not delivered and `SECURITY.md` and the README say so.
@@ -149,6 +152,17 @@ anything may change between minor versions.
   folder, its media and their ratings, tags, markers and playlist entries);
   files on disk are never touched, and the dialog and the toast say so.
   New command `library.remove {path}`. Refused while a scan is running.
+- Removing an imported folder is now a background job: a
+  `<stem>.pre-remove-<ts>.db` backup is written first (3 kept, same key as the
+  library), rows are dropped in bounded chunks, it can be cancelled
+  (`library.remove.cancel`, Tools menu), and one toast reports counts only.
+  The confirmation dialog never shows the folder name once discreet mode is on.
+- The start-up integrity check now really writes a `<stem>.pre-check-<ts>.db`
+  backup before saying "A backup was kept"; if it cannot, the toast says so.
+- Interface: the age-gate paragraph, three hints and three download-panel
+  sentences are translated in fr/es/de/it/pt, and a test
+  (`crates/ui/tests/i18n_coverage.rs`) fails when a `tr("…")` literal is
+  missing from a catalog.
 
 ## [0.1.0] - 2026-10-14
 
