@@ -766,7 +766,8 @@ fn tvshow_title_fills_studio() {
         "<episodedetails><title>B</title><studio>Own</studio></episodedetails>",
     );
     // Outside the walk root: the show file is not looked at.
-    let s2 = l.root.join("Show/S2");
+    // Joined by component: a mixed-separator path is not the stored one on Windows.
+    let s2 = l.root.join("Show").join("S2");
     nfo(
         &s2,
         "c.nfo",
