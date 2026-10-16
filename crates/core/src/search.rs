@@ -1,6 +1,7 @@
-//! Full-text search over file names, tag and category names and marker notes.
+//! Full-text search over file names, titles, performers and their aliases,
+//! studios, tags (and their aliases), category names and marker notes.
 //!
-//! Backed by an SQLite FTS5 table (`media_fts`, schema v4) that triggers keep
+//! Backed by an SQLite FTS5 table (`media_fts`, schema v4, rebuilt in v6) that triggers keep
 //! current, so scans, labelling, marker edits and folder removal need no
 //! extra call. The bundled SQLite always ships FTS5; there is no LIKE
 //! fallback for the index itself (the plain name filter keeps a substring
@@ -9,7 +10,7 @@
 //! Matching is case and accent insensitive (`unicode61 remove_diacritics 2`),
 //! every word is a prefix, and words are ANDed. File names split on
 //! punctuation, so `holiday_clip.mp4` is found by `clip` or `mp4`.
-//! Private tags and categories are not indexed.
+//! Private tags, categories, performers and studios are not indexed.
 
 use crate::db::{Db, SortKey, row_to_media_cols};
 use crate::error::Result;
@@ -37,7 +38,8 @@ pub fn fts_query(text: &str) -> Option<String> {
 }
 
 impl Db {
-    /// Best matches first (names weigh most, then tags, categories, notes).
+    /// Best matches first (names and titles weigh most, then performers, tags,
+    /// studios, categories, notes).
     /// Hidden and missing items are left out, like the normal library view.
     pub fn search(&self, text: &str, limit: u64, offset: u64) -> Result<Vec<Media>> {
         let Some(q) = fts_query(text) else {
@@ -47,7 +49,7 @@ impl Db {
         let sql = format!(
             "SELECT {cols} FROM media_fts JOIN media ON media.id = media_fts.rowid \
              WHERE media_fts MATCH ?1 AND media.hidden = 0 AND media.missing = 0 \
-             ORDER BY bm25(media_fts, 10.0, 5.0, 4.0, 2.0), media.{col}, media.id \
+             ORDER BY bm25(media_fts, 10.0, 10.0, 6.0, 4.0, 5.0, 4.0, 2.0), media.{col}, media.id \
              LIMIT ?2 OFFSET ?3",
             col = SortKey::Name.column_name()
         );

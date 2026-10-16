@@ -290,9 +290,90 @@ enum PlaylistCmd {
     },
 }
 
+/// `person ...`: performers (name, disambiguation, aliases, favorite, private).
+#[derive(Subcommand)]
+enum PersonCmd {
+    /// List performers (optionally matching a name or alias).
+    List {
+        query: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: u64,
+    },
+    /// Create a performer.
+    Create {
+        name: String,
+        #[arg(long)]
+        disambiguation: Option<String>,
+    },
+    /// Rename a performer.
+    Rename { id: i64, name: String },
+    /// Set flags: favorite, private.
+    Set {
+        id: i64,
+        #[arg(long)]
+        favorite: Option<bool>,
+        #[arg(long)]
+        private: Option<bool>,
+        #[arg(long)]
+        disambiguation: Option<String>,
+    },
+    /// Delete a performer (media untouched).
+    Delete { id: i64 },
+    /// Merge a performer into another one (names become aliases).
+    Merge { from: i64, into: i64 },
+    /// Add an alias.
+    AliasAdd { id: i64, alias: String },
+    /// Remove an alias.
+    AliasRemove { id: i64, alias: String },
+    /// Add a performer to items (--off removes it).
+    Assign {
+        person: i64,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+        #[arg(long)]
+        off: bool,
+    },
+}
+
+/// `studio ...`: one studio per item.
+#[derive(Subcommand)]
+enum StudioCmd {
+    /// List studios with item counts.
+    List,
+    /// Create a studio.
+    Create { name: String },
+    /// Rename a studio.
+    Rename { id: i64, name: String },
+    /// Set the private flag.
+    Set {
+        id: i64,
+        #[arg(long)]
+        private: Option<bool>,
+    },
+    /// Delete a studio (items only lose the studio).
+    Delete { id: i64 },
+    /// Merge a studio into another one.
+    Merge { from: i64, into: i64 },
+    /// Set the studio of items (--clear removes it).
+    Assign {
+        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
+        studio: Option<i64>,
+        #[arg(long)]
+        clear: bool,
+        #[arg(required = true)]
+        media_ids: Vec<i64>,
+    },
+}
+
 /// `tag ...`: flat labels.
 #[derive(Subcommand)]
 enum TagCmd {
+    /// Add an alias to a tag (resolved on import and found by search).
+    AliasAdd { id: i64, alias: String },
+    /// Remove a tag alias.
+    AliasRemove { id: i64, alias: String },
+    /// List the aliases of a tag.
+    Aliases { id: i64 },
     /// List tags with ids and counts.
     List,
     /// Create a tag.
@@ -421,6 +502,12 @@ struct QueryArgs {
     /// Only items without any category.
     #[arg(long)]
     uncategorized: bool,
+    /// Only items of this studio id.
+    #[arg(long)]
+    studio: Option<i64>,
+    /// Features this performer id (repeat: all of them).
+    #[arg(long = "person", value_name = "ID")]
+    people: Vec<i64>,
 }
 
 #[derive(Subcommand)]
@@ -439,6 +526,29 @@ enum Cmd {
     Category {
         #[command(subcommand)]
         action: CategoryCmd,
+    },
+    /// Performers.
+    Person {
+        #[command(subcommand)]
+        action: PersonCmd,
+    },
+    /// Studios.
+    Studio {
+        #[command(subcommand)]
+        action: StudioCmd,
+    },
+    /// Show or edit the title, release date, studio and performers of an item.
+    Info {
+        id: i64,
+        #[arg(long, conflicts_with = "clear_title")]
+        title: Option<String>,
+        #[arg(long)]
+        clear_title: bool,
+        /// YYYY-MM-DD.
+        #[arg(long, conflicts_with = "clear_released")]
+        released: Option<String>,
+        #[arg(long)]
+        clear_released: bool,
     },
     /// Check that this machine can play things, and say how to fix it.
     Doctor {
@@ -739,6 +849,8 @@ fn run(cli: &Cli) -> Result<(), Fail> {
                 categories,
                 untagged,
                 uncategorized,
+                studio,
+                people,
             } = &**q;
             if sort == "position" && playlist.is_none() {
                 return Err("--sort position needs --playlist".into());
@@ -806,6 +918,12 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             }
             if *uncategorized {
                 a["uncategorized"] = json!(true);
+            }
+            if let Some(st) = studio {
+                a["studio"] = json!(st);
+            }
+            if !people.is_empty() {
+                a["people"] = json!(people);
             }
             if let Some(k) = kind {
                 a["kind"] = json!(match k {
@@ -937,6 +1055,37 @@ fn run(cli: &Cli) -> Result<(), Fail> {
         }
         Cmd::Playlist { action } => playlist_call(action),
         Cmd::Tag { action } => tag_call(action),
+        Cmd::Person { action } => person_call(action),
+        Cmd::Studio { action } => studio_call(action),
+        Cmd::Info {
+            id,
+            title,
+            clear_title,
+            released,
+            clear_released,
+        } => {
+            let mut a = json!({ "id": id });
+            if let Some(t) = title {
+                a["title"] = json!(t);
+            } else if *clear_title {
+                a["title"] = Value::Null;
+            }
+            if let Some(d) = released {
+                a["released"] = json!(d);
+            } else if *clear_released {
+                a["released"] = Value::Null;
+            }
+            let edits = a.as_object().is_some_and(|o| o.len() > 1);
+            (
+                if edits {
+                    "media.info.set"
+                } else {
+                    "media.info"
+                }
+                .to_owned(),
+                a,
+            )
+        }
         Cmd::Category { action } => category_call(action),
         Cmd::Commands => unreachable!(),
     };
@@ -1050,8 +1199,75 @@ fn playlist_call(a: &PlaylistCmd) -> (String, Value) {
     (n.to_owned(), v)
 }
 
+fn person_call(a: &PersonCmd) -> (String, Value) {
+    let (n, v) = match a {
+        PersonCmd::List { query, limit } => {
+            ("person.list", json!({ "query": query, "limit": limit }))
+        }
+        PersonCmd::Create {
+            name,
+            disambiguation,
+        } => (
+            "person.create",
+            json!({ "name": name, "disambiguation": disambiguation }),
+        ),
+        PersonCmd::Rename { id, name } => ("person.rename", json!({ "id": id, "name": name })),
+        PersonCmd::Set {
+            id,
+            favorite,
+            private,
+            disambiguation,
+        } => (
+            "person.set",
+            json!({ "id": id, "favorite": favorite, "private": private, "disambiguation": disambiguation }),
+        ),
+        PersonCmd::Delete { id } => ("person.delete", json!({ "id": id })),
+        PersonCmd::Merge { from, into } => ("person.merge", json!({ "from": from, "into": into })),
+        PersonCmd::AliasAdd { id, alias } => {
+            ("person.alias.add", json!({ "id": id, "alias": alias }))
+        }
+        PersonCmd::AliasRemove { id, alias } => {
+            ("person.alias.remove", json!({ "id": id, "alias": alias }))
+        }
+        PersonCmd::Assign {
+            person,
+            media_ids,
+            off,
+        } => (
+            "person.assign",
+            json!({ "ids": [person], "media_ids": media_ids, "on": !off }),
+        ),
+    };
+    (n.to_owned(), v)
+}
+
+fn studio_call(a: &StudioCmd) -> (String, Value) {
+    let (n, v) = match a {
+        StudioCmd::List => ("studio.list", json!({})),
+        StudioCmd::Create { name } => ("studio.create", json!({ "name": name })),
+        StudioCmd::Rename { id, name } => ("studio.rename", json!({ "id": id, "name": name })),
+        StudioCmd::Set { id, private } => ("studio.set", json!({ "id": id, "private": private })),
+        StudioCmd::Delete { id } => ("studio.delete", json!({ "id": id })),
+        StudioCmd::Merge { from, into } => ("studio.merge", json!({ "from": from, "into": into })),
+        StudioCmd::Assign {
+            studio,
+            clear: _,
+            media_ids,
+        } => (
+            "studio.assign",
+            json!({ "media_ids": media_ids, "studio": studio }),
+        ),
+    };
+    (n.to_owned(), v)
+}
+
 fn tag_call(a: &TagCmd) -> (String, Value) {
     let (n, v) = match a {
+        TagCmd::AliasAdd { id, alias } => ("tag.alias.add", json!({ "id": id, "alias": alias })),
+        TagCmd::AliasRemove { id, alias } => {
+            ("tag.alias.remove", json!({ "id": id, "alias": alias }))
+        }
+        TagCmd::Aliases { id } => ("tag.aliases", json!({ "id": id })),
         TagCmd::List => ("tag.list", json!({})),
         TagCmd::Create { name } => ("tag.create", json!({ "name": name })),
         TagCmd::Rename { id, name } => ("tag.rename", json!({ "id": id, "name": name })),

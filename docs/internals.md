@@ -79,6 +79,7 @@ Rules (from [AGENTS.md](../AGENTS.md)), and what holds them:
 | The first-run wizard cannot start a network session | `wizard_never_starts_a_network_session` in [`crates/ui/src/app/onboarding.rs`](../crates/ui/src/app/onboarding.rs) |
 | The engine never modifies, moves or deletes media | `engine_never_touches_media` in [`crates/core/tests/portability.rs`](../crates/core/tests/portability.rs): hashes a tree before and after every command |
 | Content hashes: `oshash` matches independent references, `fp1` is unchanged | [`crates/core/tests/hashes.rs`](../crates/core/tests/hashes.rs) |
+| Private performers and studios are never indexed or exported by default | `private_people_and_studios_are_not_indexed` and `export_import_round_trip_and_privacy` in [`crates/core/tests/meta.rs`](../crates/core/tests/meta.rs) |
 | Old migrations are never edited | `migrations_are_frozen` in [`crates/core/tests/migrations.rs`](../crates/core/tests/migrations.rs) |
 | No listening socket or server crate in any build | `default_build_has_no_network_crates` (its list also bans DLNA, WebDAV, mDNS and HTTP server crates); [interop.md](interop.md) |
 | Paths become stable opaque tags before reaching logs | `redacted_paths_are_stable_opaque_tags` in [`crates/core/src/privacy.rs`](../crates/core/src/privacy.rs) |

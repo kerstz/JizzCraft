@@ -91,6 +91,8 @@ pub struct Media {
     pub fp: Option<String>,
     /// OpenSubtitles-style hash, 16 lowercase hex digits.
     pub oshash: Option<String>,
+    /// User-set title; the file name is shown when absent.
+    pub title: Option<String>,
 }
 
 /// Metadata discovered after indexing (by core for images, by `media` for videos).

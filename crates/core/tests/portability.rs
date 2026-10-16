@@ -275,6 +275,60 @@ fn engine_never_touches_media() {
     );
     run(&mut db, "media.relink", json!({ "from": b, "to": a }));
 
+    // Descriptive metadata: database rows only.
+    run(
+        &mut db,
+        "media.info.set",
+        json!({ "id": a, "title": "T", "released": "2020-01-31" }),
+    );
+    let st = run(&mut db, "studio.create", json!({ "name": "S" }))["id"].clone();
+    run(&mut db, "studio.rename", json!({ "id": st, "name": "S2" }));
+    run(&mut db, "studio.set", json!({ "id": st, "private": true }));
+    run(
+        &mut db,
+        "studio.assign",
+        json!({ "media_ids": [a, b], "studio": st }),
+    );
+    let st2 = run(&mut db, "studio.create", json!({ "name": "S3" }))["id"].clone();
+    run(&mut db, "studio.merge", json!({ "from": st2, "into": st }));
+    let pe = run(&mut db, "person.create", json!({ "name": "P" }))["id"].clone();
+    let pe2 = run(&mut db, "person.create", json!({ "name": "P2" }))["id"].clone();
+    run(&mut db, "person.rename", json!({ "id": pe, "name": "P1" }));
+    run(&mut db, "person.set", json!({ "id": pe, "favorite": true }));
+    run(
+        &mut db,
+        "person.alias.add",
+        json!({ "id": pe, "alias": "pp" }),
+    );
+    run(
+        &mut db,
+        "person.alias.remove",
+        json!({ "id": pe, "alias": "pp" }),
+    );
+    run(
+        &mut db,
+        "person.assign",
+        json!({ "ids": [pe, pe2], "media_ids": [a, v] }),
+    );
+    run(&mut db, "person.merge", json!({ "from": pe2, "into": pe }));
+    run(&mut db, "person.list", json!({ "query": "p" }));
+    run(&mut db, "media.info", json!({ "id": a }));
+    let tg = run(&mut db, "tag.create", json!({ "name": "tg" }))["id"].clone();
+    run(
+        &mut db,
+        "tag.alias.add",
+        json!({ "id": tg, "alias": "tgx" }),
+    );
+    run(&mut db, "tag.aliases", json!({ "id": tg }));
+    run(
+        &mut db,
+        "tag.alias.remove",
+        json!({ "id": tg, "alias": "tgx" }),
+    );
+    run(&mut db, "tag.delete", json!({ "id": tg }));
+    run(&mut db, "person.delete", json!({ "id": pe }));
+    run(&mut db, "studio.delete", json!({ "id": st }));
+
     // Playlists, categories and tags: membership rows only.
     let pl = run(&mut db, "playlist.create", json!({ "name": "p" }))["id"].clone();
     run(

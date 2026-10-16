@@ -628,6 +628,17 @@ fn is_within(c: &Connection, anc: i64, node: i64) -> Result<bool> {
     Err(invalid("category tree is malformed"))
 }
 
+/// Is `lc` an alias of a tag other than `except`?
+fn alias_taken(c: &Connection, lc: &str, except: Option<i64>) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT 1 FROM label_aliases WHERE alias_lc = ?1 AND label_id IS NOT ?2",
+        params![lc, except],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
+}
+
 fn label_create(
     c: &Connection,
     kind: LabelKind,
@@ -638,6 +649,9 @@ fn label_create(
     let (name, lc) = clean_name(name)?;
     if kind == LabelKind::Category && name.contains('/') {
         return Err(invalid("a category name cannot contain `/`"));
+    }
+    if kind == LabelKind::Tag && alias_taken(c, &lc, None)? {
+        return Err(invalid("that name is already an alias of another tag"));
     }
     let n: i64 = c.query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
     if n >= MAX_LABELS {
@@ -666,6 +680,16 @@ fn label_rename(c: &Connection, kind: LabelKind, id: i64, name: &str) -> Result<
     let (name, lc) = clean_name(name)?;
     if kind == LabelKind::Category && name.contains('/') {
         return Err(invalid("a category name cannot contain `/`"));
+    }
+    if kind == LabelKind::Tag {
+        // Renaming a tag to one of its own aliases promotes the alias.
+        c.execute(
+            "DELETE FROM label_aliases WHERE label_id = ?1 AND alias_lc = ?2",
+            params![id, lc],
+        )?;
+        if alias_taken(c, &lc, Some(id))? {
+            return Err(invalid("that name is already an alias of another tag"));
+        }
     }
     let n = c
         .execute(
@@ -771,6 +795,9 @@ fn label_merge(c: &Connection, kind: LabelKind, from: i64, into: i64) -> Result<
          SELECT ?2, media_id, added_at FROM media_labels WHERE label_id = ?1",
         params![from, into],
     )?;
+    if kind == LabelKind::Tag {
+        crate::meta::tx_tag_merge_aliases(c, from, into)?;
+    }
     c.execute("DELETE FROM labels WHERE id = ?1", [from])?;
     Ok(moved as u64)
 }

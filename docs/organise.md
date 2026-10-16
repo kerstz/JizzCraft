@@ -50,6 +50,37 @@ Deleting a category moves its children up one level. Deleting or merging a
 tag leaves the items in the library. Filtering by a category includes the
 whole subtree.
 
+## Title, studio, performers and aliases
+
+Each item can carry a title (shown in the grid instead of the file name), a
+release date (`YYYY-MM-DD`), one studio, and any number of performers (up to
+64). All of it lives in the database; no file is written.
+
+```sh
+jizzcraft-cli info 12 --title "Harbour at dawn" --released 2020-02-29
+jizzcraft-cli studio create "Acme"          # also: list, rename, set, merge, delete
+jizzcraft-cli studio assign --studio 1 12 7 # --clear removes
+jizzcraft-cli person create "Jane Roe" --disambiguation "b. 1980"
+jizzcraft-cli person alias-add 3 "JR"       # also: set, merge, delete, assign
+jizzcraft-cli person assign 3 12 7          # --off removes
+jizzcraft-cli tag alias-add 4 "blow job"    # an alias resolves to the tag on import
+jizzcraft-cli query --studio 1 --person 3
+```
+
+A performer is a name, an optional disambiguation (to tell two people of one
+name apart), aliases, `favorite` and `private`. Nothing else is stored: no
+birth date, gender, body attributes or images. Titles, performers, studios
+and tag aliases are searchable. Performers and studios flagged private are not
+indexed for search and are left out of exports unless you ask (`--private`).
+
+In the desktop app, the inspector has a Title field (Enter or leaving the
+field saves, Escape reverts), a Studio list with "New studio…", and a
+Performers list: type a name to add one (existing performers are suggested
+by name or alias), × removes, and a name shows every item with that
+performer. Tags have an "Aliases…" entry in their context menu. A tag alias
+never equals a tag name, and merging two tags keeps the old name as an alias of
+the survivor. Discreet mode shows "—" for the title, studio and performers.
+
 ## Querying
 
 ```sh
@@ -65,7 +96,7 @@ jizzcraft-cli query --uncategorized
 `--sort position` is only valid together with `--playlist`. These filters
 combine with every other `query` option and with saved views. Add `--json`
 to any command to get the registry command's JSON unchanged; `run` reaches the
-same commands by name (`playlist.*`, `tag.*`, `category.*`, `labels.of`).
+same commands by name (`playlist.*`, `tag.*`, `category.*`, `labels.of`, `media.info*`, `studio.*`, `person.*`).
 
 ## When files move
 
@@ -86,8 +117,9 @@ never stored names; toasts and logs carry counts only.
 
 ## Export and import
 
-`jizzcraft-cli export FILE` writes favorites, ratings, markers, tags,
-categories and playlists keyed by file fingerprint, so they can be imported
+`jizzcraft-cli export FILE` writes favorites, ratings, markers, tags (with
+aliases), categories, playlists, titles, release dates, studios and performers
+keyed by file fingerprint, so they can be imported
 onto the same files at another path or on another machine
 (`jizzcraft-cli import FILE --dry-run` first). By default:
 

@@ -14,6 +14,7 @@ const FROZEN: &[&str] = &[
     "efd146227873706329ee239fdd6cd25d373df21e35956c35f3ba7a72ca33f2b9",
     "b30677822357af450b9d88b6a0313d6f2282549cd9d057247b40ba1c7b9bd2ec",
     "cec220328cb5229a32bb1ea3e5b6c85cc200cba56268b33483f4d7dde8cb8643",
+    "fa66d056777d8b74f854330b8ccd846b8c042e6faf85990f0ff2bdbf9f299572",
 ];
 
 fn hash(s: &str) -> String {
@@ -95,6 +96,21 @@ fn fixture_keyed(path: &Path, version: usize, key: Option<&DbKey>) {
         c.execute_batch("UPDATE media SET oshash = -2 WHERE id = 3;")
             .unwrap();
     }
+    if version >= 6 {
+        c.execute_batch(
+            "INSERT INTO studios(id, name, name_lc, private, created_at)
+                 VALUES (1, 'Acme Studio', 'acme studio', 0, 0), (2, 'Secret Lot', 'secret lot', 1, 0);
+             UPDATE media SET title = 'Sunset Reel', released = '2020-02-29', studio_id = 1 WHERE id = 1;
+             UPDATE media SET studio_id = 2 WHERE id = 2;
+             INSERT INTO people(id, name, name_lc, private, created_at)
+                 VALUES (1, 'Jane Roe', 'jane roe', 0, 0), (2, 'Hidden Person', 'hidden person', 1, 0);
+             INSERT INTO person_aliases(person_id, alias, alias_lc) VALUES (1, 'Zed Alias', 'zed alias');
+             INSERT INTO media_people(media_id, person_id, position) VALUES (1, 1, 0), (1, 2, 1), (3, 2, 0);
+             INSERT INTO label_aliases(label_id, alias, alias_lc) VALUES (3, 'Tee Alias', 'tee alias');
+             INSERT INTO external_ids(media_id, scheme, value) VALUES (1, 'stashbox', 'abc');",
+        )
+        .unwrap();
+    }
     c.pragma_update(None, "user_version", version as i64)
         .unwrap();
 }
@@ -138,6 +154,23 @@ fn check_survivors(db: &Db, version: usize) {
         assert_eq!(m3.oshash.as_deref(), Some("fffffffffffffffe"), "v{version}");
     } else {
         assert!(m3.oshash.is_none(), "v{version}");
+    }
+    if version >= 6 {
+        let m1 = all.iter().find(|m| m.name == "1.png").unwrap();
+        assert_eq!(m1.title.as_deref(), Some("Sunset Reel"), "v{version}");
+        let hit = |q: &str| db.search(q, 10, 0).unwrap().len();
+        assert_eq!(hit("sunset"), 1, "title is searchable at v{version}");
+        assert_eq!(hit("zed"), 1, "performer alias");
+        assert_eq!(hit("tee alias"), 1, "tag alias");
+        assert_eq!(hit("acme"), 1, "studio");
+        assert_eq!(hit("secret"), 0, "private studio is not indexed");
+        assert_eq!(hit("hidden"), 0, "private performer is not indexed");
+        let info = db.media_info(m1.id).unwrap();
+        assert_eq!(info.released.as_deref(), Some("2020-02-29"));
+        assert_eq!(info.people.len(), 2);
+        assert_eq!(info.external_ids.len(), 1);
+    } else {
+        assert!(db.search("sunset", 10, 0).unwrap().is_empty());
     }
     // Organisation tables: empty when upgrading from before v3, intact after.
     let count = |t: &str| -> i64 {

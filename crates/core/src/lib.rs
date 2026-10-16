@@ -11,6 +11,7 @@ pub mod history;
 pub mod integrity;
 pub mod manifest;
 pub mod markers;
+pub mod meta;
 pub mod model;
 pub mod organize;
 pub mod pathbytes;

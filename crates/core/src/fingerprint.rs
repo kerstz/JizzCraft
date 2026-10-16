@@ -109,8 +109,9 @@ pub fn parse_fp(s: &str) -> Option<[u8; 16]> {
 /// Rows holding data a user would be upset to lose. Five-star ratings are
 /// a lifetime of research.
 const USER_DATA: &str = "(favorite = 1 OR rating > 0 OR hidden = 1 OR play_count > 0
-     OR resume_ms IS NOT NULL
-     OR EXISTS (SELECT 1 FROM markers k WHERE k.media_id = media.id))";
+     OR resume_ms IS NOT NULL OR title IS NOT NULL OR studio_id IS NOT NULL
+     OR EXISTS (SELECT 1 FROM markers k WHERE k.media_id = media.id)
+     OR EXISTS (SELECT 1 FROM media_people mp WHERE mp.media_id = media.id))";
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct FpReport {
@@ -226,6 +227,25 @@ impl Db {
         tx.execute(
             "UPDATE media SET last_played_at = NULL WHERE id = ?1 AND last_played_at = 0",
             [to],
+        )?;
+        // Descriptive metadata fills what the target lacks.
+        tx.execute(
+            "UPDATE media SET
+                title = COALESCE(title, (SELECT title FROM media WHERE id = ?1)),
+                released = COALESCE(released, (SELECT released FROM media WHERE id = ?1)),
+                studio_id = COALESCE(studio_id, (SELECT studio_id FROM media WHERE id = ?1))
+             WHERE id = ?2",
+            params![from, to],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO media_people(media_id, person_id, position)
+             SELECT ?2, person_id, position FROM media_people WHERE media_id = ?1",
+            params![from, to],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO external_ids(media_id, scheme, value)
+             SELECT ?2, scheme, value FROM external_ids WHERE media_id = ?1",
+            params![from, to],
         )?;
         tx.execute(
             "INSERT OR IGNORE INTO markers(media_id, pos_ms, label, created_at)

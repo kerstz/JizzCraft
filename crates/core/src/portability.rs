@@ -126,7 +126,8 @@ pub fn export_meta_ext(
     for t in db.labels(LabelKind::Tag)? {
         if include_private || !t.private {
             label_docs.push(json!({
-                "kind": "tag", "path": t.name, "color": t.color, "private": t.private
+                "kind": "tag", "path": t.name, "color": t.color, "private": t.private,
+                "aliases": db.tag_aliases(t.id)?,
             }));
             vis_tags.insert(t.id, t);
         }
@@ -182,6 +183,9 @@ pub fn export_meta_ext(
             OR resume_ms IS NOT NULL
             OR EXISTS (SELECT 1 FROM markers k WHERE k.media_id = media.id)
             OR EXISTS (SELECT 1 FROM media_labels ml WHERE ml.media_id = media.id)
+            OR title IS NOT NULL OR released IS NOT NULL OR studio_id IS NOT NULL
+            OR EXISTS (SELECT 1 FROM media_people mp WHERE mp.media_id = media.id)
+            OR EXISTS (SELECT 1 FROM external_ids e WHERE e.media_id = media.id)
          ORDER BY id",
     )?;
     let rows = st.query_map([], |r| {
@@ -209,7 +213,20 @@ pub fn export_meta_ext(
             .into_iter()
             .map(|m| json!({ "pos_ms": m.pos_ms, "label": m.label }))
             .collect();
-        let has_data = fav != 0
+        let info = db.media_info(id)?;
+        let studio = info.studio.filter(|s| include_private || !s.private);
+        let people: Vec<_> = info
+            .people
+            .into_iter()
+            .filter(|p| include_private || !p.private)
+            .collect();
+        let has_meta = info.title.is_some()
+            || info.released.is_some()
+            || studio.is_some()
+            || !people.is_empty()
+            || !info.external_ids.is_empty();
+        let has_data = has_meta
+            || fav != 0
             || rating > 0
             || hidden != 0
             || plays > 0
@@ -235,6 +252,31 @@ pub fn export_meta_ext(
         });
         if let Some(h) = oshash {
             it["oshash"] = json!(crate::fingerprint::oshash_hex(h as u64));
+        }
+        if let Some(t) = info.title {
+            it["title"] = json!(t);
+        }
+        if let Some(d) = info.released {
+            it["released"] = json!(d);
+        }
+        if let Some(st) = studio {
+            it["studio"] = json!(st.name);
+        }
+        if !people.is_empty() {
+            it["people"] = json!(
+                people
+                    .iter()
+                    .map(|p| json!({ "name": p.name, "disambiguation": p.disambiguation }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if !info.external_ids.is_empty() {
+            it["external_ids"] = json!(
+                info.external_ids
+                    .iter()
+                    .map(|e| json!({ "scheme": e.scheme, "value": e.value }))
+                    .collect::<Vec<_>>()
+            );
         }
         if let Some(d) = dur {
             it["duration_ms"] = json!(d);
@@ -276,6 +318,23 @@ pub fn export_meta_ext(
         }));
         rep.playlists += 1;
     }
+    let studios: Vec<Value> = db
+        .studios()?
+        .into_iter()
+        .filter(|s| include_private || !s.private)
+        .map(|s| json!({ "name": s.name, "private": s.private }))
+        .collect();
+    let people: Vec<Value> = db
+        .people(None, 1000)?
+        .into_iter()
+        .filter(|p| include_private || !p.private)
+        .map(|p| {
+            json!({
+                "name": p.name, "disambiguation": p.disambiguation, "aliases": p.aliases,
+                "favorite": p.favorite, "private": p.private,
+            })
+        })
+        .collect();
     let doc = json!({
         "format": FORMAT,
         "version": VERSION,
@@ -284,6 +343,8 @@ pub fn export_meta_ext(
         "views": views,
         "labels": label_docs,
         "playlists": playlists,
+        "studios": studios,
+        "people": people,
     });
     let mut f = crate::fsutil::private_file_options()
         .write(true)
@@ -333,7 +394,16 @@ pub fn import_meta(db: &mut Db, src: &Path, dry_run: bool) -> Result<ImportRepor
             };
             match l["kind"].as_str() {
                 Some("tag") => {
-                    ensure_label(&tx, LabelKind::Tag, path, Some((color, private)), &mut rep);
+                    let id =
+                        ensure_label(&tx, LabelKind::Tag, path, Some((color, private)), &mut rep);
+                    if let Some(id) = id {
+                        for a in l["aliases"].as_array().into_iter().flatten().take(32) {
+                            if let Some(a) = a.as_str() {
+                                // Refused aliases (taken, over the cap) are skipped.
+                                let _ = crate::meta::tag_alias_add(&tx, id, a);
+                            }
+                        }
+                    }
                 }
                 Some("category") => {
                     ensure_label(
@@ -345,6 +415,47 @@ pub fn import_meta(db: &mut Db, src: &Path, dry_run: bool) -> Result<ImportRepor
                     );
                 }
                 _ => {}
+            }
+        }
+    }
+    if !dry_run {
+        for st in doc["studios"].as_array().into_iter().flatten() {
+            let Some(name) = st["name"].as_str() else {
+                continue;
+            };
+            if let Ok((id, true)) = crate::meta::tx_resolve_studio(&tx, name)
+                && st["private"].as_bool() == Some(true)
+            {
+                tx.execute("UPDATE studios SET private = 1 WHERE id = ?1", [id])?;
+            }
+        }
+        for p in doc["people"].as_array().into_iter().flatten() {
+            let Some(name) = p["name"].as_str() else {
+                continue;
+            };
+            let dis = p["disambiguation"].as_str().unwrap_or("");
+            let Ok(r) = crate::meta::tx_resolve_person(&tx, name, dis) else {
+                continue;
+            };
+            let id = match r {
+                crate::meta::Resolved::Created(id) => {
+                    tx.execute(
+                        "UPDATE people SET favorite = ?2, private = ?3 WHERE id = ?1",
+                        params![
+                            id,
+                            p["favorite"].as_bool().unwrap_or(false),
+                            p["private"].as_bool().unwrap_or(false)
+                        ],
+                    )?;
+                    id
+                }
+                crate::meta::Resolved::Found(id) => id,
+                crate::meta::Resolved::Ambiguous => continue,
+            };
+            for a in p["aliases"].as_array().into_iter().flatten().take(32) {
+                if let Some(a) = a.as_str() {
+                    let _ = crate::meta::person_alias_add_tx(&tx, id, a);
+                }
             }
         }
     }
@@ -436,6 +547,7 @@ pub fn import_meta(db: &mut Db, src: &Path, dry_run: bool) -> Result<ImportRepor
                         }
                     }
                 }
+                apply_info(&tx, *id, it)?;
                 rep.applied += 1;
             }
             _ => rep.ambiguous += 1,
@@ -527,6 +639,16 @@ fn ensure_label(
     meta: Option<(Option<u32>, bool)>,
     rep: &mut ImportReport,
 ) -> Option<i64> {
+    if kind == LabelKind::Tag && meta.is_none() {
+        // Names resolve through aliases (`blow job` finds `blowjob`).
+        return match crate::meta::tx_resolve_tag(tx, path) {
+            Ok((id, created)) => {
+                rep.labels += created as u64;
+                Some(id)
+            }
+            Err(_) => None,
+        };
+    }
     let parts: Vec<&str> = match kind {
         LabelKind::Tag => vec![path],
         LabelKind::Category => path.split('/').collect(),
@@ -566,4 +688,52 @@ fn ensure_label(
         parent = Some(id);
     }
     parent
+}
+
+/// Title, date and studio only where empty; performers and external ids are
+/// added. Anything the file holds that does not validate is skipped.
+fn apply_info(tx: &rusqlite::Connection, id: i64, it: &Value) -> Result<()> {
+    if let Some(t) = it["title"]
+        .as_str()
+        .and_then(|t| crate::meta::clean_title(t).ok())
+    {
+        tx.execute(
+            "UPDATE media SET title = ?2 WHERE id = ?1 AND title IS NULL",
+            params![id, t],
+        )?;
+    }
+    if let Some(d) = it["released"]
+        .as_str()
+        .and_then(|d| crate::meta::clean_date(d).ok())
+    {
+        tx.execute(
+            "UPDATE media SET released = ?2 WHERE id = ?1 AND released IS NULL",
+            params![id, d],
+        )?;
+    }
+    if let Some(name) = it["studio"].as_str()
+        && let Ok((sid, _)) = crate::meta::tx_resolve_studio(tx, name)
+    {
+        tx.execute(
+            "UPDATE media SET studio_id = ?2 WHERE id = ?1 AND studio_id IS NULL",
+            params![id, sid],
+        )?;
+    }
+    for p in it["people"].as_array().into_iter().flatten().take(64) {
+        let Some(name) = p["name"].as_str() else {
+            continue;
+        };
+        let dis = p["disambiguation"].as_str().unwrap_or("");
+        if let Ok(crate::meta::Resolved::Found(pid) | crate::meta::Resolved::Created(pid)) =
+            crate::meta::tx_resolve_person(tx, name, dis)
+        {
+            let _ = crate::meta::tx_person_link(tx, id, pid, None);
+        }
+    }
+    for e in it["external_ids"].as_array().into_iter().flatten().take(16) {
+        if let (Some(s), Some(v)) = (e["scheme"].as_str(), e["value"].as_str()) {
+            crate::meta::tx_external_id_add(tx, id, s, v)?;
+        }
+    }
+    Ok(())
 }

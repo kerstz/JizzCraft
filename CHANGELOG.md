@@ -13,6 +13,13 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Descriptive metadata: a title (shown in the grid), release date, studio and
+  performers per item, aliases for tags and performers, external ids; all
+  searchable (schema v6, full-text index rebuilt), filterable
+  (`query --studio --person`) and carried by metadata export. Private
+  performers and studios are never indexed. New `info`, `studio`, `person`
+  and `tag alias-*` CLI commands; inspector fields and a tag "Aliases…" window
+  in the app.
 - Content hash `oshash` (OpenSubtitles-style) stored next to the fingerprint,
   filled by `library.fingerprint`; command `media.by_hash` and CLI
   `lookup --oshash|--fp`; metadata export version 3 matches by it. Interop

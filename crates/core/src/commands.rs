@@ -234,6 +234,7 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
     register_userdata(reg);
     register_views(reg);
     crate::organize::register(reg);
+    crate::meta::register(reg);
     reg.register(
         "library.fingerprint",
         "Fingerprint files for move detection: {all?, limit?}",

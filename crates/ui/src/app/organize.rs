@@ -1966,6 +1966,10 @@ impl JizzApp {
                 menu.push(M::Rename(e.r, e.name.clone()));
                 ui.close();
             }
+            if e.r.kind == OrgKind::Tag && !discreet && ui.button(tr("Aliases…")).clicked() {
+                menu.push(M::Aliases(e.r.id));
+                ui.close();
+            }
             if !discreet {
                 ui.menu_button(tr("Colour"), |ui| {
                     ui.horizontal(|ui| {
@@ -2016,6 +2020,12 @@ impl JizzApp {
                 self.push("org.play", json!({}));
             }
             MenuAct::Rename(r, name) => self.org.renaming = Some((r, name, true)),
+            MenuAct::Aliases(tag) => {
+                self.alias_edit = Some(super::meta_ui::AliasEdit {
+                    tag,
+                    input: String::new(),
+                });
+            }
             MenuAct::Colour(r, c) => self.org_set(r, Some(c), None),
             MenuAct::Private(r, p) => self.org_set(r, None, Some(p)),
             MenuAct::NewChild(parent) => {
@@ -2116,6 +2126,7 @@ impl JizzApp {
 enum MenuAct {
     Play(OrgRef, bool),
     Rename(OrgRef, String),
+    Aliases(i64),
     Colour(OrgRef, Option<u32>),
     Private(OrgRef, bool),
     NewChild(i64),

@@ -153,13 +153,131 @@ const MIGRATIONS: &[&str] = &[
     // v5: OpenSubtitles-style hash, a bit-cast u64, filled by `library.fingerprint`.
     "ALTER TABLE media ADD COLUMN oshash INTEGER;
     CREATE INDEX media_oshash ON media(oshash) WHERE oshash IS NOT NULL;",
+    // v6: metadata (title, release date, studio, performers, aliases, external
+    // ids) and a rebuilt full-text index that also covers them. Private
+    // performers and studios are never indexed. Names of tags and performers
+    // are matched through aliases; aliases are indexed with their owner.
+    "CREATE TABLE studios (id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_lc TEXT NOT NULL UNIQUE, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1)), created_at INTEGER NOT NULL);
+    ALTER TABLE media ADD COLUMN title     TEXT CHECK (title IS NULL OR length(title) BETWEEN 1 AND 200);
+    ALTER TABLE media ADD COLUMN released  TEXT CHECK (released IS NULL OR released GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]');
+    ALTER TABLE media ADD COLUMN studio_id INTEGER REFERENCES studios(id) ON DELETE SET NULL;
+    CREATE INDEX media_studio ON media(studio_id) WHERE studio_id IS NOT NULL;
+    CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL, name_lc TEXT NOT NULL, disambiguation TEXT NOT NULL DEFAULT '', favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0,1)), private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1)), created_at INTEGER NOT NULL, UNIQUE (name_lc, disambiguation));
+    CREATE TABLE person_aliases (person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, alias TEXT NOT NULL, alias_lc TEXT NOT NULL, PRIMARY KEY (person_id, alias_lc)) WITHOUT ROWID;
+    CREATE INDEX person_aliases_lc ON person_aliases(alias_lc);
+    CREATE TABLE media_people (media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE, person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE, position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (media_id, person_id)) WITHOUT ROWID;
+    CREATE INDEX media_people_person ON media_people(person_id, media_id);
+    CREATE TABLE label_aliases (label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE, alias TEXT NOT NULL, alias_lc TEXT NOT NULL UNIQUE, PRIMARY KEY (label_id, alias_lc)) WITHOUT ROWID;
+    CREATE TABLE external_ids (media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE, scheme TEXT NOT NULL CHECK (length(scheme) BETWEEN 1 AND 32), value TEXT NOT NULL CHECK (length(value) BETWEEN 1 AND 128), PRIMARY KEY (media_id, scheme)) WITHOUT ROWID;
+    CREATE INDEX external_ids_value ON external_ids(scheme, value);
+    DROP TRIGGER media_fts_ai;
+    DROP TRIGGER media_fts_au;
+    DROP TRIGGER media_fts_ad;
+    DROP TRIGGER media_fts_ml_ai;
+    DROP TRIGGER media_fts_ml_ad;
+    DROP TRIGGER media_fts_lb_au;
+    DROP TRIGGER media_fts_mk_ai;
+    DROP TRIGGER media_fts_mk_au;
+    DROP TRIGGER media_fts_mk_ad;
+    DROP TABLE media_fts;
+    DROP VIEW media_fts_src;
+    CREATE VIEW media_fts_src AS
+        SELECT m.id AS id, m.name AS name,
+            COALESCE(m.title, '') AS title,
+            COALESCE((SELECT group_concat(p.name || COALESCE((SELECT ' ' || group_concat(a.alias, ' ') FROM person_aliases a WHERE a.person_id = p.id), ''), ' ')
+                FROM media_people mp JOIN people p ON p.id = mp.person_id WHERE mp.media_id = m.id AND p.private = 0), '') AS people,
+            COALESCE((SELECT s.name FROM studios s WHERE s.id = m.studio_id AND s.private = 0), '') AS studio,
+            COALESCE((SELECT group_concat(l.name || COALESCE((SELECT ' ' || group_concat(la.alias, ' ') FROM label_aliases la WHERE la.label_id = l.id), ''), ' ')
+                FROM media_labels ml JOIN labels l ON l.id = ml.label_id
+                WHERE ml.media_id = m.id AND l.kind = 2 AND l.private = 0), '') AS tags,
+            COALESCE((SELECT group_concat(l.name, ' ') FROM media_labels ml JOIN labels l ON l.id = ml.label_id
+                WHERE ml.media_id = m.id AND l.kind = 1
+                AND NOT EXISTS (WITH RECURSIVE up(id) AS (SELECT l.id UNION SELECT p.parent_id FROM labels p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL)
+                                SELECT 1 FROM labels x JOIN up ON x.id = up.id WHERE x.private = 1)), '') AS cats,
+            COALESCE((SELECT group_concat(k.label, ' ') FROM markers k WHERE k.media_id = m.id AND k.label <> ''), '') AS notes
+        FROM media m;
+    CREATE VIRTUAL TABLE media_fts USING fts5(name, title, people, studio, tags, cats, notes, tokenize = 'unicode61 remove_diacritics 2', prefix = '1 2 3');
+    INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src;
+    CREATE TRIGGER media_fts_ai AFTER INSERT ON media BEGIN
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER media_fts_au AFTER UPDATE OF name, title, studio_id ON media BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER media_fts_ad AFTER DELETE ON media BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.id;
+    END;
+    CREATE TRIGGER media_fts_ml_ai AFTER INSERT ON media_labels BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_ml_ad AFTER DELETE ON media_labels
+    WHEN EXISTS (SELECT 1 FROM media WHERE id = OLD.media_id) BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = OLD.media_id;
+    END;
+    CREATE TRIGGER media_fts_lb_au AFTER UPDATE OF name, private, parent_id ON labels BEGIN
+        DELETE FROM media_fts WHERE rowid IN (
+            WITH RECURSIVE sub(id) AS (SELECT NEW.id UNION SELECT c.id FROM labels c JOIN sub ON c.parent_id = sub.id)
+            SELECT ml.media_id FROM media_labels ml JOIN sub ON ml.label_id = sub.id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (
+            WITH RECURSIVE sub(id) AS (SELECT NEW.id UNION SELECT c.id FROM labels c JOIN sub ON c.parent_id = sub.id)
+            SELECT ml.media_id FROM media_labels ml JOIN sub ON ml.label_id = sub.id);
+    END;
+    CREATE TRIGGER media_fts_mk_ai AFTER INSERT ON markers BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_mk_au AFTER UPDATE OF label ON markers BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_mk_ad AFTER DELETE ON markers
+    WHEN EXISTS (SELECT 1 FROM media WHERE id = OLD.media_id) BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = OLD.media_id;
+    END;
+    CREATE TRIGGER media_fts_mp_ai AFTER INSERT ON media_people BEGIN
+        DELETE FROM media_fts WHERE rowid = NEW.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = NEW.media_id;
+    END;
+    CREATE TRIGGER media_fts_mp_ad AFTER DELETE ON media_people
+    WHEN EXISTS (SELECT 1 FROM media WHERE id = OLD.media_id) BEGIN
+        DELETE FROM media_fts WHERE rowid = OLD.media_id;
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id = OLD.media_id;
+    END;
+    CREATE TRIGGER media_fts_pp_au AFTER UPDATE OF name, private ON people BEGIN
+        DELETE FROM media_fts WHERE rowid IN (SELECT media_id FROM media_people WHERE person_id = NEW.id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT media_id FROM media_people WHERE person_id = NEW.id);
+    END;
+    CREATE TRIGGER media_fts_pa_ai AFTER INSERT ON person_aliases BEGIN
+        DELETE FROM media_fts WHERE rowid IN (SELECT media_id FROM media_people WHERE person_id = NEW.person_id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT media_id FROM media_people WHERE person_id = NEW.person_id);
+    END;
+    CREATE TRIGGER media_fts_pa_ad AFTER DELETE ON person_aliases BEGIN
+        DELETE FROM media_fts WHERE rowid IN (SELECT media_id FROM media_people WHERE person_id = OLD.person_id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT media_id FROM media_people WHERE person_id = OLD.person_id);
+    END;
+    CREATE TRIGGER media_fts_st_au AFTER UPDATE OF name, private ON studios BEGIN
+        DELETE FROM media_fts WHERE rowid IN (SELECT id FROM media WHERE studio_id = NEW.id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT id FROM media WHERE studio_id = NEW.id);
+    END;
+    CREATE TRIGGER media_fts_la_ai AFTER INSERT ON label_aliases BEGIN
+        DELETE FROM media_fts WHERE rowid IN (SELECT media_id FROM media_labels WHERE label_id = NEW.label_id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT media_id FROM media_labels WHERE label_id = NEW.label_id);
+    END;
+    CREATE TRIGGER media_fts_la_ad AFTER DELETE ON label_aliases BEGIN
+        DELETE FROM media_fts WHERE rowid IN (SELECT media_id FROM media_labels WHERE label_id = OLD.label_id);
+        INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT media_id FROM media_labels WHERE label_id = OLD.label_id);
+    END;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const COLS: &str = "id, path, name, kind, size, mtime, width, height, duration_ms, codec, \
                     added_at, missing, favorite, rating, resume_ms, play_count, \
-                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp, oshash";
+                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp, oshash, title";
 
 /// `COLS` with each column prefixed (for joins).
 pub(crate) fn row_to_media_cols(prefix: &str) -> String {
@@ -339,6 +457,10 @@ pub struct Filter {
     pub seed: u32,
     /// Playlist, tag and category conditions.
     pub org: OrgFilter,
+    /// Only items of this studio.
+    pub studio: Option<i64>,
+    /// Items featuring every one of these performers (at most 64).
+    pub people: Vec<i64>,
     pub limit: Option<u64>,
     pub offset: u64,
 }
@@ -1029,6 +1151,18 @@ impl Db {
             }
             args.push(Value::Text(format!("%{esc}%")));
         }
+        if let Some(s) = f.studio {
+            conds.push("media.studio_id = ?".into());
+            args.push(Value::Integer(s));
+        }
+        for p in f.people.iter().take(crate::organize::MAX_FILTER_IDS) {
+            conds.push(
+                "EXISTS (SELECT 1 FROM media_people mp WHERE mp.media_id = media.id \
+                 AND mp.person_id = ?)"
+                    .into(),
+            );
+            args.push(Value::Integer(*p));
+        }
         crate::organize::push_conds(&f.org, &mut conds, &mut args);
         let w = if conds.is_empty() {
             String::new()
@@ -1250,5 +1384,6 @@ pub(crate) fn row_to_media(r: &Row<'_>) -> rusqlite::Result<Media> {
         oshash: r
             .get::<_, Option<i64>>(23)?
             .map(|h| crate::fingerprint::oshash_hex(h as u64)),
+        title: r.get(24)?,
     })
 }

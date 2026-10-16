@@ -422,3 +422,80 @@ fn gen_man_renders_a_roff_page() {
         assert!(h.len() < 2 || !page.contains(&h), "page leaks the home dir");
     }
 }
+
+#[test]
+fn metadata_end_to_end_through_the_cli() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    make_library(lib.path());
+    let before = tree_bytes(lib.path());
+    json(&cli(
+        home.path(),
+        &["--json", "scan", lib.path().to_str().unwrap()],
+    ));
+    let q = json(&cli(home.path(), &["--json", "query", "--type", "image"]));
+    let id = q["items"][0]["id"].as_i64().unwrap().to_string();
+
+    json(&cli(
+        home.path(),
+        &[
+            "--json",
+            "info",
+            &id,
+            "--title",
+            "Quokka",
+            "--released",
+            "2020-02-29",
+        ],
+    ));
+    let studio = id_of(&json(&cli(
+        home.path(),
+        &["--json", "studio", "create", "Acme"],
+    )));
+    json(&cli(
+        home.path(),
+        &[
+            "--json",
+            "studio",
+            "assign",
+            "--studio",
+            &studio.to_string(),
+            &id,
+        ],
+    ));
+    let person = id_of(&json(&cli(
+        home.path(),
+        &["--json", "person", "create", "Jane"],
+    )));
+    let p = person.to_string();
+    json(&cli(
+        home.path(),
+        &["--json", "person", "alias-add", &p, "Jay"],
+    ));
+    json(&cli(home.path(), &["--json", "person", "assign", &p, &id]));
+    let info = json(&cli(home.path(), &["--json", "info", &id]));
+    assert_eq!(info["title"], "Quokka");
+    assert_eq!(info["studio"]["name"], "Acme");
+    assert_eq!(info["people"][0]["aliases"][0], "Jay");
+
+    let hit = json(&cli(home.path(), &["--json", "search", "jay"]));
+    assert_eq!(hit["count"], 1, "{hit}");
+    let by_person = json(&cli(home.path(), &["--json", "query", "--person", &p]));
+    assert_eq!(by_person["count"], 1);
+    let by_studio = json(&cli(
+        home.path(),
+        &["--json", "query", "--studio", &studio.to_string()],
+    ));
+    assert_eq!(by_studio["count"], 1);
+
+    json(&cli(home.path(), &["--json", "info", &id, "--clear-title"]));
+    let info = json(&cli(home.path(), &["--json", "info", &id]));
+    assert!(info["title"].is_null());
+    // Bad input fails cleanly and says nothing about the value.
+    let bad = cli(
+        home.path(),
+        &["--json", "info", &id, "--released", "yesterday"],
+    );
+    assert!(!bad.status.success());
+    assert_eq!(tree_bytes(lib.path()), before, "media untouched");
+}

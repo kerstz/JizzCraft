@@ -44,6 +44,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "labels_none",
     "untagged",
     "uncategorized",
+    "studio",
+    "people",
 ];
 
 fn invalid(m: impl Into<String>) -> Error {
@@ -122,8 +124,36 @@ impl Filter {
         if sort == SortKey::Position && org.playlist.is_none() {
             return Err(invalid("sort `position` needs a `playlist`"));
         }
+        let studio = match o.get("studio") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_i64()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| invalid("`studio` must be a positive id"))?,
+            ),
+        };
+        let people = match o.get("people") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(a)) if a.len() <= crate::organize::MAX_FILTER_IDS => a
+                .iter()
+                .map(|v| {
+                    v.as_i64()
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| invalid("`people` must hold positive ids"))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Some(Value::Array(_)) => {
+                return Err(invalid(format!(
+                    "`people` takes at most {} ids",
+                    crate::organize::MAX_FILTER_IDS
+                )));
+            }
+            Some(_) => return Err(invalid("`people` must be an array of ids")),
+        };
         Ok(Filter {
             org,
+            studio,
+            people,
             kind,
             favorites: get_bool(o, "fav")?,
             name: get_str(o, "name")?.map(str::to_owned),
@@ -213,6 +243,12 @@ impl Filter {
         }
         if let Some(dir) = &self.dir {
             o.insert("dir".into(), json!(dir.to_string_lossy()));
+        }
+        if let Some(s) = self.studio {
+            o.insert("studio".into(), json!(s));
+        }
+        if !self.people.is_empty() {
+            o.insert("people".into(), json!(self.people));
         }
         self.org.to_json(&mut o);
         Value::Object(o)

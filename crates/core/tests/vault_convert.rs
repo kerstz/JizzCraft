@@ -145,6 +145,18 @@ fn library(files: usize) -> Lib {
     db.conn_for_tests()
         .execute("UPDATE media SET rating = 4 WHERE id = 1", [])
         .unwrap();
+    // Descriptive metadata: found through the full-text index after any conversion.
+    let studio = db.studio_create("Canary Studio").unwrap();
+    db.set_info(
+        1,
+        jizzcraft_core::meta::Patch::Set("Quokka Title".into()),
+        jizzcraft_core::meta::Patch::Set("2021-03-04".into()),
+    )
+    .unwrap();
+    db.studio_assign(&[1], Some(studio)).unwrap();
+    let person = db.person_create("Okapi Person", "").unwrap();
+    db.person_alias_add(person, "Narwhal Alias").unwrap();
+    db.person_assign(&[person], &[1], true).unwrap();
     drop(db);
     let cache = t.path().join("cache");
     for sub in ["thumbs/ab", "previews/cd"] {
@@ -165,6 +177,7 @@ struct Snap {
     tables: Vec<(String, i64)>,
     version: i64,
     zebra: usize,
+    metadata_hits: [usize; 4],
     total: u64,
     rating: i64,
 }
@@ -203,6 +216,8 @@ fn snap(lib: &Lib, pass: Option<&str>) -> Snap {
         tables,
         version: db.schema_version().unwrap(),
         zebra: db.search("zebra", 10, 0).unwrap().len(),
+        metadata_hits: ["quokka", "okapi", "narwhal", "canary studio"]
+            .map(|q| db.search(q, 10, 0).unwrap().len()),
         total: db
             .count(&Filter {
                 include_missing: true,
@@ -276,6 +291,7 @@ fn enable_encrypts_everything_and_keeps_every_row() {
     let lib = library(0);
     let before = snap(&lib, None);
     assert_eq!(before.zebra, 1);
+    assert_eq!(before.metadata_hits, [1, 1, 1, 1]);
     add_plain_backup(&lib);
     assert!(!leaks(&lib).is_empty());
     enable_with(&lib.db, PASS, FAST, &lib.opts(None)).unwrap();

@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 mod browser;
 #[cfg(feature = "network")]
 mod downloads;
+mod meta_ui;
 mod onboarding;
 mod organize;
 #[cfg(feature = "network")]
@@ -262,6 +263,10 @@ pub struct JizzApp {
     grid_scroll: (f32, f32),
     focus_search: bool,
     marker_cache: Option<(i64, u64, Vec<jizzcraft_core::Marker>)>,
+    info_cache: Option<(i64, u64, jizzcraft_core::meta::MediaInfo)>,
+    studio_cache: Option<(u64, Vec<jizzcraft_core::meta::Studio>)>,
+    info_ui: meta_ui::InfoUi,
+    alias_edit: Option<meta_ui::AliasEdit>,
     /// When the next item starts by itself (autoplay), if pending.
     autoplay_at: Option<Instant>,
     /// Applied built-in/saved view or folder filter (replaces the tab filter).
@@ -664,6 +669,10 @@ impl JizzApp {
             grid_scroll: (0.0, 0.0),
             focus_search: false,
             marker_cache: None,
+            info_cache: None,
+            studio_cache: None,
+            info_ui: meta_ui::InfoUi::default(),
+            alias_edit: None,
             autoplay_at: None,
             extra: None,
             view_label: String::new(),
@@ -1027,7 +1036,11 @@ impl JizzApp {
     pub fn run(&mut self, name: &str, args: Value) {
         let reg = Rc::clone(&self.registry);
         match reg.run(self, name, args) {
-            Ok(_) => {}
+            Ok(_) => {
+                if meta_ui::changes_metadata(name) {
+                    self.refresh();
+                }
+            }
             Err(e) => {
                 jizzcraft_core::debug_log!("command {name} failed: {e}");
                 self.toast(ToastKind::Error, e.to_string());
@@ -2027,6 +2040,7 @@ impl JizzApp {
                 if let Some(r) = widgets::rating_stars(ui, m.rating, 16.0) {
                     self.push("media.rate", json!({ "id": m.id, "rating": r }));
                 }
+                self.inspector_details(ui, m.id, discreet);
                 if m.kind == MediaKind::Video {
                     ui.add_space(S);
                     widgets::eyebrow(ui, "", "Markers", "");
@@ -2893,6 +2907,7 @@ impl eframe::App for JizzApp {
         self.remove_folder_dialog(&ctx);
         self.picker_window(&ctx);
         self.org_confirm_window(&ctx);
+        self.tag_alias_window(&ctx);
         self.org_drag_ghost(&ctx);
         self.triage_strip(&ctx);
         self.toasts_ui(&ctx);
@@ -4076,7 +4091,7 @@ fn draw_tile(
     let name = if discreet {
         "• • •".to_owned()
     } else {
-        m.name.clone()
+        m.title.clone().unwrap_or_else(|| m.name.clone())
     };
     let meta = match m.kind {
         MediaKind::Video => m.duration_ms.map(fmt_duration),
