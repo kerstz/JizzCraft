@@ -4,6 +4,9 @@ For people who want to install JizzCraft and use it, without knowing Rust or
 much about Linux. Two minutes to read, a few more to install. If you would
 rather judge how it is built, go to [internals.md](internals.md) instead.
 
+No account, no cloud, no telemetry: the only thing that leaves your machine is
+your dignity, and only if you leave the window in fullscreen.
+
 - [What it is, in one paragraph](#what-it-is)
 - [Install (Linux)](#install)
 - [First launch, step by step](#first-launch)

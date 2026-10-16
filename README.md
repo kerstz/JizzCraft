@@ -2,6 +2,7 @@
 <h1 align="center">JizzCraft</h1>
 <p align="center"><b>A private, offline library and player for your own adult collection.</b><br>
 Your files stay where they are. Your history stays on your disk. Your browser history stays boring.</p>
+<p align="center"><i>Offline by design: nothing leaves your machine, including your dignity.<br>No telemetry. Only shame, and that stays local too. Self-hosted, self-served.</i></p>
 <p align="center">
   <a href="https://github.com/kerstz/JizzCraft/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/kerstz/JizzCraft?include_prereleases&style=flat-square&color=ff8a6b"></a>
   <a href="https://github.com/kerstz/JizzCraft/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/kerstz/JizzCraft/ci.yml?branch=main&style=flat-square&label=CI"></a>
@@ -76,12 +77,12 @@ gh attestation verify jizzcraft-*-linux.tar.xz --repo kerstz/JizzCraft   # build
 
 Because the usual options are a general-purpose media player that forgets everything, a self-hosted media server with a web UI and an account system for an audience of one, or a folder called `homework`.
 
-- **Your files are read, never touched.** No moves, no renames, no sidecar files, no tags written into your media. Ratings, history and markers live in one SQLite database. A test hashes a media tree before and after every engine command.
-- **Offline is a build property, not a setting.** The default build does not contain a network stack, and a test fails if one sneaks into the dependency tree. GStreamer's network-capable elements are removed from the app's registry at start-up, so a streaming playlist renamed to `.mp4` is refused, not fetched.
-- **Discreet when it matters.** `Ctrl+Shift+H` is a boss key (pause, mute, discreet mode, minimize). `Ctrl+Shift+M` is a panic switch: it jumps full-screen, with sound, to a local video you chose in advance (Library menu, Privacy, "Panic video"), turns discreet mode on and records nothing in history; with no video chosen it acts as the boss key. Discreet mode retitles the window "Viewer", swaps the icon, hides names and blurs thumbnails. Share-safe mode blurs everything until hovered. A neutral "Viewer" launcher starts the app disguised.
-- **Keyboard first, one hand if you like.** Arrows, `Enter`, `/` to search, `V` to triage new imports, `R` for a random pick. A left-hand preset puts browsing, playback, ratings and the boss key around `WASD` ([details](#one-hand-is-enough)), which is also a motor-accessibility setting.
-- **Native and fast.** A virtualized grid that renders only visible rows and loads only a window of them from SQLite, thumbnails in a background pool, playback paced by the GStreamer clock. Measured, including where it is slow ([docs/bench.md](docs/bench.md)).
-- **Scriptable.** One registry of named commands drives the menus, the shortcuts, a JSON CLI and `--cmd` ([Built for agents](#built-for-agents)).
+- **Your files are read, never touched.** No moves, no renames, no sidecar files, no tags written into your media. Ratings, history and markers live in one SQLite database. A test hashes a media tree before and after every engine command. Someone in this relationship has to keep their hands to themselves.
+- **Offline is a build property, not a setting.** The default build does not contain a network stack, and a test fails if one sneaks into the dependency tree. GStreamer's network-capable elements are removed from the app's registry at start-up, so a streaming playlist renamed to `.mp4` is refused, not fetched. It doesn't ignore the internet; it has never heard of it.
+- **Discreet when it matters.** `Ctrl+Shift+H` is a boss key (pause, mute, discreet mode, minimize). `Ctrl+Shift+M` is a panic switch: it jumps full-screen, with sound, to a local video you chose in advance (Library menu, Privacy, "Panic video"), turns discreet mode on and records nothing in history; with no video chosen it acts as the boss key. Discreet mode retitles the window "Viewer", swaps the icon, hides names and blurs thumbnails. Share-safe mode blurs everything until hovered. A neutral "Viewer" launcher starts the app disguised. Your alibi plays at full volume.
+- **Keyboard first, one hand if you like.** Arrows, `Enter`, `/` to search, `V` to triage new imports, `R` for a random pick. A left-hand preset puts browsing, playback, ratings and the boss key around `WASD` ([details](#one-hand-is-enough)), which is also a motor-accessibility setting. Gamers will feel right at home; that is the explanation we are going with.
+- **Native and fast.** A virtualized grid that renders only visible rows and loads only a window of them from SQLite, thumbnails in a background pool, playback paced by the GStreamer clock. Measured, including where it is slow ([docs/bench.md](docs/bench.md)). Blazingly fast (the Rust community requires us to say this), blazingly discreet (the part you care about).
+- **Scriptable.** One registry of named commands drives the menus, the shortcuts, a JSON CLI and `--cmd` ([Built for agents](#built-for-agents)). Yes, you can automate it. No, we won't ask why.
 
 ### A look around
 
@@ -133,8 +134,8 @@ What changed in this version: [CHANGELOG.md](CHANGELOG.md).
 
 - **Views**: Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers, plus your own saved views and a folder tree with counts.
 - **Organise**: 0–5 star ratings, a reversible *hide* (a database flag, nothing else), playlists, categories (a tree) and tags; private tags and categories are not indexed for search. Multi-select with bulk rate, favorite, hide and "Add to". See [docs/organise.md](docs/organise.md).
-- **Inbox triage**: review new imports one at a time with `V`: keep, hide, favorite, undo. Nothing is ever deleted.
-- **Moves are recognised**: once files are fingerprinted (size plus the first and last 64 KiB), a renamed or moved file keeps its rating, history and markers at the next rescan. It judges a file by its cover and its last page.
+- **Inbox triage**: review new imports one at a time with `V`: keep, hide, favorite, undo. Nothing is ever deleted. Tinder for files, without the matches and without the regrets.
+- **Moves are recognised**: once files are fingerprinted (size plus the first and last 64 KiB), a renamed or moved file keeps its rating, history and markers at the next rescan. It judges a file by its cover and its last page. You can rename `definitely_not_that.mp4` all you like; it will still know.
 - **Shuffle** that never repeats or skips while paging, a **random pick** (`R`) and a **slideshow** (`T`).
 
 **Viewer and player.**
@@ -171,6 +172,29 @@ Turn it on once: press `?` in the library and click *Left-hand keys*, or start t
 Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Ctrl+Shift+M` panic switch, `Ctrl+Shift+L` lock the encrypted library (vault only). Inbox triage: `D` keep, `S` or `X` hide, `W` favorite, `A` undo, `Q` leave. Press `?` in the app for the full list of both presets (it is generated from the same table the app uses).
 
 **Honest footnote: what still wants the other hand or a pointer.** Turning the preset on (one click, or the `--cmd` above); `?`, `/` and typing a search, `Home` / `End`, `Alt+0`; the system folder picker behind `Ctrl+O`; dragging the timeline, panning a zoomed image, the sidebar, sorting, the inspector and the player-bar chips; seeking during triage. The bindings are checked by tests as a table but have not been verified by hand yet.
+
+### FAQ
+
+<details>
+<summary><b>Legality, Rust, the cloud, visitors and more</b></summary>
+
+**Is this legal?** It is a media library and player, about as legal as a file manager with a nicer grid. JizzCraft ships no media, no sites, no indexers and no catalogs. It is for adults (18+) managing media they own or are entitled to keep; what you put in it, or search for and download with the Online edition, is your responsibility.
+
+**Why Rust?** Because if anything was going to crash in the middle of playback, it was not going to be us. Rust gives a native app with no garbage-collector pauses, and tests that can prove things like "no network crate in the default build". Also, we were legally required to mention it in the title (we were not).
+
+**Where is the cloud?** Above your house, where it belongs. The default (Offline) build has no network code at all, not compiled and not linked, and a test fails if any appears. Your library is one SQLite database on your own disk.
+
+**Does it phone home?** It does not even know where home is. No account, no telemetry, no update check: the app never contacts GitHub by itself. You update by re-running the installer.
+
+**Will it rename, move or "organise" my files?** No. Ratings, tags, history and markers live in the database; your files are read, never written. Even "hide" is just a flag.
+
+**What if someone walks in?** Practise the chord now. `Ctrl+Shift+H` is the boss key and `Ctrl+Shift+M` the panic switch (see [Discreet when it matters](#why)). The minimize step has not been checked by hand under every compositor, so do a dry run first.
+
+**Can I encrypt the library?** Yes, with the [vault](docs/vault.md) (alpha, off by default). There is no recovery: that is not a missing feature, it is the feature. Write the passphrase down somewhere that is not a file called `passphrase.txt`.
+
+**Windows or macOS?** In theory, enthusiastically. Both compile in CI, but neither has ever run on real hardware (see [Status](#status-020-alpha)). Brave testers welcome, discretion guaranteed.
+
+</details>
 
 ### Troubleshooting
 
