@@ -689,20 +689,6 @@ impl PlayerView {
             );
         }
 
-        // Time, mono: 00:12:43 / 00:41:07
-        let total = dur.map_or("--:--:--".to_owned(), fmt_clock);
-        painter.text(
-            pos2(rect.left() + margin, rect.bottom() - 18.0),
-            Align2::LEFT_CENTER,
-            if live {
-                fmt_clock(pos)
-            } else {
-                format!("{} / {}", fmt_clock(pos), total)
-            },
-            FontId::new(12.0, FontFamily::Monospace),
-            TEXT,
-        );
-
         let state = self.player.state();
         let status = match state {
             PlayState::Playing => "PLAYING",
@@ -711,23 +697,12 @@ impl PlayerView {
             PlayState::Loading => "LOADING",
             PlayState::Error => "ERROR",
         };
-        painter.text(
-            pos2(rect.center().x, rect.bottom() - 18.0),
-            Align2::CENTER_CENTER,
-            status,
-            FontId::new(10.0, FontFamily::Monospace),
-            if state == PlayState::Error {
-                DANGER
-            } else {
-                MUTED
-            },
-        );
         // Transport, right of the clock: back, play/pause, mute, fullscreen.
         let transport = Rect::from_min_max(
             pos2(rect.left() + margin + 156.0, rect.bottom() - 36.0),
             pos2(rect.left() + margin + 156.0 + 330.0, rect.bottom() - 6.0),
         );
-        {
+        let transport_right = {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(transport)
@@ -762,12 +737,15 @@ impl PlayerView {
                 self.actions
                     .push(("player.fullscreen".into(), serde_json::json!({})));
             }
-        }
+            child.min_rect().right()
+        };
         // Right-hand chips: speed, A-B loop, autoplay.
         let chips = Rect::from_min_max(
             pos2(transport.right() + 8.0, rect.bottom() - 36.0),
             pos2(rect.right() - margin - 130.0, rect.bottom() - 6.0),
         );
+        // Left edge of everything on the right (volume when no chips).
+        let mut controls_left = rect.right() - margin - 120.0;
         if chips.width() > 150.0 {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -882,6 +860,54 @@ impl PlayerView {
                 self.actions
                     .push(("player.speed".into(), serde_json::json!({ "cycle": true })));
             }
+            controls_left = child.min_rect().left().min(controls_left);
+        }
+        // State label (and the clock, which an error may replace). The label
+        // sits in the free gap between the transport and the right-hand
+        // controls and is dropped when there is no room for it.
+        {
+            let (color, y) = (
+                if state == PlayState::Error {
+                    DANGER
+                } else {
+                    MUTED
+                },
+                rect.bottom() - 18.0,
+            );
+            let galley = painter.layout_no_wrap(
+                status.to_owned(),
+                FontId::new(10.0, FontFamily::Monospace),
+                color,
+            );
+            let gap = (transport_right + 8.0, controls_left - 8.0);
+            let at = status_x(rect.center().x, gap, galley.size().x);
+            if let Some(x) = at {
+                painter.galley(
+                    pos2(x - galley.size().x / 2.0, y - galley.size().y / 2.0),
+                    galley,
+                    color,
+                );
+            }
+            // Time, mono: 00:12:43 / 00:41:07
+            let total = dur.map_or("--:--:--".to_owned(), fmt_clock);
+            let clock = if at.is_none() && state == PlayState::Error {
+                "ERROR".to_owned()
+            } else if live {
+                fmt_clock(pos)
+            } else {
+                format!("{} / {}", fmt_clock(pos), total)
+            };
+            painter.text(
+                pos2(rect.left() + margin, y),
+                Align2::LEFT_CENTER,
+                clock,
+                FontId::new(12.0, FontFamily::Monospace),
+                if at.is_none() && state == PlayState::Error {
+                    DANGER
+                } else {
+                    TEXT
+                },
+            );
         }
         let vol = if self.player.muted() {
             "MUTED".to_owned()
@@ -1054,6 +1080,20 @@ impl PlayerView {
     }
 }
 
+/// Where the state label is centred: the middle of the bar when the whole
+/// text fits between the transport and the right-hand controls (`gap` is the
+/// free span), else the middle of the gap, else nowhere (`None`).
+fn status_x(bar_center: f32, gap: (f32, f32), text_w: f32) -> Option<f32> {
+    let half = text_w / 2.0;
+    if bar_center - half >= gap.0 && bar_center + half <= gap.1 {
+        Some(bar_center)
+    } else if gap.1 - gap.0 >= text_w {
+        Some((gap.0 + gap.1) / 2.0)
+    } else {
+        None
+    }
+}
+
 pub fn fmt_clock(d: Duration) -> String {
     let s = d.as_secs();
     format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
@@ -1119,5 +1159,40 @@ mod audio_label_tests {
         // The word is translated (the language is process-wide): the number
         // is what must be there.
         assert!(audio_label(None, 2).contains('3'));
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::status_x;
+
+    #[test]
+    fn status_label_is_centred_when_there_is_room() {
+        assert_eq!(status_x(960.0, (520.0, 1400.0), 60.0), Some(960.0));
+    }
+
+    #[test]
+    fn status_label_never_overlaps_controls() {
+        for chips in [0.0_f32, 200.0, 420.0] {
+            for w in (760..=1920).step_by(10) {
+                let w = w as f32;
+                let gap = (24.0 + 156.0 + 330.0 + 8.0, w - 24.0 - 120.0 - chips - 8.0);
+                for text_w in [42.0_f32, 60.0] {
+                    match status_x(w / 2.0, gap, text_w) {
+                        None => {}
+                        Some(x) => assert!(
+                            x - text_w / 2.0 >= gap.0 && x + text_w / 2.0 <= gap.1,
+                            "w={w} chips={chips} x={x}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn status_label_hides_when_the_gap_is_too_small() {
+        assert_eq!(status_x(500.0, (400.0, 440.0), 60.0), None);
+        assert_eq!(status_x(500.0, (440.0, 400.0), 10.0), None);
     }
 }

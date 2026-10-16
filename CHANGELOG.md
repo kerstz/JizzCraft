@@ -8,6 +8,9 @@ anything may change between minor versions.
 ## [Unreleased]
 
 ### Fixed
+- Player: the PLAYING / PAUSED state label no longer overlaps the transport
+  buttons in narrow windows; it moves into the free space or hides. An error
+  shows ERROR in place of the clock when there is no room for the label.
 - Online edition: restarting a torrent that went to the error state over its
   own partial files now first checks that every existing file is still the
   one the session wrote (same inode, regular file, not longer than expected).
