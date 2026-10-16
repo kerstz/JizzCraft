@@ -143,8 +143,17 @@ jobs:
   network:
     name: network build · clippy · test
     runs-on: ubuntu-24.04
+    env:
+      # The network test binaries are many and large; with full debuginfo the
+      # linker died with SIGBUS (runner disk full) on two runs in a row.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v5
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install GStreamer
         run: |
           sudo apt-get update
