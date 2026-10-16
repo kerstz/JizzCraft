@@ -379,6 +379,8 @@ mod tests {
         assert_eq!(validate_hello(h), Err(HelloError::Template));
     }
 
+    // The helper is a Linux (WebKitGTK) program; these literals are POSIX paths.
+    #[cfg(unix)]
     #[test]
     fn profile_paths() {
         let rt = Path::new("/run/user/1000");
