@@ -20,6 +20,7 @@ Then, when you need them:
 | [accessibility.md](accessibility.md) | screen readers, zoom, contrast, reduce motion, and what is not verified |
 | [editions.md](editions.md) | Offline or Online, and switching between them |
 | [vault.md](vault.md) | the optional encrypted library (alpha, read the threat model first) |
+| [interop.md](interop.md) | content hashes and what is read from other tools, and what is refused |
 | [windows.md](windows.md) | Windows (experimental, never run on real hardware) |
 | [streaming.md](streaming.md), [browser.md](browser.md) | Online edition: your own sources, resolvers, the optional browser |
 

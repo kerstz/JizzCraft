@@ -29,6 +29,16 @@ const BANNED: &[&str] = &[
     "tokio",
     "quinn",
     "axum",
+    // No listening socket serves the library in any build (docs/interop.md).
+    "rupnp",
+    "ssdp-client",
+    "dav-server",
+    "mdns-sd",
+    "libmdns",
+    "tiny_http",
+    "actix-web",
+    "warp",
+    "rouille",
     // Browser engines live in the separate helper process only.
     "webkit6",
     "webkit2gtk",

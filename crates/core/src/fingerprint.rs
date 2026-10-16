@@ -4,6 +4,9 @@
 //! `fp = blake3("jzfp1" || size_le || first 64 KiB || last 64 KiB)[..16]`.
 //! Files up to 128 KiB are hashed whole. A middle-only edit of a larger file
 //! keeps the same fingerprint, which is why size is always compared too.
+//!
+//! `oshash` is the 64-bit sum of `size` and the first and last 64 KiB read as
+//! little-endian words (files under 64 KiB use `size / 8 * 8` bytes at each end).
 
 use crate::db::{Db, blob_to_path, fp_string};
 use crate::error::{Error, Result};
@@ -16,28 +19,79 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const FP_CHUNK: u64 = 64 * 1024;
 
+/// Everything one read of a file's head and tail yields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hashes {
+    pub size: u64,
+    pub fp: [u8; 16],
+    /// OpenSubtitles-style hash (the one Stash and others call `oshash`);
+    /// `None` for files of 8 bytes or less.
+    pub oshash: Option<u64>,
+}
+
 /// Returns `(size, fingerprint)` for a file.
 pub fn quick_fp(path: &Path) -> std::io::Result<(u64, [u8; 16])> {
+    let h = quick_hashes(path)?;
+    Ok((h.size, h.fp))
+}
+
+/// Reads the head and tail of a file once and derives both hashes. Read-only.
+pub fn quick_hashes(path: &Path) -> std::io::Result<Hashes> {
     let mut f = std::fs::File::open(path)?;
     let size = f.metadata()?.len();
     let mut h = blake3::Hasher::new();
     h.update(b"jzfp1");
     h.update(&size.to_le_bytes());
-    let mut buf = Vec::new();
-    if size <= FP_CHUNK * 2 {
+    let oshash = if size <= FP_CHUNK * 2 {
+        let mut buf = Vec::new();
         f.read_to_end(&mut buf)?;
         h.update(&buf);
+        // The file may have changed length since the metadata call.
+        let n = buf.len() as u64;
+        let chunk = (FP_CHUNK.min(n / 8 * 8)) as usize;
+        oshash_of(n, &buf[..chunk], &buf[buf.len() - chunk..])
     } else {
-        buf.resize(FP_CHUNK as usize, 0);
-        f.read_exact(&mut buf)?;
-        h.update(&buf);
+        let mut head = vec![0u8; FP_CHUNK as usize];
+        f.read_exact(&mut head)?;
+        h.update(&head);
         f.seek(SeekFrom::Start(size - FP_CHUNK))?;
-        f.read_exact(&mut buf)?;
-        h.update(&buf);
+        let mut tail = vec![0u8; FP_CHUNK as usize];
+        f.read_exact(&mut tail)?;
+        h.update(&tail);
+        oshash_of(size, &head, &tail)
+    };
+    let mut fp = [0u8; 16];
+    fp.copy_from_slice(&h.finalize().as_bytes()[..16]);
+    Ok(Hashes { size, fp, oshash })
+}
+
+/// `size` plus the little-endian 64-bit words of `head` and `tail`, wrapping.
+/// Each slice is 64 KiB for a big file, or `size / 8 * 8` bytes for a file
+/// under 64 KiB. `None` for files of 8 bytes or less (nothing to hash).
+pub fn oshash_of(size: u64, head: &[u8], tail: &[u8]) -> Option<u64> {
+    if size <= 8 {
+        return None;
     }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&h.finalize().as_bytes()[..16]);
-    Ok((size, out))
+    let words = |b: &[u8]| {
+        b.as_chunks::<8>()
+            .0
+            .iter()
+            .fold(0u64, |acc, w| acc.wrapping_add(u64::from_le_bytes(*w)))
+    };
+    Some(size.wrapping_add(words(head)).wrapping_add(words(tail)))
+}
+
+/// `{:016x}`.
+pub fn oshash_hex(h: u64) -> String {
+    format!("{h:016x}")
+}
+
+/// Exactly 16 hexadecimal digits.
+pub fn parse_oshash(s: &str) -> Option<u64> {
+    if s.len() != 16 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u64::from_str_radix(s, 16).ok()
 }
 
 pub fn parse_fp(s: &str) -> Option<[u8; 16]> {
@@ -76,7 +130,34 @@ impl Db {
         Ok(())
     }
 
-    /// Present files without a fingerprint: `(id, path, size)`.
+    /// Store both hashes. The oshash is kept as a bit-cast `i64`.
+    pub fn set_hashes(&self, id: i64, fp: &[u8; 16], oshash: Option<u64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE media SET fp = ?2, oshash = ?3 WHERE id = ?1",
+            params![id, fp.as_slice(), oshash.map(|h| h as i64)],
+        )?;
+        Ok(())
+    }
+
+    /// Ids of rows with this oshash, lowest first (at most 1000).
+    pub fn ids_by_oshash(&self, h: u64) -> Result<Vec<i64>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id FROM media WHERE oshash = ?1 ORDER BY id LIMIT 1000")?;
+        let rows = st.query_map([h as i64], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Ids of rows with this fingerprint, lowest first (at most 1000).
+    pub fn ids_by_fp(&self, fp: &[u8; 16]) -> Result<Vec<i64>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id FROM media WHERE fp = ?1 ORDER BY id LIMIT 1000")?;
+        let rows = st.query_map([fp.as_slice()], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Present files without a fingerprint or an oshash: `(id, path, size)`.
     pub fn fp_pending(&self, user_data_only: bool, limit: u64) -> Result<Vec<(i64, PathBuf, u64)>> {
         let extra = if user_data_only {
             format!(" AND {USER_DATA}")
@@ -85,7 +166,8 @@ impl Db {
         };
         let mut st = self.conn.prepare(&format!(
             "SELECT id, path, size FROM media
-             WHERE fp IS NULL AND missing = 0{extra} ORDER BY id LIMIT ?1"
+             WHERE (fp IS NULL OR (oshash IS NULL AND size > 8)) AND missing = 0{extra}
+             ORDER BY id LIMIT ?1"
         ))?;
         let rows = st.query_map([limit as i64], |r| {
             Ok((
@@ -104,7 +186,10 @@ impl Db {
             String::new()
         };
         Ok(self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM media WHERE fp IS NULL AND missing = 0{extra}"),
+            &format!(
+                "SELECT COUNT(*) FROM media
+                 WHERE (fp IS NULL OR (oshash IS NULL AND size > 8)) AND missing = 0{extra}"
+            ),
             [],
             |r| r.get::<_, i64>(0),
         )? as u64)
@@ -194,9 +279,9 @@ pub fn fingerprint_pending(
                 break 'outer;
             }
             tried.insert(id);
-            match quick_fp(&path) {
-                Ok((s, fp)) if s == size => {
-                    db.set_fp(id, &fp)?;
+            match quick_hashes(&path) {
+                Ok(h) if h.size == size => {
+                    db.set_hashes(id, &h.fp, h.oshash)?;
                     rep.hashed += 1;
                 }
                 Ok(_) => rep.changed += 1,

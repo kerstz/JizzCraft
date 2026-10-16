@@ -204,6 +204,28 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
             .ok_or_else(|| Error::NotFound(format!("media id {id}")))?;
         Ok(serde_json::to_value(m).expect("media serialize"))
     });
+    reg.register(
+        "media.by_hash",
+        "Find items by content hash, exactly one of: {oshash?: 16 hex, fp?: fp1:...}",
+        |c, a| {
+            let os = a.get("oshash").and_then(Value::as_str);
+            let fp = a.get("fp").and_then(Value::as_str);
+            let ids = match (os, fp) {
+                (Some(h), None) => {
+                    let h = crate::fingerprint::parse_oshash(h)
+                        .ok_or_else(|| Error::Invalid("oshash must be 16 hex digits".into()))?;
+                    c.db().ids_by_oshash(h)?
+                }
+                (None, Some(f)) => {
+                    let f = crate::fingerprint::parse_fp(f)
+                        .ok_or_else(|| Error::Invalid("fp must look like fp1:<32 hex>".into()))?;
+                    c.db().ids_by_fp(&f)?
+                }
+                _ => return Err(Error::Invalid("give exactly one of `oshash`, `fp`".into())),
+            };
+            Ok(json!({ "ids": ids }))
+        },
+    );
     reg.register(MEDIA_FAVORITE_TOGGLE, "Toggle favorite: {id}", |c, a| {
         let id = id_arg(&a)?;
         let favorite = c.db().toggle_favorite(id)?;

@@ -703,7 +703,7 @@ fn export_v2_round_trip_and_v1_import() {
     assert_eq!(rep.playlists, 1, "private playlist excluded");
     let text = fs::read_to_string(&out).unwrap();
     let doc: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(doc["version"], 2);
+    assert_eq!(doc["version"], 3);
     assert!(!text.contains("secret"), "private tag leaked");
     assert!(!text.contains("Hidden one"));
     let item_a = doc["items"]

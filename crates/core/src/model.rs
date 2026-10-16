@@ -89,6 +89,8 @@ pub struct Media {
     pub checked_at: Option<i64>,
     /// Quick content fingerprint, `fp1:<hex>`.
     pub fp: Option<String>,
+    /// OpenSubtitles-style hash, 16 lowercase hex digits.
+    pub oshash: Option<String>,
 }
 
 /// Metadata discovered after indexing (by core for images, by `media` for videos).

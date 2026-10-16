@@ -78,7 +78,9 @@ Rules (from [AGENTS.md](../AGENTS.md)), and what holds them:
 | The player, stream player, thumbnails, probes, scrub previews and integrity checks open zero connections, even on HLS/DASH playlists disguised as videos | [`crates/media/tests/network.rs`](../crates/media/tests/network.rs) (`player_never_connects`, `stream_player_never_connects`, `timed_player_never_connects`, `thumbnails_and_probe_never_connect`, `integrity_checks_never_connect`, `scrub_previews_never_connect`): a local listener counts connections |
 | The first-run wizard cannot start a network session | `wizard_never_starts_a_network_session` in [`crates/ui/src/app/onboarding.rs`](../crates/ui/src/app/onboarding.rs) |
 | The engine never modifies, moves or deletes media | `engine_never_touches_media` in [`crates/core/tests/portability.rs`](../crates/core/tests/portability.rs): hashes a tree before and after every command |
+| Content hashes: `oshash` matches independent references, `fp1` is unchanged | [`crates/core/tests/hashes.rs`](../crates/core/tests/hashes.rs) |
 | Old migrations are never edited | `migrations_are_frozen` in [`crates/core/tests/migrations.rs`](../crates/core/tests/migrations.rs) |
+| No listening socket or server crate in any build | `default_build_has_no_network_crates` (its list also bans DLNA, WebDAV, mDNS and HTTP server crates); [interop.md](interop.md) |
 | Paths become stable opaque tags before reaching logs | `redacted_paths_are_stable_opaque_tags` in [`crates/core/src/privacy.rs`](../crates/core/src/privacy.rs) |
 | Vault: nothing readable in clear after `vault enable` | `canary_nothing_readable_after_enable` in [`apps/jizzcraft-cli/tests/vault.rs`](../apps/jizzcraft-cli/tests/vault.rs) |
 | Key table: no duplicate chords, exact modifiers, AZERTY digits and left-hand letters by physical key | tests at the end of [`crates/ui/src/keys.rs`](../crates/ui/src/keys.rs) |

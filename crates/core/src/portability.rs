@@ -14,8 +14,8 @@ use std::io::Write;
 use std::path::Path;
 
 const FORMAT: &str = "jizzcraft-meta";
-/// Written version. Version 1 files (no tags, categories, playlists) still import.
-const VERSION: u64 = 2;
+/// Written version. Versions 1 and 2 still import (no tags and playlists in 1; no `oshash` before 3).
+const VERSION: u64 = 3;
 
 pub(crate) fn check_dest(dest: &Path) -> Result<()> {
     if dest.as_os_str().is_empty() {
@@ -176,7 +176,7 @@ pub fn export_meta_ext(
     let mut items: Vec<Value> = Vec::new();
     let mut st = db.conn.prepare(
         "SELECT id, fp, size, duration_ms, name, favorite, rating, hidden,
-                resume_ms, play_count, last_played_at
+                resume_ms, play_count, last_played_at, oshash
          FROM media
          WHERE favorite = 1 OR rating > 0 OR hidden = 1 OR play_count > 0
             OR resume_ms IS NOT NULL
@@ -197,10 +197,11 @@ pub fn export_meta_ext(
             r.get::<_, Option<i64>>(8)?,
             r.get::<_, i64>(9)?,
             r.get::<_, Option<i64>>(10)?,
+            r.get::<_, Option<i64>>(11)?,
         ))
     })?;
     for row in rows {
-        let (id, fp, size, dur, name, fav, rating, hidden, resume, plays, last) = row?;
+        let (id, fp, size, dur, name, fav, rating, hidden, resume, plays, last, oshash) = row?;
         let tags = item_tags.remove(&id).unwrap_or_default();
         let cats = item_cats.remove(&id).unwrap_or_default();
         let markers: Vec<Value> = db
@@ -232,6 +233,9 @@ pub fn export_meta_ext(
             "tags": tags,
             "categories": cats,
         });
+        if let Some(h) = oshash {
+            it["oshash"] = json!(crate::fingerprint::oshash_hex(h as u64));
+        }
         if let Some(d) = dur {
             it["duration_ms"] = json!(d);
         }
@@ -311,7 +315,7 @@ pub fn import_meta(db: &mut Db, src: &Path, dry_run: bool) -> Result<ImportRepor
     if doc["format"] != FORMAT {
         return Err(Error::Invalid("not a JizzCraft metadata export".into()));
     }
-    if !matches!(doc["version"].as_u64(), Some(1) | Some(2)) {
+    if !matches!(doc["version"].as_u64(), Some(1..=3)) {
         return Err(Error::Invalid("unsupported export version".into()));
     }
     let mut rep = ImportReport::default();
@@ -346,16 +350,32 @@ pub fn import_meta(db: &mut Db, src: &Path, dry_run: bool) -> Result<ImportRepor
     }
     for it in doc["items"].as_array().into_iter().flatten() {
         let fp = it["fp"].as_str().and_then(parse_fp);
-        let size = it["size"].as_i64();
-        let (Some(fp), Some(size)) = (fp, size) else {
+        let oshash = it["oshash"]
+            .as_str()
+            .and_then(crate::fingerprint::parse_oshash);
+        let Some(size) = it["size"].as_i64() else {
             rep.unmatched += 1;
             continue;
         };
-        let ids: Vec<i64> = {
+        // The fingerprint first; the oshash (with the size) only when the
+        // fingerprint finds nothing.
+        let mut ids: Vec<i64> = Vec::new();
+        if let Some(fp) = fp {
             let mut st = tx.prepare("SELECT id FROM media WHERE fp = ?1 AND size = ?2")?;
             let rows = st.query_map(params![fp.as_slice(), size], |r| r.get(0))?;
-            rows.collect::<std::result::Result<_, _>>()?
-        };
+            ids = rows.collect::<std::result::Result<_, _>>()?;
+        }
+        if ids.is_empty()
+            && let Some(h) = oshash
+        {
+            let mut st = tx.prepare("SELECT id FROM media WHERE oshash = ?1 AND size = ?2")?;
+            let rows = st.query_map(params![h as i64, size], |r| r.get(0))?;
+            ids = rows.collect::<std::result::Result<_, _>>()?;
+        }
+        if fp.is_none() && oshash.is_none() {
+            rep.unmatched += 1;
+            continue;
+        }
         match ids.as_slice() {
             [] => rep.unmatched += 1,
             [id] => {

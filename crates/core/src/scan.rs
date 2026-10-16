@@ -209,7 +209,7 @@ fn scan_inner(
         let mut update = tx.prepare(
             "UPDATE media SET size = ?2, mtime = ?3, width = ?4, height = ?5,
                               duration_ms = NULL, codec = NULL, missing = 0, scan_gen = ?6,
-                              fp = NULL, checksum = NULL, checked_at = NULL,
+                              fp = NULL, oshash = NULL, checksum = NULL, checked_at = NULL,
                               damaged = 0, check_note = NULL
              WHERE path = ?1",
         )?;

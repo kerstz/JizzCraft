@@ -150,13 +150,16 @@ const MIGRATIONS: &[&str] = &[
         DELETE FROM media_fts WHERE rowid = OLD.media_id;
         INSERT INTO media_fts(rowid, name, tags, cats, notes) SELECT id, name, tags, cats, notes FROM media_fts_src WHERE id = OLD.media_id;
     END;",
+    // v5: OpenSubtitles-style hash, a bit-cast u64, filled by `library.fingerprint`.
+    "ALTER TABLE media ADD COLUMN oshash INTEGER;
+    CREATE INDEX media_oshash ON media(oshash) WHERE oshash IS NOT NULL;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const COLS: &str = "id, path, name, kind, size, mtime, width, height, duration_ms, codec, \
                     added_at, missing, favorite, rating, resume_ms, play_count, \
-                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp";
+                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp, oshash";
 
 /// `COLS` with each column prefixed (for joins).
 pub(crate) fn row_to_media_cols(prefix: &str) -> String {
@@ -1244,5 +1247,8 @@ pub(crate) fn row_to_media(r: &Row<'_>) -> rusqlite::Result<Media> {
         check_note: r.get(20)?,
         checked_at: r.get(21)?,
         fp: r.get::<_, Option<Vec<u8>>>(22)?.map(|b| fp_string(&b)),
+        oshash: r
+            .get::<_, Option<i64>>(23)?
+            .map(|h| crate::fingerprint::oshash_hex(h as u64)),
     })
 }

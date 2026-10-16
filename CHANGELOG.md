@@ -13,6 +13,11 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Content hash `oshash` (OpenSubtitles-style) stored next to the fingerprint,
+  filled by `library.fingerprint`; command `media.by_hash` and CLI
+  `lookup --oshash|--fp`; metadata export version 3 matches by it. Interop
+  guardrails in AGENTS.md and `docs/interop.md`; HTTP server and DLNA/WebDAV
+  crates are banned in every build.
 - Online edition, groundwork for a generic page reader: a pure, bounded page
   scanner (`jizzcraft_fetch::extract::scan`) that reads standard markup only
   (JSON-LD VideoObject, Open Graph, `<video>` / `<source>`, alternate

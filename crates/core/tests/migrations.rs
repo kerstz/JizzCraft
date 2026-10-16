@@ -13,6 +13,7 @@ const FROZEN: &[&str] = &[
     "0c7fa4a9c5906e36c96edda8d43feb22aa646243e9536e91f7e893f6c9e1bc03",
     "efd146227873706329ee239fdd6cd25d373df21e35956c35f3ba7a72ca33f2b9",
     "b30677822357af450b9d88b6a0313d6f2282549cd9d057247b40ba1c7b9bd2ec",
+    "cec220328cb5229a32bb1ea3e5b6c85cc200cba56268b33483f4d7dde8cb8643",
 ];
 
 fn hash(s: &str) -> String {
@@ -29,7 +30,13 @@ fn migrations_are_frozen() {
     );
     assert_eq!(SCHEMA_VERSION as usize, m.len());
     for (i, sql) in m.iter().enumerate() {
-        assert_eq!(hash(sql), FROZEN[i], "migration v{} was edited", i + 1);
+        assert_eq!(
+            hash(sql),
+            FROZEN[i],
+            "migration v{} differs (actual hash {})",
+            i + 1,
+            hash(sql)
+        );
     }
 }
 
@@ -84,6 +91,10 @@ fn fixture_keyed(path: &Path, version: usize, key: Option<&DbKey>) {
         )
         .unwrap();
     }
+    if version >= 5 {
+        c.execute_batch("UPDATE media SET oshash = -2 WHERE id = 3;")
+            .unwrap();
+    }
     c.pragma_update(None, "user_version", version as i64)
         .unwrap();
 }
@@ -121,6 +132,12 @@ fn check_survivors(db: &Db, version: usize) {
         assert_eq!(v, 1);
     } else {
         assert!(!m2.hidden && m1.rating == 0);
+    }
+    let m3 = all.iter().find(|m| m.name == "3.png").unwrap();
+    if version >= 5 {
+        assert_eq!(m3.oshash.as_deref(), Some("fffffffffffffffe"), "v{version}");
+    } else {
+        assert!(m3.oshash.is_none(), "v{version}");
     }
     // Organisation tables: empty when upgrading from before v3, intact after.
     let count = |t: &str| -> i64 {

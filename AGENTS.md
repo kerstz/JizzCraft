@@ -53,6 +53,28 @@ Add behaviour as a command first, UI second.
   must not write sidecar files or touch media. `engine_never_touches_media`
   hashes a tree before and after every command; keep it passing.
 
+## Interop
+
+Reading other apps' data is welcome; talking to other apps is not. Details in
+`docs/interop.md`.
+
+- **No listening socket serves the library or media, in any build.** No
+  DLNA/UPnP/SSDP, WebDAV, Jellyfin/Emby/Plex/Subsonic-compatible API, mDNS.
+  The only inbound socket allowed is the BitTorrent peer port (network build,
+  off by default). `offline_deps` bans the crates that would do it.
+- **No bundled scraper rules or site presets**; never load Stash YAML/Python
+  scrapers.
+- **No remote hash identification** (stash-box, StashDB, ThePornDB) in the
+  default build and no default endpoint in any build. A future lookup must use
+  a user-supplied endpoint, be confirmed per click and never contribute
+  fingerprints back.
+- **No device output and no vendor-cloud sync** (funscript is display-only).
+- **Imports are read-only, bounded in size and count, dry-run by default,
+  counts-only in their reports, and never fetch a URL found in a file.**
+- **Exports never write inside or above a library root.**
+- **Performer data is limited to** name, disambiguation, aliases, favorite and
+  private. Never birth dates, gender, body attributes or images.
+
 ## Rules
 
 - **Never** modify, move or delete user media. Thumbnails go to the XDG cache dir.

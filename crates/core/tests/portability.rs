@@ -249,6 +249,8 @@ fn engine_never_touches_media() {
     run(&mut db, "markers.remove", json!({ "marker_id": m["id"] }));
     run(&mut db, "library.fingerprint", json!({ "all": true }));
     run(&mut db, "library.checksum", json!({ "scope": "all" }));
+    let oh = run(&mut db, "media.get", json!({ "id": v }))["oshash"].clone();
+    run(&mut db, "media.by_hash", json!({ "oshash": oh }));
     run(
         &mut db,
         "views.save",

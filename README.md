@@ -190,6 +190,8 @@ Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+
 
 **What if someone walks in?** Practise the chord now. `Ctrl+Shift+H` is the boss key and `Ctrl+Shift+M` the panic switch (see [Discreet when it matters](#why)). The minimize step has not been checked by hand under every compositor, so do a dry run first.
 
+**Does it act as a media server?** No. Nothing listens, nothing is served; to use a remote library, mount the share and add the folder ([docs/interop.md](docs/interop.md)).
+
 **Can I encrypt the library?** Yes, with the [vault](docs/vault.md) (alpha, off by default). There is no recovery: that is not a missing feature, it is the feature. Write the passphrase down somewhere that is not a file called `passphrase.txt`.
 
 **Windows or macOS?** In theory, enthusiastically. Both compile in CI, but neither has ever run on real hardware (see [Status](#status-020-alpha)). Brave testers welcome, discretion guaranteed.

@@ -522,6 +522,15 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Find items by content hash (give one of --oshash, --fp).
+    Lookup {
+        /// 16 hex digits.
+        #[arg(long, conflicts_with = "fp")]
+        oshash: Option<String>,
+        /// fp1:<32 hex>.
+        #[arg(long)]
+        fp: Option<String>,
+    },
     /// Merge a vanished entry into its new location.
     Relink { from: i64, to: i64 },
     /// Decode-test files and flag damaged ones.
@@ -874,6 +883,16 @@ fn run(cli: &Cli) -> Result<(), Fail> {
         Cmd::Tree => ("library.tree".to_owned(), json!({})),
         Cmd::Random => ("media.random".to_owned(), json!({})),
         Cmd::Fingerprint { all } => ("library.fingerprint".to_owned(), json!({ "all": all })),
+        Cmd::Lookup { oshash, fp } => {
+            let mut a = json!({});
+            if let Some(h) = oshash {
+                a["oshash"] = json!(h);
+            }
+            if let Some(f) = fp {
+                a["fp"] = json!(f);
+            }
+            ("media.by_hash".to_owned(), a)
+        }
         Cmd::Relink { from, to } => ("media.relink".to_owned(), json!({ "from": from, "to": to })),
         Cmd::Check {
             full,
@@ -1180,6 +1199,11 @@ fn print_human(cmd: &str, v: &Value) {
                 r["skipped_symlinks"],
                 r["errors"]
             );
+        }
+        "media.by_hash" => {
+            for id in v["ids"].as_array().into_iter().flatten() {
+                println!("{id}");
+            }
         }
         "media.favorite.toggle" => {
             println!("#{} favorite: {}", v["id"], v["favorite"]);
