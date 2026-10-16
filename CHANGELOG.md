@@ -13,6 +13,13 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- NFO media-server fields: export can write `lockdata` (`--lock`, Tools >
+  "Export NFO files for a media server…"), `dateadded` in UTC (`--date-added`)
+  and `watched` next to the play count; import reads `watched` as one play with
+  `--history`. See [docs/interop.md](docs/interop.md).
+- Subtitle flags in sidecar names (`name.en.forced.srt`, `.sdh`, `.cc`, `.hi`
+  beside a language, `.default`): the track menu shows Forced and SDH, and a
+  forced track is not picked over a full one. A lone `.hi.` stays Hindi.
 - Export NFO files (Kodi style) with titles, dates, studio, performers, tags,
   ratings and, on request, play history and private entries. Written only to
   an empty or new folder outside every library folder (symlinks resolved),
@@ -127,6 +134,8 @@ anything may change between minor versions.
   `windows-sys` in the tree). `gen man` is now covered by a test.
 
 ### Fixed
+- M3U and metadata exports now refuse a destination inside a library folder,
+  as NFO export already did.
 - Online edition: finishing a plain-HTTP `.part` download could replace a file
   that appeared at the last moment; the finish now refuses to replace anything.
 - Online edition: the "disk full" status of a torrent paused for lack of room

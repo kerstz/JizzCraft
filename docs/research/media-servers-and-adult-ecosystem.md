@@ -720,3 +720,37 @@ Searches used: the web-search tool (US-only, summarised results) and direct fetc
 claims that carry weight (oshash, phash, JSON schema, GraphQL fields, Kodi tags, Funscript, Plex announcement,
 ThePornDB OpenAPI, Jellyfin OpenAPI). Items marked Medium or UNVERIFIED rest on a single document, a forum, or
 inference. Downloaded files were treated as data only and parsed, not executed.
+
+## 12. Addendum, second pass (2026-10-16): media-server conventions and online-edition verdicts
+
+Sources were read on the access date. They add to sections 2.2, 2.9 and 2.13. No server was run.
+
+| # | Finding | Type | Confidence | Source |
+|---|---|---|---|---|
+| A1 | Jellyfin `MovieNfoSaver`: root `musicvideo` for music videos, `movie` otherwise; enabled for any Video that is not an Episode or extra; `movie.nfo` only for Movie items outside mixed folders, else `<file>.nfo`. JizzCraft's mirror export (one `<name>.nfo` per video) fits home-video libraries | F | High 92% | jellyfin/jellyfin `MediaBrowser.XbmcMetadata/Savers/MovieNfoSaver.cs` (master) |
+| A2 | Jellyfin `BaseNfoParser` reads `lockdata` (IsLocked), `dateadded` (DateCreated), `tag`/`style`, `genre` (split on `/`), `studio`, `actor`, `uniqueid`; `playcount`, `watched`, `lastplayed` only for the one user chosen in the NFO settings; no `userrating` or resume; `set` is read by `MovieNfoParser` for Movie items only | F | High 90% | `BaseNfoParser.cs`, `MovieNfoParser.cs` (master) |
+| A3 | Jellyfin docs: a local NFO has priority over remote providers such as TMDb; the NFO saver is per library; `dateadded` is written in UTC | F | High 88% | jellyfin.org/docs/general/server/metadata/nfo/ |
+| A4 | Jellyfin naming: subtitle extensions `.ass .mks .sami .smi .srt .ssa .sub .sup .vtt`; flag delimiter `.`; forced = `forced`/`foreign`; default = `default`; hearing impaired = `cc`/`hi`/`sdh`; extras folders and suffixes | F | High 93% | `Emby.Naming/Common/NamingOptions.cs` (master) |
+| A5 | Jellyfin local artwork names: poster, folder, cover, default, movie, backdrop, fanart, background, art, logo, clearlogo, thumb, landscape; local images take precedence | F | High 85% | jellyfin.org/docs/general/server/media/movies/ (undated) |
+| A6 | Plex NFO agent: PMS 1.43.1+, Kodi/XBMC compliant, `movie.nfo` or the exact file name, chosen as "Plex NFO Movie" in the library's advanced settings; multi-part not supported; one June 2026 forum report of the agent missing in 1.43.2 | F/R | Medium 75% | support.plex.tv "Using NFO metadata files with Plex"; forums.plex.tv "Plex NFO Agent Forum Preview" (Mar-Jun 2026) |
+| A7 | Plex local subtitles: `Name (Year).[lang].forced.ext`; `.sdh`/`.cc` need PMS 1.20.3.3401+ | F | Medium 70% | Search snippets only, direct fetch 403: support.plex.tv/articles/200471133 |
+| A8 | Plex movie artwork: poster as `Name (Year).ext` or `poster`/`cover`/`folder`/`movie`/`default`; fanart as `Name (Year)-fanart.ext` or `fanart`/`backdrop`/`background`/`art`; "Local Media Assets" must rank first | F | Medium 70% | support.plex.tv/articles/200220677 (snippet) |
+| A9 | Kodi external subtitles: `<video>.<anything>.srt` gives the language part; forced loads only with a language present per a 2016 test; no `.default` file-name flag found | F/E | Low-Medium 55% | kodi.wiki/view/Subtitles (snippet); forum.kodi.tv (2016) |
+| A10 | Jellyfin auth: `Authorization: MediaBrowser Client=..., Device=..., DeviceId=..., Version=..., Token="..."` is the current form; `X-Emby-Token`, `X-MediaBrowser-Token` and `api_key` are deprecated; third-party client notes say Jellyfin 12 disables legacy auth by default | F | Medium 65% | community auth guide; dart_jellyfin docs; Anchorr v1.6.1 notes (2026) |
+| A11 | Stash API keys: `ApiKey` header to `/graphql`; no read-only scope found; mutations such as `metadataScan` and `backupDatabase` are reachable with the same key | F/S | Medium 70% | docs.stashapp.cc/api/ |
+| A12 | JizzCraft's thumbnail cache holds at most 320 px (`THUMB_MAX`) and is vault-encrypted when the vault is on: unsuitable as server posters | F | High (constant and vault directory checked in the code) | `crates/media/src/thumbs.rs` |
+
+### Verdicts from this pass
+
+- **Build offline**: NFO `lockdata`, `dateadded` and `watched`; subtitle flags; the docs recipe; export guards for M3U and metadata exports.
+- **Defer**: artwork export, episode-style NFO, `set` to playlists, Kodi EDL.
+- **Conditional (Online edition, AGENTS.md amendment first)**: a read-only Stash GraphQL import with fixed query text and no mutation; Jellyfin/Emby. Both need a rule for the user's own LAN server, since `inward_ok` and `is_local_host` refuse LAN targets and keyed sources need https.
+- **Refuse**: the Plex API (plex.tv token), a DLNA source or renderer, Kodi JSON-RPC, actor images, `.strm`, rename plans or scripts, device output, contributing fingerprints.
+
+### Contradiction
+
+`hi` is both Jellyfin's hearing-impaired flag and ISO 639-1 Hindi. Resolution: a lone `.hi.` is a language; it is a flag only next to another language tag.
+
+### Gaps
+
+Kodi and Plex pages returned 403 to the fetch tool, so A7 to A9 rest on search snippets and forums. Emby's current NFO and subtitle rules were not verified from an official page.

@@ -123,7 +123,7 @@ anything over is counted as rejected.
 
 ## NFO export
 
-`jizzcraft-cli export-nfo DEST [--private] [--history] [--no-ratings]` writes
+`jizzcraft-cli export-nfo DEST [--private] [--history] [--no-ratings] [--lock] [--date-added]` writes
 one `<movie>` file per video that has something to say, as
 `DEST/<library folder name>/<relative folder>/<video name>.nfo`. `DEST` must be
 an empty folder or a new folder inside an existing one, and it is refused when
@@ -139,15 +139,65 @@ Copying them next to your media is your step; JizzCraft never writes there.
 | performers (listed order) | `actor` with `name` and `order` |
 | tags (categories are not exported) | `tag` |
 | stars | `userrating` = stars x 2, unless `--no-ratings` |
-| play count, last played, resume point | `playcount`, `lastplayed`, `resume/position`, only with `--history` |
+| play count, last played, resume point | `playcount` (plus `watched` `true` when above 0), `lastplayed`, `resume/position`, only with `--history` |
+| date the item entered the library | `dateadded`, UTC `YYYY-MM-DD HH:MM:SS`, only with `--date-added` |
+| nothing (a switch) | `lockdata` `true`, only with `--lock` |
 | external ids | `uniqueid type="<scheme>"` (`phash.stash` is left out) |
 | fingerprint, oshash | `uniqueid type="jizzcraft-fp1"` and `type="oshash"`, so the importer finds the item again wherever the files go |
 
 Private performers, studios and tags are left out unless `--private`. Only
-videos are exported. A video with no exported field gets no file; two videos
+videos are exported. A video with no exported field gets no file (`lockdata`
+and `dateadded` alone never make one); two videos
 that differ only by extension (`a.mp4`, `a.mkv`) would share `a.nfo`, so the
 first one wins. Writing the same library twice into two empty folders gives
 byte-identical trees.
+
+On import, `watched` `true` counts as one play when there is no `playcount`
+and the item has none yet (only with `--history`); `lockdata` and `dateadded`
+are counted as ignored.
+
+### Handing your library to a media server
+
+JizzCraft never talks to a server. To give Jellyfin, Emby, Plex or Kodi your
+titles, performers, tags and ratings:
+
+1. Export to a folder outside your libraries: `jizzcraft-cli export-nfo
+   ~/nfo-out --lock --date-added` (or Tools, "Export NFO files for a media
+   server…", which writes `lockdata`).
+2. Copy the files next to your media yourself, never replacing anything:
+   `rsync -a --ignore-existing DEST/<label>/ <library>/` where `<label>` is the
+   folder named after your library folder.
+3. Refresh the library in the server.
+
+Notes per server:
+
+- **Jellyfin**: a local NFO is local metadata and wins over online providers
+  such as TMDb. Turn the online metadata fetchers off in the library settings,
+  or the server may still look titles up. Play state (`playcount`, `watched`,
+  `lastplayed`) is imported for the one user chosen in the NFO settings only;
+  there is no import of user ratings or resume points. `lockdata` makes the
+  server keep the file's values, which also blocks edits made inside Jellyfin,
+  so it is opt-in.
+- **Plex**: needs Plex Media Server 1.43.1 or later and the "Plex NFO Movie"
+  agent, picked in the library's advanced settings.
+- **Emby**: reads Kodi-style NFO (Medium confidence; not checked against an
+  official page).
+
+Subtitle sidecars next to a video are read with Jellyfin's naming. After the
+video name come up to four dot-separated parts, in any order: at most one
+language tag and any of these flags (case is ignored):
+
+| Part | Meaning |
+| --- | --- |
+| `default` | the default track |
+| `forced`, `foreign` | forced: only translates foreign speech; never picked ahead of a full track in the same language |
+| `sdh`, `cc` | for the hearing impaired |
+| `hi` | for the hearing impaired, only when another language tag is present (`name.en.hi.srt`) |
+
+A lone `.hi.` (`name.hi.srt`) is the language Hindi, a deliberate choice:
+that is what it was before flags existed, and ISO 639-1 says the same. A name
+with two language tags (`name.en.fr.srt`) or more than four parts is skipped.
+The track menu shows "EN · Forced" or "EN · SDH".
 
 ## Funscripts
 
@@ -196,8 +246,22 @@ group in a new playlist. There is no delete action anywhere.
   your library would leak to a third party. There is no default endpoint.
 - **Driving devices or cloud sync**: funscripts, when supported, are only
   displayed.
+- **Actor images, `.strm` files, a DLNA source or renderer, Kodi JSON-RPC, the
+  Plex API (it needs a plex.tv token), rename plans or scripts**: artwork,
+  remote streams and drives of other programs are not ours to write or call.
 - **Performer attributes beyond a name**: no birth dates, gender, body
   attributes or images are stored.
+
+## Export guards
+
+M3U playlists (`playlist.export_m3u`), metadata exports (`meta.export`) and
+NFO files never land inside a library folder: the destination folder is
+resolved (symbolic links included) and refused when it is, or is inside, a
+library folder, with "destination must be outside every library folder".
+Backups are not affected. If a library folder is your home folder (or a
+parent of where you want to write), almost every destination is inside it and
+the export is refused; the error says why. Pick a folder outside it, or add a
+narrower library folder.
 
 ## Remote libraries
 
