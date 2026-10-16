@@ -13,6 +13,12 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Online edition, groundwork for a generic page reader: a pure, bounded page
+  scanner (`jizzcraft_fetch::extract::scan`) that reads standard markup only
+  (JSON-LD VideoObject, Open Graph, `<video>` / `<source>`, alternate
+  manifests, addresses in script text without running it) and reports why a
+  page gave nothing (age gate, sign-in form, DRM words, script-only page). It
+  makes no request, follows no meta refresh and knows no site.
 - Online edition, groundwork for saving videos: shared format ranking (height,
   then bitrate) and multi-video answers for the resolver parser, a file-name
   and no-overwrite toolkit (sanitized names, extension from the content,

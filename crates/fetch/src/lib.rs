@@ -11,6 +11,7 @@ pub mod dash;
 pub mod detect;
 pub mod diskspace;
 pub mod errors;
+pub mod extract;
 pub mod fetch_error;
 pub mod fmp4;
 pub mod formats;

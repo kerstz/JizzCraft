@@ -566,6 +566,66 @@ fn overwrite_true_is_always_gated() {
 // Network feature: resolvers, secrets through real flows.
 // ---------------------------------------------------------------------------
 
+/// A page is hostile input: whatever the bytes, the scanner finishes quickly
+/// and stays inside its limits.
+#[test]
+fn hostile_pages_never_panic_and_stay_bounded() {
+    use jizzcraft_fetch::extract::{MAX_CANDIDATES, MAX_IFRAMES, scan};
+    use std::time::{Duration, Instant};
+    let mut pages: Vec<Vec<u8>> = payloads().into_iter().map(String::into_bytes).collect();
+    pages.push(b"<".repeat(2 << 20));
+    pages.push(b"<video".repeat(100_000));
+    pages.push(b"<script>".repeat(100_000));
+    pages.push(b"<!--".repeat(100_000));
+    pages.push(b"</a".repeat(300_000));
+    let mut big = b"<video src=\"".to_vec();
+    big.extend(std::iter::repeat_n(b'a', 5 << 20));
+    big.extend(b"\">");
+    pages.push(big);
+    pages.push(b"<a b=\"".repeat(200_000));
+    pages.push(b"a\0b<meta\0 property=og:video content=\"/x\0.mp4\">".repeat(1000));
+    pages.push(vec![0xff, 0xfe, 0xc3, 0x28, b'<', b'v', 0xe2, 0x82]);
+    let mut deep = b"<script type=\"application/ld+json\">".to_vec();
+    deep.extend(b"[".repeat(10_000));
+    deep.extend(b"]".repeat(10_000));
+    deep.extend(b"</script>");
+    pages.push(deep);
+    let mut deep = b"<script type=\"application/ld+json\">".to_vec();
+    for _ in 0..5000 {
+        deep.extend(b"{\"@graph\":");
+    }
+    deep.extend(b"1");
+    deep.extend(b"}".repeat(5000));
+    deep.extend(b"</script>");
+    pages.push(deep);
+    let mut lit = b"<script>x = \"".to_vec();
+    lit.extend(std::iter::repeat_n(b'q', 1 << 20));
+    lit.extend(b"\"; y = \"https://c.invalid/a.mp4\";</script>");
+    pages.push(lit);
+    let mut many = String::from("<script>");
+    for i in 0..20_000 {
+        many.push_str(&format!("f{i} = \"https://c.invalid/{i}.mp4\";"));
+    }
+    many.push_str("</script>");
+    for i in 0..500 {
+        many.push_str(&format!("<iframe src=\"https://e.invalid/{i}\"></iframe>"));
+    }
+    pages.push(many.into_bytes());
+    for p in &pages {
+        let t = Instant::now();
+        let r = scan(p);
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "slow page of {} bytes",
+            p.len()
+        );
+        assert!(!r.items.is_empty());
+        let total: usize = r.items.iter().map(|i| i.candidates.len()).sum();
+        assert!(total <= MAX_CANDIDATES, "{total}");
+        assert!(r.iframes.len() <= MAX_IFRAMES);
+    }
+}
+
 #[cfg(feature = "network")]
 mod net {
     use super::*;
