@@ -12,6 +12,10 @@ anything may change between minor versions.
   (`Ctrl+Shift+M`) and the vault lock key (`Ctrl+Shift+L`); a test keeps every
   `Ctrl+Shift+` binding documented.
 
+### Changed
+- Dependencies: `clap_mangen` 0.3 and `windows-sys` 0.61 (one fewer duplicate
+  `windows-sys` in the tree). `gen man` is now covered by a test.
+
 ### Fixed
 - Online edition: the "disk full" status of a torrent paused for lack of room
   could be lost when a list refresh ran between the watchdog's label and the

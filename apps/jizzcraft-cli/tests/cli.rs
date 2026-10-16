@@ -409,3 +409,17 @@ fn organise_end_to_end_and_media_untouched() {
 
     assert_eq!(before, tree_bytes(lib.path()), "media files changed");
 }
+
+#[test]
+fn gen_man_renders_a_roff_page() {
+    let home = tempfile::tempdir().unwrap();
+    let o = cli(home.path(), &["gen", "man"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let page = String::from_utf8(o.stdout).unwrap();
+    assert!(page.contains(".TH"), "not a roff page");
+    assert!(page.contains("jizzcraft-cli"));
+    assert!(!page.contains(&*home.path().to_string_lossy()));
+    if let Ok(h) = std::env::var("HOME") {
+        assert!(h.len() < 2 || !page.contains(&h), "page leaks the home dir");
+    }
+}
