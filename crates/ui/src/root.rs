@@ -1027,6 +1027,9 @@ pub struct Root {
     timer: IdleTimer,
     /// State of the previous pass, to purge text-edit history on a change.
     last_state: &'static str,
+    /// `--screenshot` of the lock screen: frames drawn, request sent.
+    shot_frames: u32,
+    shot_sent: bool,
 }
 
 impl Root {
@@ -1064,7 +1067,34 @@ impl Root {
                 Box::new(move || ctx.request_repaint())
             }),
             last_state: "",
+            shot_frames: 0,
+            shot_sent: false,
         })
+    }
+
+    /// `--screenshot` on an encrypted library: the lock screen itself, once
+    /// it has been drawn for a few frames; then the window closes.
+    fn shoot_lock_screen(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.opts.screenshot.clone() else {
+            return;
+        };
+        ctx.request_repaint();
+        let shot = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(img) = shot {
+            crate::app::write_screenshot(&img, &path);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if !self.shot_sent {
+            self.shot_frames += 1;
+            if self.shot_frames > 12 {
+                self.shot_sent = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            }
+        }
     }
 
     /// Neutral title and icon for every screen that is not the app.
@@ -1315,6 +1345,7 @@ impl eframe::App for Root {
                     });
                     ctx.request_repaint();
                 }
+                self.shoot_lock_screen(&ctx);
             }
         }
     }

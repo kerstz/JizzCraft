@@ -495,6 +495,19 @@ impl crate::root::Lockable for JizzApp {
     }
 }
 
+/// Save a screenshot event's image as a PNG (`--screenshot`).
+pub(crate) fn write_screenshot(img: &egui::ColorImage, path: &std::path::Path) {
+    let [w, h] = img.size;
+    let mut raw = Vec::with_capacity(w * h * 4);
+    for p in &img.pixels {
+        raw.extend_from_slice(&[p.r(), p.g(), p.b(), 255]);
+    }
+    match image::RgbaImage::from_raw(w as u32, h as u32, raw).map(|i| i.save(path)) {
+        Some(Ok(())) => eprintln!("screenshot written"),
+        _ => eprintln!("screenshot failed"),
+    }
+}
+
 pub(crate) fn window_icon(bytes: &[u8]) -> Arc<egui::IconData> {
     let img = image::load_from_memory(bytes)
         .expect("bundled icon decodes")
@@ -1603,15 +1616,7 @@ impl JizzApp {
             })
         });
         if let Some(img) = shot {
-            let [w, h] = img.size;
-            let mut raw = Vec::with_capacity(w * h * 4);
-            for p in &img.pixels {
-                raw.extend_from_slice(&[p.r(), p.g(), p.b(), 255]);
-            }
-            match image::RgbaImage::from_raw(w as u32, h as u32, raw).map(|i| i.save(&path)) {
-                Some(Ok(())) => eprintln!("screenshot written"),
-                _ => eprintln!("screenshot failed"),
-            }
+            write_screenshot(&img, &path);
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         } else if !self.screenshot_sent
             && self.frame_no > 12

@@ -593,7 +593,113 @@ fn screenshots() -> Result<(), String> {
         run(&db, s.adult, &s.args, &out.join(s.file))?;
         println!("screenshot: {}", s.file);
     }
-    Ok(())
+
+    // Settings, Privacy page, on the clear library: the vault switch.
+    let privacy = tmp.join("privacy.db");
+    for ext in ["", "-wal", "-shm"] {
+        let from = PathBuf::from(format!("{}{ext}", base.display()));
+        if from.exists() {
+            std::fs::copy(&from, format!("{}{ext}", privacy.display()))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    run(
+        &privacy,
+        true,
+        &["--cmd", r#"app.settings={"tab":"privacy"}"#],
+        &out.join("vault-settings.png"),
+    )?;
+    println!("screenshot: vault-settings.png");
+
+    vault_lock_shot(&tmp, &lib, &out)
+}
+
+/// The synthetic passphrase of the throw-away screenshot vault. It lives in
+/// `target/`, protects nothing, and only ever goes through a pipe.
+const SHOT_PASSPHRASE: &str = "screenshot-vault-synthetic-passphrase";
+
+/// Arguments of one app screenshot run in the vault home. Never a secret.
+fn vault_shot_args(home: &Path, db: &Path, png: &Path, extra: &[&str]) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<std::ffi::OsString> = vec![
+        "--home".into(),
+        home.into(),
+        "--lang".into(),
+        "en".into(),
+        "--db".into(),
+        db.into(),
+    ];
+    v.extend(extra.iter().map(Into::into));
+    v.extend(["--screenshot".into(), png.into(), "--assume-adult".into()]);
+    v
+}
+
+/// Arguments of `jizzcraft-cli` that encrypt the vault library. The passphrase
+/// is read from the piped stdin, so it is not among them.
+fn vault_enable_args(home: &Path, db: &Path) -> Vec<std::ffi::OsString> {
+    vec![
+        "--home".into(),
+        home.into(),
+        "--db".into(),
+        db.into(),
+        "--passphrase-stdin".into(),
+        "vault".into(),
+        "enable".into(),
+        "--i-understand-no-recovery".into(),
+    ]
+}
+
+/// Lock screen of an encrypted library, with a separate home. The vault is
+/// enabled through the CLI with the passphrase on a pipe (never printed, never
+/// in an argument); the app is then started without it, so it stays locked.
+fn vault_lock_shot(tmp: &Path, lib: &Path, out: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let st = Command::new("cargo")
+        .args(["build", "--release", "-p", "jizzcraft-cli"])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("cli build failed".into());
+    }
+    let (home, db) = (tmp.join("vault-home"), tmp.join("vault.db"));
+    let imp = Command::new("target/release/jizzcraft-cli")
+        .arg("--home")
+        .arg(&home)
+        .arg("--db")
+        .arg(&db)
+        .arg("scan")
+        .arg(lib)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !imp.success() {
+        return Err("vault library import failed".into());
+    }
+    let mut child = Command::new("target/release/jizzcraft-cli")
+        .args(vault_enable_args(&home, &db))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    {
+        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        writeln!(stdin, "{SHOT_PASSPHRASE}").map_err(|e| e.to_string())?;
+    }
+    if !child.wait().map_err(|e| e.to_string())?.success() {
+        return Err("vault enable failed".into());
+    }
+    let png = out.join("vault-lock.png");
+    let st = Command::new("target/release/jizzcraft")
+        .args(vault_shot_args(&home, &db, &png, &[]))
+        .status()
+        .map_err(|e| e.to_string())?;
+    if st.success() && png.exists() {
+        println!("screenshot: vault-lock.png");
+        Ok(())
+    } else {
+        Err("screenshot vault-lock.png failed".into())
+    }
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
@@ -917,5 +1023,23 @@ fn check_packaging() -> Result<(), String> {
         Ok(())
     } else {
         Err(missing.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_shot_args_never_carry_the_passphrase() {
+        let (h, d, p) = (Path::new("h"), Path::new("v.db"), Path::new("o.png"));
+        let all = vault_shot_args(h, d, p, &["--cmd", "x"])
+            .into_iter()
+            .chain(vault_enable_args(h, d));
+        for a in all {
+            let a = a.to_string_lossy().into_owned();
+            assert!(!a.contains(SHOT_PASSPHRASE), "{a}");
+            assert!(!SHOT_PASSPHRASE.contains(a.as_str()) || a.len() < 8, "{a}");
+        }
     }
 }

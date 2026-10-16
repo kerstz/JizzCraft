@@ -13,6 +13,10 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- `cargo xtask screenshots` also renders the vault lock screen
+  (`vault-lock.png`, from a throw-away encrypted library in its own home; the
+  passphrase only goes through a pipe) and the Privacy settings page
+  (`vault-settings.png`). `--screenshot` now works on a locked library.
 - `cargo xtask perf --player [FILE]`: runs `jizzcraft --bench` and checks time
   to first frame, UI frame cost, peak RSS and dropped frames against
   `perf/player_budgets.json` (local, needs a GPU). `--bench` now reports
