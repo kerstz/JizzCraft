@@ -176,3 +176,12 @@ fn proxy_setting_is_optional_and_trimmed() {
             .is_err()
     );
 }
+
+#[test]
+fn a_corrupt_config_makes_the_host_start_with_the_kill_switch_on() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("fetch.json");
+    std::fs::write(&p, b"{\"require_proxy\":false,").unwrap();
+    let host = FetchHost::new(p);
+    assert!(host.config().require_proxy && host.config().load_error);
+}

@@ -151,7 +151,8 @@ pub struct FetchConfig {
     #[serde(default)]
     pub browser: BrowserPrefs,
     /// Runtime only: the file on disk was unreadable and was set aside as
-    /// `fetch.json.corrupt-<unixtime>`; defaults are in use. Never saved.
+    /// `fetch.json.corrupt-<unixtime>`; defaults are in use, except that
+    /// `require_proxy` is on. Never saved.
     #[serde(skip)]
     pub load_error: bool,
     /// Runtime only: neutral names (folder `Viewer`) while the window is
@@ -219,18 +220,15 @@ impl FetchConfig {
 
     /// Read the file. Missing: defaults. Unreadable or corrupt: the file is
     /// renamed to `fetch.json.corrupt-<unixtime>` (keys inside survive for
-    /// the user to recover), defaults are returned and `load_error` is set.
+    /// the user to recover), defaults are returned with `load_error` set and
+    /// `require_proxy` forced on (fail closed: the lost file may have had the
+    /// kill switch on).
     /// On Unix a file that is group/world accessible is fixed to 0600.
     pub fn load(path: &Path) -> Self {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
-            Err(_) => {
-                return Self {
-                    load_error: true,
-                    ..Self::default()
-                };
-            }
+            Err(_) => return Self::unreadable(),
         };
         #[cfg(unix)]
         {
@@ -265,11 +263,19 @@ impl FetchConfig {
                 if let Some(d) = dest {
                     let _ = std::fs::rename(path, d);
                 }
-                Self {
-                    load_error: true,
-                    ..Self::default()
-                }
+                Self::unreadable()
             }
+        }
+    }
+
+    /// What a file we could not read turns into. The kill switch may have
+    /// been on in it, so fail closed: the network stays blocked until a
+    /// proxy is set or "Block the network without a proxy" is turned off.
+    fn unreadable() -> Self {
+        Self {
+            load_error: true,
+            require_proxy: true,
+            ..Self::default()
         }
     }
 

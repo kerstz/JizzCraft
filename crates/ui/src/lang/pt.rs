@@ -595,8 +595,8 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Resume all", "Retomar tudo"),
     ("Not now", "Agora não"),
     (
-        "fetch.json could not be read; a copy was kept and your keys were not overwritten.",
-        "Não foi possível ler o fetch.json; foi guardada uma cópia e as suas chaves não foram substituídas.",
+        "fetch.json could not be read; a copy was kept. The network is blocked until you set a proxy or turn off \"Block the network without a proxy\".",
+        "Não foi possível ler fetch.json; foi guardada uma cópia. A rede fica bloqueada até definir um proxy ou desativar «Bloquear a rede sem proxy».",
     ),
     (
         "This library was made by a newer version; it is open read-only.",

@@ -125,3 +125,28 @@ fn no_proxy_is_the_default_and_blank_means_none() {
     let c = FetchConfig::load(&p);
     assert_eq!(c.proxy.unwrap().expose(), "socks5://127.0.0.1:9050");
 }
+
+#[test]
+fn unreadable_config_turns_the_kill_switch_on() {
+    let d = tempfile::tempdir().unwrap();
+    let cases: [(&str, &[u8]); 2] = [
+        ("junk", &[0xff, 0xfe, 0x00, 0x01, b'{', 0x80]),
+        ("truncated", br#"{"require_proxy":false,"indexers":[{"#),
+    ];
+    for (name, bytes) in cases {
+        let p = d.path().join(name).join("fetch.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, bytes).unwrap();
+        let c = FetchConfig::load(&p);
+        assert!(c.load_error && c.require_proxy, "{name}");
+    }
+    // A directory where the file should be: read fails.
+    let p = d.path().join("dir").join("fetch.json");
+    std::fs::create_dir_all(&p).unwrap();
+    let c = FetchConfig::load(&p);
+    assert!(c.load_error && c.require_proxy);
+    // A missing file is a fresh install, not an error.
+    let c = FetchConfig::load(&d.path().join("none.json"));
+    assert!(!c.load_error && !c.require_proxy);
+    assert!(!FetchConfig::default().require_proxy);
+}

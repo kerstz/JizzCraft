@@ -214,6 +214,9 @@ again; if that fails, you see "The link expired."
   no request, torrent or resolver starts without a SOCKS5 proxy, and changing
   the proxy or the switch ends the running session. Use it with a VPN or Tor
   SOCKS endpoint so a dropped proxy never falls back to a direct connection.
+  If `fetch.json` cannot be read or parsed, the switch comes up on (the file
+  is set aside as `fetch.json.corrupt-<time>`), so a damaged file never opens
+  the network. Set a proxy or turn the switch off to go on.
 - Streams write nothing to the library, history, recents or markers.
 - The boss key and the panic switch close a stream and cancel any that is still
   opening.

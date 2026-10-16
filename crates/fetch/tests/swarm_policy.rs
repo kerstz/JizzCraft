@@ -56,6 +56,7 @@ fn a_corrupt_file_is_set_aside_not_overwritten() {
     std::fs::write(&p, junk).unwrap();
     let c = FetchConfig::load(&p);
     assert!(c.load_error && c.indexers.is_empty());
+    assert!(c.require_proxy);
     assert!(!p.exists());
     let kept: Vec<_> = std::fs::read_dir(d.path())
         .unwrap()

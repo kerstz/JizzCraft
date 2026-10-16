@@ -939,7 +939,7 @@ impl JizzApp {
                     ui.horizontal_wrapped(|ui| match b {
                         Banner::ConfigUnreadable => {
                             ui.label(RichText::new(crate::i18n::tr(
-                                "fetch.json could not be read; a copy was kept and your keys were not overwritten.",
+                                "fetch.json could not be read; a copy was kept. The network is blocked until you set a proxy or turn off \"Block the network without a proxy\".",
                             ))
                             .color(MUTED));
                             if ui.small_button(crate::i18n::tr("Dismiss")).clicked() {

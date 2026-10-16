@@ -8,6 +8,9 @@ anything may change between minor versions.
 ## [Unreleased]
 
 ### Fixed
+- Online edition: an unreadable or corrupt `fetch.json` now fails closed. The
+  "Block the network without a proxy" switch comes up on instead of silently
+  reverting to off; the banner says how to go on.
 - Online edition: an empty proxy in `fetch.json` (or blanks typed in the
   setting) now means "no proxy" everywhere; torrents no longer fail to start
   because of it. The proxy stays optional.
