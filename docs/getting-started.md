@@ -114,6 +114,8 @@ source can generate harmless test pictures and videos with
 | `Ctrl+R` | Look for new or removed files in your folders |
 | `Ctrl+,` | Settings |
 | `Ctrl+Shift+H` | Boss key |
+| `Ctrl+Shift+M` | Panic switch: jump full screen to your chosen video |
+| `Ctrl+Shift+L` | Lock the encrypted library (only if you turned the vault on) |
 | `?` | The full list of keys |
 
 Prefer one hand? Press `?` and click *Left-hand keys*: everything moves
@@ -235,6 +237,7 @@ lock, the encrypted vault is the tool, with the limits explained in
 | **Discreet mode** | Neutral window title, hidden names, blurred thumbnails. |
 | **Share-safe mode** | Everything blurred until you point at it. |
 | **Boss key** | `Ctrl+Shift+H`: pause, mute, discreet mode, minimize. |
+| **Panic switch** | `Ctrl+Shift+M`: opens the video you picked (Library menu, Privacy, *Panic video*) full screen with sound, turns discreet mode on and leaves no history or resume point. With no video picked, or if the file is gone, it does the boss key instead. |
 | **"Viewer" disguise** | Start the app under a neutral name and icon. |
 | **Edition** | Offline (no internet code) or Online (optional tools you configure). |
 | **GStreamer** | The part of your system that decodes video. JizzCraft uses it to play files. |

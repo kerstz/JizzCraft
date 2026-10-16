@@ -1772,6 +1772,30 @@ mod tests {
     }
 
     #[test]
+    fn global_ctrl_shift_keys_are_documented() {
+        let docs = [
+            ("README.md", include_str!("../../../README.md")),
+            (
+                "docs/getting-started.md",
+                include_str!("../../../docs/getting-started.md"),
+            ),
+        ];
+        let mut seen = 0;
+        for b in KEYMAP
+            .iter()
+            .filter(|b| b.ctx == Ctx::Global && b.keys.starts_with("Ctrl+Shift+"))
+        {
+            seen += 1;
+            let needle = format!("`{}`", b.keys);
+            for (name, text) in docs {
+                assert!(text.contains(&needle), "{name} does not document {needle}");
+            }
+        }
+        assert!(seen >= 3, "found only {seen} Ctrl+Shift bindings");
+        // The network table is optional; its keys are documented elsewhere.
+    }
+
+    #[test]
     fn settings_and_browser_keys_do_not_clash() {
         let sig = |b: &Binding| (b.key, b.ctrl, b.alt, b.shift);
         let settings = KEYMAP.iter().find(|b| b.cmd == "app.settings").unwrap();

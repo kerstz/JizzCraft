@@ -7,6 +7,11 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Documentation
+- README and the getting-started guide now document the panic switch
+  (`Ctrl+Shift+M`) and the vault lock key (`Ctrl+Shift+L`); a test keeps every
+  `Ctrl+Shift+` binding documented.
+
 ### Fixed
 - Player: the PLAYING / PAUSED state label no longer overlaps the transport
   buttons in narrow windows; it moves into the free space or hides. An error

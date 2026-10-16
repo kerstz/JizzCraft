@@ -78,7 +78,7 @@ Because the usual options are a general-purpose media player that forgets everyt
 
 - **Your files are read, never touched.** No moves, no renames, no sidecar files, no tags written into your media. Ratings, history and markers live in one SQLite database. A test hashes a media tree before and after every engine command.
 - **Offline is a build property, not a setting.** The default build does not contain a network stack, and a test fails if one sneaks into the dependency tree. GStreamer's network-capable elements are removed from the app's registry at start-up, so a streaming playlist renamed to `.mp4` is refused, not fetched.
-- **Discreet when it matters.** `Ctrl+Shift+H` is a boss key (pause, mute, discreet mode, minimize). Discreet mode retitles the window "Viewer", swaps the icon, hides names and blurs thumbnails. Share-safe mode blurs everything until hovered. A neutral "Viewer" launcher starts the app disguised.
+- **Discreet when it matters.** `Ctrl+Shift+H` is a boss key (pause, mute, discreet mode, minimize). `Ctrl+Shift+M` is a panic switch: it jumps full-screen, with sound, to a local video you chose in advance (Library menu, Privacy, "Panic video"), turns discreet mode on and records nothing in history; with no video chosen it acts as the boss key. Discreet mode retitles the window "Viewer", swaps the icon, hides names and blurs thumbnails. Share-safe mode blurs everything until hovered. A neutral "Viewer" launcher starts the app disguised.
 - **Keyboard first, one hand if you like.** Arrows, `Enter`, `/` to search, `V` to triage new imports, `R` for a random pick. A left-hand preset puts browsing, playback, ratings and the boss key around `WASD` ([details](#one-hand-is-enough)), which is also a motor-accessibility setting.
 - **Native and fast.** A virtualized grid that renders only visible rows and loads only a window of them from SQLite, thumbnails in a background pool, playback paced by the GStreamer clock. Measured, including where it is slow ([docs/bench.md](docs/bench.md)).
 - **Scriptable.** One registry of named commands drives the menus, the shortcuts, a JSON CLI and `--cmd` ([Built for agents](#built-for-agents)).
@@ -168,7 +168,7 @@ Turn it on once: press `?` in the library and click *Left-hand keys*, or start t
 | Back | `Q` clears the search | `Q` back to the library | `Q` leaves fullscreen, then goes back |
 | Also | `1`–`4` switch tabs | `X` hide / unhide | `X` mute, `G` fullscreen, `Shift+A` / `Shift+D` previous / next item |
 
-Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key. Inbox triage: `D` keep, `S` or `X` hide, `W` favorite, `A` undo, `Q` leave. Press `?` in the app for the full list of both presets (it is generated from the same table the app uses).
+Anywhere: `Alt+1`–`Alt+5` rate, `Ctrl+O` import, `Ctrl+R` rescan, `Ctrl+Shift+H` boss key, `Ctrl+Shift+M` panic switch, `Ctrl+Shift+L` lock the encrypted library (vault only). Inbox triage: `D` keep, `S` or `X` hide, `W` favorite, `A` undo, `Q` leave. Press `?` in the app for the full list of both presets (it is generated from the same table the app uses).
 
 **Honest footnote: what still wants the other hand or a pointer.** Turning the preset on (one click, or the `--cmd` above); `?`, `/` and typing a search, `Home` / `End`, `Alt+0`; the system folder picker behind `Ctrl+O`; dragging the timeline, panning a zoomed image, the sidebar, sorting, the inspector and the player-bar chips; seeking during triage. The bindings are checked by tests as a table but have not been verified by hand yet.
 
