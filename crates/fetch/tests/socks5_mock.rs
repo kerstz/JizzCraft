@@ -197,7 +197,11 @@ fn mock(mode: Mode, auth: Option<(&'static str, &'static str)>, h: Handler) -> M
                 } else if let Some(rg) = range {
                     let (a, e) = rg.split_once('-').unwrap();
                     let a: usize = a.trim().parse().unwrap();
-                    let e: usize = e.trim().parse::<usize>().unwrap().min(body.len() - 1);
+                    let e: usize = e
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap_or(body.len() - 1)
+                        .min(body.len() - 1);
                     let _ = write!(
                         s,
                         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{e}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -784,4 +788,54 @@ fn a_rule_pointing_inward_is_filtered_on_a_public_page() {
     assert_eq!(r.unwrap_err(), "no media");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(t1.load(Ordering::SeqCst), 0, "loopback was contacted");
+}
+
+#[test]
+fn downloads_go_through_the_proxy() {
+    use jizzcraft_fetch::download::JobState;
+    use jizzcraft_fetch::download::manager::DownloadRequest;
+    let _g = serial();
+    let mock = mock(
+        Mode::Serve,
+        None,
+        Arc::new(|host, path| {
+            match (host, path.split('?').next().unwrap_or("")) {
+            ("media.invalid", "/v.mp4") => mp4(),
+            (PAGE_HOST, "/page") => {
+                br#"<meta property="og:title" content="Proxied"><meta property="og:video" content="http://media.invalid:8081/v.mp4">"#.to_vec()
+            }
+            _ => Vec::new(),
+        }
+        }),
+    );
+    let e = env(FetchConfig {
+        proxy: Some(Secret::new(mock.url())),
+        require_proxy: true,
+        ..Default::default()
+    });
+    for u in [
+        "http://media.invalid:8081/v.mp4".to_owned(),
+        format!("http://{PAGE_HOST}/page"),
+    ] {
+        e.svc.download_start(DownloadRequest::url(u)).unwrap();
+    }
+    let t0 = Instant::now();
+    loop {
+        let l = e.svc.download_list();
+        if l.iter().all(|j| j.state.is_over()) {
+            assert!(l.iter().all(|j| j.state == JobState::Done), "{l:?}");
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "timed out");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let hosts = mock.hosts();
+    assert!(hosts.iter().any(|h| h == "media.invalid"), "{hosts:?}");
+    assert!(hosts.iter().any(|h| h == PAGE_HOST), "{hosts:?}");
+    let mut saved: Vec<String> = std::fs::read_dir(e._dl.path())
+        .unwrap()
+        .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    saved.sort();
+    assert_eq!(saved, ["Proxied.mp4", "video.mp4"]);
 }

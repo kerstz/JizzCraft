@@ -467,7 +467,7 @@ async fn resolvers(
     None
 }
 
-pub(super) async fn extract_task(
+pub(crate) async fn extract_task(
     cfg: Arc<FetchConfig>,
     url: String,
     mode: ExtractMode,

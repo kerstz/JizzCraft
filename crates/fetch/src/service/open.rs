@@ -33,6 +33,8 @@ impl FetchService {
     pub fn cancel_streams(&self) {
         // Resume positions are memory only and die with the panic switch.
         crate::stream::resume_clear_all();
+        // The panic switch holds saves too; their files stay as they are.
+        self.downloads.pause_all();
         let mut g = self.stream_cancel.lock().unwrap_or_else(|e| e.into_inner());
         g.store(true, Ordering::SeqCst);
         *g = Arc::new(AtomicBool::new(false));

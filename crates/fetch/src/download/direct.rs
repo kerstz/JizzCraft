@@ -10,9 +10,7 @@
 use super::{FreeSpace, JobCtl, RateLimiter, Renew};
 use crate::diskspace::{RUN_MARGIN, is_full, is_low};
 use crate::formats::allowed_headers;
-use crate::savename::{
-    create_part, ext_for, part_path, remove_own_part, rename_noclobber, same_file, unique_path,
-};
+use crate::savename::{create_part, ext_for, part_path, remove_own_part, unique_path};
 use crate::service::{FetchService, proxy_blocked, same_origin_policy};
 use crate::sniff::{Sniff, sniff};
 use crate::stream::{
@@ -523,41 +521,7 @@ impl Job<'_> {
         {
             return Err("incomplete download".into());
         }
-        self.file.sync_all().map_err(|e| e.to_string())?;
-        let parent = final_path.parent().unwrap_or(Path::new("."));
-        if std::fs::canonicalize(parent).ok().as_deref() != Some(self.dir0.as_path())
-            || !same_file(&self.file, part)
-        {
-            return Err("folder changed".into());
-        }
-        let mut target = final_path.to_path_buf();
-        let mut tries = 0;
-        loop {
-            match rename_noclobber(part, &target) {
-                Ok(()) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 3 => {
-                    tries += 1;
-                    let stem = final_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("video");
-                    let ext = final_path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("bin");
-                    target = unique_path(&self.dir0, stem, ext);
-                }
-                Err(e) => return Err(e.to_string()),
-            }
-        }
-        match std::fs::metadata(&target) {
-            Ok(m) if m.len() == self.done => Ok(target),
-            _ => {
-                // Ours, moved: take it back out rather than leave a short file.
-                let _ = remove_own_part(&self.file, &target);
-                Err("incomplete download".into())
-            }
-        }
+        super::place(&self.file, part, final_path, &self.dir0, self.done)
     }
 }
 

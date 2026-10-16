@@ -34,6 +34,7 @@ pub use torrent::{
     TorrentStatus, path_is_safe,
 };
 
+pub(crate) use extract::extract_task;
 #[doc(hidden)]
 pub use extract::set_page_deadline;
 pub use extract::{ExtractMode, Extraction, Via};
@@ -128,6 +129,8 @@ pub struct FetchService {
     stream_cancel: Mutex<Arc<AtomicBool>>,
     /// Torrent-side shared state (live statuses, tuning, policy timers).
     tor: torrent::TorrentShared,
+    /// The save queue (memory only).
+    pub(crate) downloads: crate::download::manager::Downloads,
 }
 
 impl FetchService {
@@ -138,9 +141,11 @@ impl FetchService {
             .enable_all()
             .build()?;
         publish_proxy(&cfg);
+        let cfg = Arc::new(cfg);
         Ok(Self {
+            downloads: crate::download::manager::Downloads::new(rt.handle().clone(), cfg.clone()),
             rt: Some(rt),
-            cfg: Arc::new(cfg),
+            cfg,
             state_dir,
             session: Arc::new(OnceCell::new()),
             cache: Arc::new(Mutex::new(Vec::new())),
@@ -156,6 +161,7 @@ impl FetchService {
     pub fn set_config(&mut self, cfg: FetchConfig) {
         publish_proxy(&cfg);
         self.cfg = Arc::new(cfg);
+        self.downloads.set_config(self.cfg.clone());
         self.apply_limits();
     }
 
@@ -166,6 +172,9 @@ impl FetchService {
 
 impl Drop for FetchService {
     fn drop(&mut self) {
+        // Saves stop and remove their own `.part` files before the runtime
+        // that drives them goes away.
+        self.downloads.shutdown();
         if let Some(rt) = self.rt.take() {
             rt.shutdown_timeout(Duration::from_secs(2));
         }

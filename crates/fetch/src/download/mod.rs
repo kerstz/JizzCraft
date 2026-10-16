@@ -7,8 +7,16 @@
 
 #[cfg(feature = "network")]
 pub mod direct;
+#[cfg(feature = "network")]
+pub mod manager;
+#[cfg(feature = "network")]
+pub mod segmented;
 
+#[cfg(feature = "network")]
+use std::fs::File;
 use std::path::Path;
+#[cfg(feature = "network")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -96,6 +104,10 @@ pub struct JobCtl {
     pub disk_low: AtomicBool,
     /// The file is complete and being checked and moved into place.
     pub verifying: AtomicBool,
+    /// Progress in millionths when it is not `done / total` (a stream with
+    /// a timeline). Only read when `timed` is set.
+    pub fraction_ppm: AtomicU64,
+    pub timed: AtomicBool,
 }
 
 impl JobCtl {
@@ -188,6 +200,54 @@ pub fn to_start(jobs: &[(JobId, JobState)], limit: usize) -> Vec<JobId> {
         .map(|(id, _)| *id)
         .take(room)
         .collect()
+}
+
+/// Check a finished `.part` and give it its final name. Never replaces
+/// anything: a name taken in the meantime gets the next free one. The file
+/// must still be the one `file` has open, in the folder it started in, and
+/// `done` bytes long once moved.
+#[cfg(feature = "network")]
+pub(crate) fn place(
+    file: &File,
+    part: &Path,
+    final_path: &Path,
+    dir0: &Path,
+    done: u64,
+) -> Result<PathBuf, String> {
+    use crate::savename::{rename_noclobber, same_file, unique_path};
+    file.sync_all().map_err(|e| e.to_string())?;
+    let parent = final_path.parent().unwrap_or(Path::new("."));
+    if std::fs::canonicalize(parent).ok().as_deref() != Some(dir0) || !same_file(file, part) {
+        return Err("folder changed".into());
+    }
+    let mut target = final_path.to_path_buf();
+    let mut tries = 0;
+    loop {
+        match rename_noclobber(part, &target) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 3 => {
+                tries += 1;
+                let stem = final_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("video");
+                let ext = final_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("bin");
+                target = unique_path(dir0, stem, ext);
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    match std::fs::metadata(&target) {
+        Ok(m) if m.len() == done => Ok(target),
+        _ => {
+            // Ours, moved: take it back out rather than leave a short file.
+            let _ = crate::savename::remove_own_part(file, &target);
+            Err("incomplete download".into())
+        }
+    }
 }
 
 /// Seconds left at the current speed. `None` when either is unknown.
