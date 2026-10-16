@@ -287,6 +287,26 @@ fn engine_never_touches_media() {
         "meta.import_nfo",
         json!({ "dry_run": false, "ratings": true, "history": true, "overwrite": true }),
     );
+    // A Stash export, read from outside the tree.
+    let ex = work.path().join("stash");
+    std::fs::create_dir_all(ex.join("scenes")).unwrap();
+    std::fs::create_dir_all(ex.join("files")).unwrap();
+    std::fs::write(
+        ex.join("files").join("v.json"),
+        json!({ "path": "/x/v.mp4", "size": 7, "duration": 1.0, "fingerprints": [] }).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        ex.join("scenes").join("v.json"),
+        json!({ "title": "T", "files": ["/x/v.mp4"], "tags": ["t"] }).to_string(),
+    )
+    .unwrap();
+    run(&mut db, "meta.import_stash", json!({ "dir": ex }));
+    run(
+        &mut db,
+        "meta.import_stash",
+        json!({ "dir": ex, "dry_run": false, "ratings": true, "history": true }),
+    );
     // Descriptive metadata: database rows only.
     run(
         &mut db,

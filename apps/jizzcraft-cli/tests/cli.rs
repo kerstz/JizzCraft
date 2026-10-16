@@ -536,3 +536,58 @@ fn import_nfo_is_a_dry_run_unless_applied() {
     );
     assert_eq!(tree_bytes(lib.path()), before, "files untouched");
 }
+
+#[test]
+fn import_stash_is_a_dry_run_unless_applied() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    let ex = tempfile::tempdir().unwrap();
+    let bytes = vec![7u8; 3000];
+    std::fs::write(lib.path().join("a.mp4"), &bytes).unwrap();
+    json(&cli(
+        home.path(),
+        &["--json", "scan", lib.path().to_str().unwrap()],
+    ));
+    std::fs::create_dir_all(ex.path().join("scenes")).unwrap();
+    std::fs::create_dir_all(ex.path().join("files")).unwrap();
+    // Matched by oshash (every byte of the file is 7).
+    // 3000 bytes: 375 words at each end, every word 0x0707070707070707.
+    let oshash = 0x0707_0707_0707_0707u64
+        .wrapping_mul(750)
+        .wrapping_add(3000);
+    std::fs::write(
+        ex.path().join("files").join("a.json"),
+        serde_json::json!({
+            "path": "/stash/a.mp4", "size": 3000,
+            "fingerprints": [{ "type": "oshash", "fingerprint": format!("{oshash:016x}") }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        ex.path().join("scenes").join("a.json"),
+        serde_json::json!({ "title": "From stash", "files": ["/stash/a.mp4"] }).to_string(),
+    )
+    .unwrap();
+    let id = json(&cli(home.path(), &["--json", "query", "--type", "video"]))["items"][0]["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    let dir = ex.path().to_str().unwrap();
+    let dry = json(&cli(home.path(), &["--json", "import-stash", dir]));
+    assert_eq!(dry["matched"], 1, "{dry}");
+    assert!(json(&cli(home.path(), &["--json", "info", &id]))["title"].is_null());
+    json(&cli(
+        home.path(),
+        &["--json", "import-stash", dir, "--apply"],
+    ));
+    assert_eq!(
+        json(&cli(home.path(), &["--json", "info", &id]))["title"],
+        "From stash"
+    );
+    let bad = cli(
+        home.path(),
+        &["--json", "import-stash", lib.path().to_str().unwrap()],
+    );
+    assert!(!bad.status.success());
+}

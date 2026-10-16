@@ -8,15 +8,18 @@
 //! depth and element counts. A file holding only an address is counted and
 //! never fetched. Text after the root element is ignored.
 
-use super::{ImportOpts, InteropReport, MAX_DEPTH, MAX_FILES, clean_text, read_capped, walk_files};
+use super::{
+    ImportOpts, InteropReport, MAX_DEPTH, MAX_FILES, PersonRec, Record, TagRec, apply_record,
+    clean_text, day_start, read_capped, walk_files,
+};
 use crate::db::{Db, parent_blob};
 use crate::error::Result;
 use crate::fingerprint::{parse_fp, parse_oshash};
-use crate::meta::{self, Resolved};
+use crate::meta;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,8 +34,6 @@ const MAX_UNIQUEIDS: usize = 16;
 const MAX_STUDIOS: usize = 8;
 /// Longest text kept for any field.
 const MAX_FIELD_BYTES: usize = 4096;
-/// Performers applied to one item (the model's own cap is 64).
-const MAX_ACTORS_APPLIED: usize = 64;
 
 /// Why a file was not used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,28 +99,6 @@ fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
                 .ok()
                 .map(|v| v.into_owned())
         })
-}
-
-/// Days since 1970-01-01 of a proleptic Gregorian date.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Midnight UTC of the `YYYY-MM-DD` at the start of `s`.
-fn day_start(s: &str) -> Option<i64> {
-    let day = s.trim().get(..10)?;
-    let day = meta::clean_date(day).ok()?;
-    let (y, m, d) = (
-        day[..4].parse::<i64>().ok()?,
-        day[5..7].parse::<i64>().ok()?,
-        day[8..].parse::<i64>().ok()?,
-    );
-    Some(days_from_civil(y, m, d) * 86_400)
 }
 
 /// Parse one `.nfo`. Pure: no file, no network.
@@ -528,156 +507,50 @@ fn find_item(
     Ok(Found::None)
 }
 
-fn apply(
-    c: &Connection,
-    id: i64,
-    doc: &NfoDoc,
-    o: &ImportOpts,
-    rep: &mut InteropReport,
-) -> Result<bool> {
-    let mut changed = false;
-    // Title.
-    if let Some(t) = doc.title.as_deref().and_then(|t| meta::clean_title(t).ok()) {
-        let cur: Option<String> =
-            c.query_row("SELECT title FROM media WHERE id = ?1", [id], |r| r.get(0))?;
-        if cur.as_deref() != Some(t.as_str()) && (cur.is_none() || o.overwrite) {
-            c.execute("UPDATE media SET title = ?2 WHERE id = ?1", params![id, t])?;
-            rep.titles_set += 1;
-            changed = true;
-        }
-    }
-    // Release date: premiered, else the year.
-    let date = doc
+/// What an NFO says, in the importer's common shape.
+fn record_of(doc: &NfoDoc) -> Record {
+    let released = doc
         .premiered
         .as_deref()
         .and_then(|d| meta::clean_date(d).ok())
-        .or_else(|| doc.year.map(|y| format!("{y:04}-01-01")));
-    if let Some(d) = date.and_then(|d| meta::clean_date(&d).ok()) {
-        let n = if o.overwrite {
-            c.execute(
-                "UPDATE media SET released = ?2 WHERE id = ?1 AND released IS NOT ?2",
-                params![id, d],
-            )?
-        } else {
-            c.execute(
-                "UPDATE media SET released = ?2 WHERE id = ?1 AND released IS NULL",
-                params![id, d],
-            )?
-        };
-        changed |= n > 0;
+        .or_else(|| doc.year.map(|y| format!("{y:04}-01-01")))
+        .and_then(|d| meta::clean_date(&d).ok());
+    Record {
+        title: doc.title.clone(),
+        released,
+        studios: doc.studios.clone(),
+        people: doc
+            .actors
+            .iter()
+            .map(|(name, order)| PersonRec {
+                name: name.clone(),
+                position: *order,
+                ..Default::default()
+            })
+            .collect(),
+        tags: doc
+            .genres
+            .iter()
+            .chain(&doc.tags)
+            .map(|n| TagRec {
+                name: n.clone(),
+                aliases: Vec::new(),
+            })
+            .collect(),
+        // Our own id is how the file was found, not something to store.
+        external_ids: doc
+            .uniqueids
+            .iter()
+            .filter(|(k, _)| k != "jizzcraft-fp1" && !k.is_empty())
+            .cloned()
+            .collect(),
+        stars: doc.userrating.map(super::stars_from_ten).filter(|s| *s > 0),
+        play_count: doc.playcount,
+        last_played: doc.lastplayed,
+        resume_ms: doc.resume_s.map(|s| (s * 1000.0).round() as i64),
+        markers: Vec::new(),
+        ignored: u64::from(doc.ignored),
     }
-    // Studio: the first one; the rest are ignored.
-    if let Some(name) = doc.studios.first() {
-        let cur: Option<i64> =
-            c.query_row("SELECT studio_id FROM media WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })?;
-        if (cur.is_none() || o.overwrite)
-            && let Ok((sid, created)) = meta::tx_resolve_studio(c, name)
-        {
-            rep.studios_created += created as u64;
-            if cur != Some(sid) {
-                c.execute(
-                    "UPDATE media SET studio_id = ?2 WHERE id = ?1",
-                    params![id, sid],
-                )?;
-                changed = true;
-            }
-        }
-    }
-    rep.ignored_fields += doc.studios.len().saturating_sub(1) as u64;
-    // Performers.
-    for (name, order) in doc.actors.iter().take(MAX_ACTORS_APPLIED) {
-        let pid = match meta::tx_resolve_person(c, name, "") {
-            Ok(Resolved::Found(pid)) => pid,
-            Ok(Resolved::Created(pid)) => {
-                rep.people_created += 1;
-                pid
-            }
-            Ok(Resolved::Ambiguous) => {
-                rep.ignored_fields += 1;
-                continue;
-            }
-            Err(_) => continue,
-        };
-        if meta::tx_person_link(c, id, pid, *order).unwrap_or(false) {
-            rep.links_added += 1;
-            changed = true;
-        }
-    }
-    // Genres and tags become tags, through aliases.
-    for name in doc.genres.iter().chain(&doc.tags) {
-        let Ok((lid, created)) = meta::tx_resolve_tag(c, name) else {
-            continue;
-        };
-        rep.tags_created += created as u64;
-        let n = c.execute(
-            "INSERT OR IGNORE INTO media_labels(label_id, media_id, added_at)
-             SELECT ?1, id, ?3 FROM media WHERE id = ?2",
-            params![lid, id, crate::db::now_secs()],
-        )?;
-        if n > 0 {
-            rep.links_added += 1;
-            changed = true;
-        }
-    }
-    // Foreign ids, minus the ones that are ours.
-    for (kind, value) in &doc.uniqueids {
-        if kind != "jizzcraft-fp1"
-            && !kind.is_empty()
-            && meta::tx_external_id_add(c, id, kind, value)?
-        {
-            changed = true;
-        }
-    }
-    // Rating: 0 to 10 onto 0 to 5 stars.
-    if o.ratings
-        && let Some(v) = doc.userrating
-    {
-        let stars = super::stars_from_ten(v);
-        if stars > 0 {
-            let n = if o.overwrite {
-                c.execute(
-                    "UPDATE media SET rating = ?2 WHERE id = ?1 AND rating <> ?2",
-                    params![id, stars],
-                )?
-            } else {
-                c.execute(
-                    "UPDATE media SET rating = ?2 WHERE id = ?1 AND rating = 0",
-                    params![id, stars],
-                )?
-            };
-            if n > 0 {
-                rep.ratings_set += 1;
-                changed = true;
-            }
-        }
-    }
-    // History: the larger count and the later date win; a resume point only
-    // fills an empty one.
-    if o.history {
-        if let Some(pc) = doc.playcount {
-            changed |= c.execute(
-                "UPDATE media SET play_count = ?2 WHERE id = ?1 AND play_count < ?2",
-                params![id, pc],
-            )? > 0;
-        }
-        if let Some(lp) = doc.lastplayed {
-            changed |= c.execute(
-                "UPDATE media SET last_played_at = ?2
-                 WHERE id = ?1 AND COALESCE(last_played_at, 0) < ?2",
-                params![id, lp],
-            )? > 0;
-        }
-        if let Some(s) = doc.resume_s {
-            changed |= c.execute(
-                "UPDATE media SET resume_ms = ?2 WHERE id = ?1 AND resume_ms IS NULL",
-                params![id, (s * 1000.0).round() as i64],
-            )? > 0;
-        }
-    }
-    rep.ignored_fields += u64::from(doc.ignored);
-    Ok(changed)
 }
 
 /// Read every `.nfo` below `dir` (or below every library folder when `dir`
@@ -735,7 +608,7 @@ pub fn import_nfo(
             Found::Many => rep.ambiguous += 1,
             Found::One(id) => {
                 rep.matched += 1;
-                if apply(&tx, id, &doc, o, &mut rep)? {
+                if apply_record(&tx, id, &record_of(&doc), o, &mut rep)? {
                     rep.applied += 1;
                 }
             }

@@ -13,6 +13,12 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Import a Stash JSON export folder (scenes, files, performers, tags): items
+  are matched by content (size and oshash, else size, duration and name),
+  never by path. Titles, dates, studios, performers with aliases, tags with
+  aliases, markers, Stash ids and phash values; ratings and history on
+  request. Read-only, bounded, previewed with exact counts. CLI
+  `import-stash`; the Tools window gains a Stash source.
 - Online edition: your own extractor rules for pages the built-in reader does
   not understand (`extract_rules` in `fetch.json`, JSON, up to 32 rules of 64
   KiB). A rule names the hosts it applies to and gives patterns that capture a

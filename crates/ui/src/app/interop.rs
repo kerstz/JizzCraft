@@ -1,5 +1,5 @@
 //! "Import from other apps": a window to read other tools' files (Kodi-style
-//! NFO files, later a Stash export) onto matching library items. Always a
+//! NFO files, Stash exports) onto matching library items. Always a
 //! preview first (the same code as the import, rolled back, so its counts are
 //! exact); the Import button stays disabled until a preview of the same
 //! folder and options has run. Counts only, never names; files are only read.
@@ -98,7 +98,8 @@ impl JizzApp {
         let folder_text = match (&self.interop.folder, discreet) {
             (_, true) => "—".to_owned(),
             (Some(p), false) => p.to_string_lossy().into_owned(),
-            (None, false) => tr("Library folders").to_owned(),
+            (None, false) if self.interop.source == Source::Nfo => tr("Library folders").to_owned(),
+            (None, false) => "—".to_owned(),
         };
         let mut ui_state = std::mem::take(&mut self.interop);
         egui::Window::new(tr("Import from other apps"))
@@ -113,8 +114,7 @@ impl JizzApp {
                     Source::Nfo,
                     tr("NFO files (Kodi, Jellyfin, Emby, Plex)"),
                 );
-                // Enabled once the Stash importer exists.
-                ui.add_enabled_ui(false, |ui| {
+                ui.add_enabled_ui(editable, |ui| {
                     ui.radio_value(
                         &mut ui_state.source,
                         Source::Stash,
@@ -134,7 +134,10 @@ impl JizzApp {
                         if ui.button(tr("Choose…")).clicked() {
                             pick = true;
                         }
-                        if ui_state.folder.is_some() && ui.button(tr("Library folders")).clicked() {
+                        if ui_state.source == Source::Nfo
+                            && ui_state.folder.is_some()
+                            && ui.button(tr("Library folders")).clicked()
+                        {
                             ui_state.folder = None;
                         }
                     });
@@ -158,6 +161,10 @@ impl JizzApp {
                 let previewed = result
                     .as_ref()
                     .is_some_and(|(k, r)| *k == ui_state.key() && r.dry_run);
+                let (cmd, ready) = match ui_state.source {
+                    Source::Nfo => ("meta.import_nfo", true),
+                    Source::Stash => ("meta.import_stash", ui_state.folder.is_some()),
+                };
                 let args = |dry: bool| {
                     let mut a = json!({
                         "dry_run": dry, "overwrite": ui_state.overwrite,
@@ -169,14 +176,14 @@ impl JizzApp {
                     a
                 };
                 ui.horizontal(|ui| {
-                    ui.add_enabled_ui(editable, |ui| {
+                    ui.add_enabled_ui(editable && ready, |ui| {
                         if widgets::button_outline(ui, tr("Preview")).clicked() {
-                            cmds.push(("meta.import_nfo", args(true)));
+                            cmds.push((cmd, args(true)));
                         }
                     });
-                    ui.add_enabled_ui(editable && previewed, |ui| {
+                    ui.add_enabled_ui(editable && ready && previewed, |ui| {
                         if widgets::button_solid(ui, tr("Import")).clicked() {
-                            cmds.push(("meta.import_nfo", args(false)));
+                            cmds.push((cmd, args(false)));
                         }
                     });
                 });
@@ -218,50 +225,69 @@ impl JizzApp {
 pub(super) fn register(reg: &mut Registry<JizzApp>) {
     reg.register(
         "interop.open",
-        "Open the import window (NFO files, later Stash exports)",
+        "Open the import window (NFO files, Stash exports)",
         |app, _| {
             app.interop.open = true;
             Ok(json!({}))
         },
     );
-    // Same name as the core command: in the UI the work runs as a job.
+    // Same names as the core commands: in the UI the work runs as a job.
     reg.register(
         "meta.import_nfo",
         "Read Kodi-style .nfo files onto matching items (preview unless dry_run is false): {dir?, dry_run?=true, overwrite?, ratings?, history?}",
-        |app, args| {
-            let o: ImportOpts = opts_from_args(&args)?;
-            let dir = args.get("dir").and_then(Value::as_str).map(PathBuf::from);
-            if app.read_only && !o.dry_run {
-                return Err(Error::Invalid("the library is read-only".into()));
-            }
-            let key = Key {
-                source: Source::Nfo,
-                folder: dir.clone(),
-                overwrite: o.overwrite,
-                ratings: o.ratings,
-                history: o.history,
-            };
-            let (slot, running, cancel) = (
-                app.interop.slot.clone(),
-                app.interop.running.clone(),
-                app.lock_cancel.clone(),
-            );
-            running.store(true, Ordering::Relaxed);
-            app.spawn_job(
-                if o.dry_run { "NFO preview" } else { "NFO import" },
-                move |db| {
-                    let res = jizzcraft_core::interop::nfo::import_nfo(db, dir.as_deref(), &o, &cancel)
-                        .map_err(|e| e.to_string());
-                    running.store(false, Ordering::Relaxed);
-                    let rep = res?;
-                    let text = toast_text(&rep);
-                    if let Ok(mut g) = slot.lock() {
-                        *g = Some((key, rep));
-                    }
-                    Ok(text)
-                },
-            );
-            Ok(json!({ "started": true }))
-        },
+        |app, args| start(app, Source::Nfo, &args),
     );
+    reg.register(
+        "meta.import_stash",
+        "Read a Stash JSON export folder onto matching items (preview unless dry_run is false): {dir, dry_run?=true, overwrite?, ratings?, history?}",
+        |app, args| start(app, Source::Stash, &args),
+    );
+}
+
+fn start(app: &mut JizzApp, source: Source, args: &Value) -> jizzcraft_core::Result<Value> {
+    let o: ImportOpts = opts_from_args(args)?;
+    let dir = args.get("dir").and_then(Value::as_str).map(PathBuf::from);
+    if source == Source::Stash && dir.is_none() {
+        return Err(Error::Invalid("missing string argument `dir`".into()));
+    }
+    if app.read_only && !o.dry_run {
+        return Err(Error::Invalid("the library is read-only".into()));
+    }
+    let key = Key {
+        source,
+        folder: dir.clone(),
+        overwrite: o.overwrite,
+        ratings: o.ratings,
+        history: o.history,
+    };
+    let (slot, running, cancel) = (
+        app.interop.slot.clone(),
+        app.interop.running.clone(),
+        app.lock_cancel.clone(),
+    );
+    running.store(true, Ordering::Relaxed);
+    let label = match (source, o.dry_run) {
+        (Source::Nfo, true) => "NFO preview",
+        (Source::Nfo, false) => "NFO import",
+        (Source::Stash, true) => "Stash preview",
+        (Source::Stash, false) => "Stash import",
+    };
+    app.spawn_job(label, move |db| {
+        let res = match (source, dir.as_deref()) {
+            (Source::Nfo, d) => jizzcraft_core::interop::nfo::import_nfo(db, d, &o, &cancel),
+            (Source::Stash, Some(d)) => {
+                jizzcraft_core::interop::stash::import_stash(db, d, &o, &cancel)
+            }
+            (Source::Stash, None) => Err(Error::Invalid("missing folder".into())),
+        }
+        .map_err(|e| e.to_string());
+        running.store(false, Ordering::Relaxed);
+        let rep = res?;
+        let text = toast_text(&rep);
+        if let Ok(mut g) = slot.lock() {
+            *g = Some((key, rep));
+        }
+        Ok(text)
+    });
+    Ok(json!({ "started": true }))
 }

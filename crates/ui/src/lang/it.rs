@@ -1286,4 +1286,6 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} matched · {} unmatched · {} ambiguous · {} rejected",
         "{} associati · {} non associati · {} ambigui · {} rifiutati",
     ),
+    ("Stash preview", "Anteprima Stash"),
+    ("Stash import", "Importazione Stash"),
 ];

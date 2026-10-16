@@ -14,6 +14,7 @@ Filled in as each piece lands.
 | Metadata export (`jizzcraft-meta`, version 3) | written to a file you choose; items carry `fp` and `oshash` | `meta.export` |
 | Title, release date, studio, performers, tag aliases, external ids | stored in the library database; set by hand or imported; exported in `jizzcraft-meta` version 3 (private ones only with `--private`) | `media.info*`, `studio.*`, `person.*`, `tag.alias.*`; see [organise.md](organise.md#title-studio-performers-and-aliases) |
 | Kodi-style `.nfo` files (Kodi, Jellyfin, Emby, Plex) | read only, never written; applied to the library database | `meta.import_nfo`, CLI `import-nfo`, Tools menu "Import from other apps…" |
+| Stash JSON export folders | read only, never written; applied to the library database | `meta.import_stash`, CLI `import-stash`, same Tools window |
 | Metadata import | reads versions 1 to 3; matches by `fp`, then by `oshash` and size | `meta.import` |
 
 ### The oshash
@@ -77,6 +78,47 @@ refused. A file that holds only a web address is counted and the address is
 never fetched. Symbolic links are not followed, hidden folders are skipped,
 and at most 100 000 files are read. The report holds counts only. Stopping an
 import from the app rolls everything back.
+
+## Stash exports
+
+`jizzcraft-cli import-stash DIR [--apply] [--overwrite] [--ratings] [--history]`
+reads the folder Stash writes with Settings, Tasks, Export: `scenes/` (required,
+otherwise the folder is refused), `files/`, and optionally `performers/`,
+`studios/` and `tags/`. Like the NFO import it is a dry run unless `--apply`,
+bounded, and counts-only; the Tools window has a "Stash export folder" source.
+
+Items are matched by content, never by path (Stash's paths are those of
+another machine, and a path in a file is never opened):
+
+- the file's `size` and `oshash`: exactly one library video matches, several
+  are ambiguous and skipped. A library file without an oshash gets one computed
+  on the spot (a read-only look at 128 KiB; a preview forgets it again);
+- when the export has no `oshash`: the same `size`, a duration within half a
+  second, and the same file name apart from case, exactly one.
+
+A scene applies to each of its matched files. Mapping:
+
+| Stash | Becomes |
+| --- | --- |
+| `title`, `date` | title, release date |
+| `studio` | studio |
+| `performers` (+ `performers/<name>.json`) | performers in listed order, with disambiguation, aliases and favorite (favorite only on a performer this import creates) |
+| `tags` (+ `tags/<name>.json`) | tags, with their aliases; parents are flattened and counted as ignored |
+| `markers` | markers: `seconds` rounded to milliseconds, labelled with the title or the primary tag; end times are dropped |
+| `stash_ids[0]` | external id `stashbox` (the endpoint address is dropped) |
+| file `phash` | external id `phash.stash`, 16 hex digits of the 64 bits |
+| `rating` | stars, only with `--ratings`: 1 to 5 is stars, above 5 is the 1 to 100 scale and becomes `ceil(v / 20)` |
+| `play_history`, `play_count`, `resume_time` | play count (larger wins), last played (later wins), resume point (only if empty); only with `--history` |
+
+`md5`, `o_history`, `organized`, `code`, `details`, `director`, `urls`,
+`groups`, `custom_fields` and covers are counted as ignored. Performer birth
+dates, genders, body attributes and images are never read into the library. A
+`phash` is read as an exact 64-bit integer (a JSON number is never passed
+through a float) or as a string of 16 hex digits, else decimal.
+
+Limits: at most 500 000 JSON files in total (more is refused), 256 KiB per
+file, 16 MiB per scene, 4 MiB per performer or studio, 1 MiB per tag file;
+anything over is counted as rejected.
 
 ## Refused, and why
 

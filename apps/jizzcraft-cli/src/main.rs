@@ -649,6 +649,23 @@ enum Cmd {
         #[arg(long)]
         history: bool,
     },
+    /// Read a Stash JSON export folder onto matching items. A dry run unless --apply.
+    ImportStash {
+        /// The export folder (it holds scenes/ and files/).
+        dir: PathBuf,
+        /// Write the changes (without it, only count them).
+        #[arg(long)]
+        apply: bool,
+        /// Replace existing titles, dates, studios and ratings.
+        #[arg(long)]
+        overwrite: bool,
+        /// Import star ratings.
+        #[arg(long)]
+        ratings: bool,
+        /// Import play counts, last played dates and resume points.
+        #[arg(long)]
+        history: bool,
+    },
     /// Find items by content hash (give one of --oshash, --fp).
     Lookup {
         /// 16 hex digits.
@@ -1033,6 +1050,19 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             }
             ("meta.import_nfo".to_owned(), a)
         }
+        Cmd::ImportStash {
+            dir,
+            apply,
+            overwrite,
+            ratings,
+            history,
+        } => (
+            "meta.import_stash".to_owned(),
+            json!({
+                "dir": dir.to_string_lossy(), "dry_run": !apply, "overwrite": overwrite,
+                "ratings": ratings, "history": history,
+            }),
+        ),
         Cmd::Lookup { oshash, fp } => {
             let mut a = json!({});
             if let Some(h) = oshash {
@@ -1448,7 +1478,7 @@ fn print_human(cmd: &str, v: &Value) {
                 r["errors"]
             );
         }
-        "meta.import_nfo" => {
+        "meta.import_nfo" | "meta.import_stash" => {
             println!(
                 "{}: {} files · {} read · {} rejected · {} matched · {} changed · {} unmatched · {} ambiguous",
                 if v["dry_run"] == true {
