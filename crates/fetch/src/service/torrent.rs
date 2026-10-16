@@ -541,8 +541,13 @@ impl FetchService {
                     Verdict::DiskFull => "disk full",
                     Verdict::Error => "error",
                 };
-            shared.halt(id, label);
-            let _ = session.pause(&h).await;
+            // Pause first, label after: `list` drops the label of a torrent
+            // it still sees running (that is how a resume clears it), so a
+            // label set before the pause landed could be erased by a refresh
+            // in between and the torrent would show up paused with no status.
+            if session.pause(&h).await.is_ok() {
+                shared.halt(id, label);
+            }
         }
     }
 

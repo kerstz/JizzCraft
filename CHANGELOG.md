@@ -13,6 +13,10 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Fixed
+- Online edition: the "disk full" status of a torrent paused for lack of room
+  could be lost when a list refresh ran between the watchdog's label and the
+  actual pause; the label is now set once the pause has landed. This also
+  fixes a flaky swarm test.
 - Player: the PLAYING / PAUSED state label no longer overlaps the transport
   buttons in narrow windows; it moves into the free space or hides. An error
   shows ERROR in place of the clock when there is no room for the label.
