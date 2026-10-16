@@ -147,11 +147,10 @@ fn run_passes_json_arguments_through() {
         ],
     ));
     assert_eq!(q["count"], 1);
+    // Path separators differ per platform.
     assert!(
-        q["items"][0]["path"]
-            .as_str()
-            .unwrap()
-            .ends_with("sub/c.png")
+        std::path::Path::new(q["items"][0]["path"].as_str().unwrap())
+            .ends_with(std::path::Path::new("sub").join("c.png"))
     );
 }
 
