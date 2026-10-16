@@ -2,6 +2,9 @@
 //! `network`; only loopback traffic, and no torrent session is started.
 #![cfg(feature = "network")]
 
+#[path = "support/fault_server.rs"]
+mod fault_server;
+
 use jizzcraft_core::commands::{HasLibrary, Registry, register_core};
 use jizzcraft_core::{Db, Error};
 use jizzcraft_fetch::commands::{FetchHost, HasFetch, register_fetch};
@@ -215,4 +218,303 @@ fn rules_import_enable_remove_round_trip_and_persist() {
     // Ids are not reused while a higher one exists.
     let mut h = again;
     assert_eq!(h.import_rules(one).unwrap(), vec![4]);
+}
+
+// ---- extract.page, download.* and the settings that go with them -------------
+
+fn site() -> fault_server::Server {
+    use fault_server::{Cfg, Route, mp4_moov_last};
+    let mut cfg = Cfg::new(Vec::new());
+    cfg.routes.push(Route::new(
+        "/page",
+        "text/html",
+        br#"<meta property="og:title" content="Secret Title">
+            <meta property="og:video" content="/media/clip.mp4">"#
+            .to_vec(),
+        false,
+    ));
+    cfg.routes.push(Route::new(
+        "/media/clip.mp4",
+        "video/mp4",
+        mp4_moov_last(40_000),
+        true,
+    ));
+    fault_server::start(cfg)
+}
+
+fn save_to(reg: &Registry<Ctx>, c: &mut Ctx, dir: &std::path::Path) {
+    reg.run(c, "fetch.settings", json!({"save_dir": dir}))
+        .unwrap();
+}
+
+#[test]
+fn extract_page_hides_urls_unless_asked() {
+    let d = tempfile::tempdir().unwrap();
+    let srv = site();
+    let (reg, mut c) = setup(d.path());
+    let r = reg
+        .run(
+            &mut c,
+            "extract.page",
+            json!({"url": srv.url("/page"), "mode": "builtin"}),
+        )
+        .unwrap();
+    let txt = r.to_string();
+    assert!(
+        !txt.contains("127.0.0.1") && !txt.contains("clip.mp4"),
+        "{txt}"
+    );
+    assert_eq!(r["via"], "builtin");
+    assert_eq!(r["entries"][0]["formats"][0]["index"], 0);
+    assert!(r["token"].is_u64());
+    assert_eq!(r["has_thumbnail"], false);
+    let r = reg
+        .run(
+            &mut c,
+            "extract.page",
+            json!({"url": srv.url("/page"), "mode": "builtin", "show_urls": true}),
+        )
+        .unwrap();
+    assert!(
+        r["entries"][0]["formats"][0]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/media/clip.mp4")
+    );
+    assert!(
+        reg.run(
+            &mut c,
+            "extract.page",
+            json!({"url": srv.url("/page"), "mode": "x"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn download_start_by_token_then_wait_imports_once() {
+    let d = tempfile::tempdir().unwrap();
+    let save = d.path().join("saved");
+    let srv = site();
+    let (reg, mut c) = setup(d.path());
+    save_to(&reg, &mut c, &save);
+    let r = reg
+        .run(&mut c, "extract.page", json!({"url": srv.url("/page")}))
+        .unwrap();
+    let ids = reg
+        .run(
+            &mut c,
+            "download.start",
+            json!({"token": r["token"], "quality": "720"}),
+        )
+        .unwrap();
+    assert_eq!(ids["ids"].as_array().unwrap().len(), 1);
+    let w = reg
+        .run(&mut c, "download.wait", json!({"timeout_secs": 30}))
+        .unwrap();
+    assert_eq!(
+        (w["done"].as_u64(), w["failed"].as_u64()),
+        (Some(1), Some(0))
+    );
+    assert_eq!(w["imported"], 1);
+    assert!(save.join("Secret Title.mp4").is_file());
+    // The save folder became a library folder.
+    assert_eq!(c.db.folders().unwrap().len(), 1);
+    // Nothing new finished: nothing is imported twice.
+    let w = reg.run(&mut c, "download.wait", json!({})).unwrap();
+    assert_eq!(w["imported"], 0);
+    // The list says nothing about the address, the title or the folder.
+    let l = reg.run(&mut c, "download.list", json!({})).unwrap();
+    let txt = l.to_string();
+    assert!(!txt.contains("127.0.0.1") && !txt.contains("Secret") && !txt.contains("saved"));
+    assert_eq!(l["jobs"][0]["state"], "done");
+    let id = l["jobs"][0]["id"].as_u64().unwrap();
+    reg.run(&mut c, "download.remove", json!({"id": id}))
+        .unwrap();
+    assert!(save.join("Secret Title.mp4").is_file());
+    assert!(matches!(
+        reg.run(&mut c, "download.remove", json!({"id": id})),
+        Err(Error::NotFound(_))
+    ));
+    // An unknown token is a plain not-found.
+    assert!(matches!(
+        reg.run(&mut c, "download.start", json!({"token": 1})),
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[test]
+fn download_into_an_existing_library_folder_rescans_it() {
+    let d = tempfile::tempdir().unwrap();
+    let lib = d.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let srv = site();
+    let (reg, mut c) = setup(d.path());
+    reg.run(&mut c, "library.import", json!({"path": lib}))
+        .unwrap();
+    save_to(&reg, &mut c, &lib.join("incoming"));
+    reg.run(
+        &mut c,
+        "download.start",
+        json!({"url": srv.url("/media/clip.mp4")}),
+    )
+    .unwrap();
+    let w = reg
+        .run(&mut c, "download.wait", json!({"timeout_secs": 30}))
+        .unwrap();
+    assert_eq!(w["imported"], 1);
+    // Still one library folder: the save folder is inside it.
+    assert_eq!(c.db.folders().unwrap().len(), 1);
+}
+
+#[test]
+fn settings_validation_messages_are_fixed() {
+    let d = tempfile::tempdir().unwrap();
+    let (reg, mut c) = setup(d.path());
+    let cases = [
+        (
+            json!({"save_dir": "relative/zzz"}),
+            "the save folder must be an absolute path",
+        ),
+        (
+            json!({"save_concurrency": 9}),
+            "save_concurrency must be 1 to 4",
+        ),
+        (
+            json!({"save_concurrency": 0}),
+            "save_concurrency must be 1 to 4",
+        ),
+        (
+            json!({"extractor": "zzz"}),
+            "extractor must be first, fallback or off",
+        ),
+        (
+            json!({"page_user_agent": "caf\u{e9}"}),
+            "page_user_agent must be short printable text",
+        ),
+    ];
+    for (args, want) in cases {
+        let e = reg.run(&mut c, "fetch.settings", args.clone()).unwrap_err();
+        assert_eq!(e.to_string(), format!("invalid input: {want}"));
+        // The offending value never comes back.
+        assert!(!e.to_string().contains("zzz"));
+    }
+    reg.run(
+        &mut c,
+        "fetch.settings",
+        json!({"save_concurrency": 3, "import_after_save": false, "extractor": "first",
+               "follow_embeds": false, "page_user_agent": "Test/1.0"}),
+    )
+    .unwrap();
+    let s = &c.fetch.config().save;
+    assert_eq!(
+        (s.concurrency, s.import_after, s.follow_embeds),
+        (3, false, false)
+    );
+    assert_eq!(s.page_user_agent.as_deref(), Some("Test/1.0"));
+    // Empty values restore the defaults.
+    reg.run(
+        &mut c,
+        "fetch.settings",
+        json!({"page_user_agent": "", "save_dir": ""}),
+    )
+    .unwrap();
+    assert!(c.fetch.config().save.page_user_agent.is_none());
+    assert!(c.fetch.config().save.dir.is_none());
+    // Bad download arguments say what is wrong, not what was given.
+    let e = reg
+        .run(
+            &mut c,
+            "download.start",
+            json!({"url": "http://a.invalid/", "quality": "zzz"}),
+        )
+        .unwrap_err();
+    assert!(!e.to_string().contains("zzz"));
+    assert!(
+        reg.run(
+            &mut c,
+            "download.start",
+            json!({"url": "http://a.invalid/", "dir": "rel"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn rules_import_list_remove_enable_round_trip_never_echo_patterns() {
+    let d = tempfile::tempdir().unwrap();
+    let (reg, mut c) = setup(d.path());
+    let file = d.path().join("rules.json");
+    std::fs::write(
+        &file,
+        br#"{"name":"mine","hosts":["a.example.invalid","*.b.example.invalid"],
+            "media":[{"regex":"SECRETPATTERN(?P<url>x)"}]}"#,
+    )
+    .unwrap();
+    let r = reg
+        .run(&mut c, "extract.rules.import", json!({"path": file}))
+        .unwrap();
+    assert_eq!(r["ids"], json!([1]));
+    let l = reg.run(&mut c, "extract.rules.list", json!({})).unwrap();
+    assert!(!l.to_string().contains("SECRETPATTERN"));
+    assert!(!l.to_string().contains("example.invalid"));
+    assert_eq!(l["rules"][0]["hosts"], 2);
+    assert_eq!(l["rules"][0]["enabled"], true);
+    reg.run(
+        &mut c,
+        "extract.rules.enable",
+        json!({"id": 1, "on": false}),
+    )
+    .unwrap();
+    let l = reg.run(&mut c, "extract.rules.list", json!({})).unwrap();
+    assert_eq!(l["rules"][0]["enabled"], false);
+    // A bad file adds nothing and never echoes the pattern.
+    let bad = d.path().join("bad.json");
+    std::fs::write(
+        &bad,
+        br#"{"name":"x","hosts":["a.example.invalid"],"media":[{"regex":"LEAKME(?P<url>("}]}"#,
+    )
+    .unwrap();
+    let e = reg
+        .run(&mut c, "extract.rules.import", json!({"path": bad}))
+        .unwrap_err();
+    assert!(!e.to_string().contains("LEAKME"));
+    // A file over the limit is refused unread.
+    let big = d.path().join("big.json");
+    std::fs::write(&big, vec![b' '; 70_000]).unwrap();
+    assert!(
+        reg.run(&mut c, "extract.rules.import", json!({"path": big}))
+            .is_err()
+    );
+    reg.run(&mut c, "extract.rules.remove", json!({"id": 1}))
+        .unwrap();
+    assert!(matches!(
+        reg.run(&mut c, "extract.rules.remove", json!({"id": 1})),
+        Err(Error::NotFound(_))
+    ));
+    let l = reg.run(&mut c, "extract.rules.list", json!({})).unwrap();
+    assert_eq!(l["rules"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn the_new_commands_are_registered() {
+    let d = tempfile::tempdir().unwrap();
+    let (reg, _) = setup(d.path());
+    let names: Vec<&str> = reg.list().map(|(n, _)| n).collect();
+    for n in [
+        "download.start",
+        "download.pause",
+        "download.resume",
+        "download.cancel",
+        "download.remove",
+        "download.list",
+        "download.wait",
+        "extract.page",
+        "extract.rules.import",
+        "extract.rules.list",
+        "extract.rules.remove",
+        "extract.rules.enable",
+    ] {
+        assert!(names.contains(&n), "{n}");
+    }
 }

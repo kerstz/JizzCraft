@@ -13,6 +13,22 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Possible duplicates: videos get a visual fingerprint (25 frames decoded in
+  memory, nothing written to disk, schema v7) and Tools > "Find possible
+  duplicates…" groups the ones that look alike, with a similarity choice
+  (exact, high, medium, low). Review only: open an item or put a group in a
+  playlist; nothing is deleted. Hashes imported from a Stash export count too.
+  CLI `phash` and `duplicates`.
+- Online edition: save videos. Paste a file, page, HLS or DASH address and
+  the app saves it to a folder you choose, one `.part` file at a time, then
+  gives it its name without ever replacing a file. Pause, resume (within the
+  session), cancel, a speed cap shared by every save, up to four at once, and
+  a pause when the disk is nearly full. Streams become one `.ts` or fragmented
+  `.mp4`; live streams are refused. Commands `download.start|pause|resume|
+  cancel|remove|list|wait` and `extract.page` list what a page holds; settings
+  `save_dir`, `save_concurrency`, `import_after_save`, `extractor`,
+  `follow_embeds`, `page_user_agent`. Saved videos join the library once per
+  batch.
 - Funscript sidecars: a `.funscript` next to a video draws a one-hue intensity
   band above the timeline (decorative, off in discreet mode, switch in
   Settings) and "Script: N actions" in the inspector. Display only: nothing is

@@ -6,14 +6,20 @@
 //! `fetch.add {result}` / `fetch.grab`.
 
 use crate::config::{FetchConfig, Indexer};
+use crate::download::manager::{DownloadRequest, SaveSource, pick_format};
+use crate::download::{JobId, JobState, JobView};
+use crate::errors::classify;
+use crate::formats::{MAX_ENTRIES, muxed};
+use crate::pick::{Prefer, Quality};
 use crate::redact::redact_url;
 use crate::secret::Secret;
-use crate::service::{FetchService, Source, TorrentState};
+use crate::service::{ExtractMode, Extraction, FetchService, Source, TorrentState, Via};
 use crate::torznab::SearchResult;
 use jizzcraft_core::commands::{HasLibrary, Registry};
 use jizzcraft_core::{Error, Result, scan};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -23,8 +29,14 @@ pub struct FetchHost {
     cfg: FetchConfig,
     svc: Option<FetchService>,
     last: Vec<SearchResult>,
+    /// The latest page readings, newest last, for `download.start {token}`.
+    /// Memory only: the addresses in them never reach a result.
+    extractions: VecDeque<(u64, Extraction)>,
     pub cancel: Arc<AtomicBool>,
 }
+
+/// How many page readings are kept for a later `download.start`.
+const KEEP_EXTRACTIONS: usize = 16;
 
 impl FetchHost {
     pub fn new(cfg_path: PathBuf) -> Self {
@@ -34,6 +46,7 @@ impl FetchHost {
             cfg,
             svc: None,
             last: Vec::new(),
+            extractions: VecDeque::new(),
             cancel: Arc::default(),
         }
     }
@@ -218,6 +231,10 @@ impl FetchHost {
     /// Apply a `fetch.settings` argument object. Absent keys are untouched.
     /// Keys: `dir`, `down_mibps`, `up_mibps` (0 = unlimited), `seed`, `dht`,
     /// `proxy` (`socks5://...`, empty = none), `require_proxy`,
+    /// `save_dir` (absolute, empty = the download folder, created),
+    /// `save_concurrency` (1 to 4), `import_after_save`,
+    /// `extractor` (`first|fallback|off`), `follow_embeds`,
+    /// `page_user_agent` (empty = the generic default),
     /// `resume_on_start` (`never|ask|always`), `seed_ratio`, `seed_minutes`
     /// (0 = off), `bind_interface` (empty = none).
     pub fn apply_settings(&mut self, a: &Value) -> Result<()> {
@@ -237,6 +254,46 @@ impl FetchHost {
             Some(r) => Some(crate::config::ResumeOnStart::parse(&r).ok_or_else(|| {
                 Error::Invalid("resume_on_start must be never, ask or always".into())
             })?),
+            None => None,
+        };
+        let save_dir = match text("save_dir") {
+            Some(p) if !p.is_empty() => {
+                let p = PathBuf::from(p);
+                if !p.is_absolute() {
+                    return Err(Error::Invalid(
+                        "the save folder must be an absolute path".into(),
+                    ));
+                }
+                std::fs::create_dir_all(&p)
+                    .map_err(|_| Error::Invalid("the save folder could not be created".into()))?;
+                Some(Some(p))
+            }
+            Some(_) => Some(None),
+            None => None,
+        };
+        let concurrency = match a.get("save_concurrency") {
+            None => None,
+            Some(v) => match v.as_u64() {
+                Some(n @ 1..=4) => Some(n as u8),
+                _ => return Err(Error::Invalid("save_concurrency must be 1 to 4".into())),
+            },
+        };
+        let extractor = match text("extractor") {
+            Some(e) => Some(crate::config::ExtractorMode::parse(&e).ok_or_else(|| {
+                Error::Invalid("extractor must be first, fallback or off".into())
+            })?),
+            None => None,
+        };
+        let agent = match text("page_user_agent") {
+            Some(u) => {
+                let u = u.trim().to_owned();
+                if u.len() > 256 || !u.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+                    return Err(Error::Invalid(
+                        "page_user_agent must be short printable text".into(),
+                    ));
+                }
+                Some((!u.is_empty()).then_some(u))
+            }
             None => None,
         };
         let ratio = a.get("seed_ratio").and_then(Value::as_f64);
@@ -280,6 +337,24 @@ impl FetchHost {
                 let b = b.trim().to_owned();
                 c.bind_interface = (!b.is_empty()).then_some(b);
             }
+            if let Some(d) = save_dir {
+                c.save.dir = d;
+            }
+            if let Some(n) = concurrency {
+                c.save.concurrency = n;
+            }
+            if let Some(i) = flag("import_after_save") {
+                c.save.import_after = i;
+            }
+            if let Some(e) = extractor {
+                c.save.extractor = e;
+            }
+            if let Some(f) = flag("follow_embeds") {
+                c.save.follow_embeds = f;
+            }
+            if let Some(u) = agent {
+                c.save.page_user_agent = u;
+            }
         })
     }
 
@@ -314,6 +389,42 @@ impl FetchHost {
         if let Some(s) = &self.svc {
             s.cancel_streams();
         }
+    }
+
+    /// Remember a page reading and hand back its token.
+    pub fn keep_extraction(&mut self, ex: Extraction) -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        let mut token;
+        loop {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+            );
+            token = h.finish();
+            if token != 0 && !self.extractions.iter().any(|(t, _)| *t == token) {
+                break;
+            }
+        }
+        self.extractions.push_back((token, ex));
+        while self.extractions.len() > KEEP_EXTRACTIONS {
+            self.extractions.pop_front();
+        }
+        token
+    }
+
+    fn extraction(&self, token: u64) -> Result<Extraction> {
+        self.extractions
+            .iter()
+            .find(|(t, _)| *t == token)
+            .map(|(_, e)| e.clone())
+            .ok_or_else(|| Error::NotFound("extraction".into()))
+    }
+
+    /// The service when it already exists (no runtime is started to answer).
+    fn running(&self) -> Option<&FetchService> {
+        self.svc.as_ref()
     }
 
     pub fn service(&mut self) -> Result<&FetchService> {
@@ -404,7 +515,401 @@ fn add_and_maybe_wait(h: &mut FetchHost, src: Source, a: &Value) -> Result<Value
     Ok(json!({ "id": id }))
 }
 
+/// Add the files a batch of saves produced to the library: a rescan of the
+/// library folder that holds `dir`, or a new library folder when none does.
+/// Counts only.
+pub fn import_saved(db: &mut jizzcraft_core::Db, dir: &Path) -> Result<scan::ScanReport> {
+    let canon = jizzcraft_core::pathbytes::canonical(dir)
+        .map_err(|_| Error::Invalid("the save folder is not available".into()))?;
+    let roots = db.folders()?;
+    if let Some((id, root)) = roots.iter().find(|(_, r)| canon.starts_with(r)) {
+        return scan::scan_folder(db, *id, root);
+    }
+    // A folder above an existing library folder would nest two roots.
+    if roots.iter().any(|(_, r)| r.starts_with(&canon)) {
+        return Err(Error::Invalid(
+            "the save folder holds library folders".into(),
+        ));
+    }
+    scan::import_folder(db, &canon).map(|(_, r)| r)
+}
+
+fn quality_of(a: &Value) -> Result<Quality> {
+    let bad = || Error::Invalid("quality must be best, worst or a height".into());
+    match a.get("quality") {
+        None | Some(Value::Null) => Ok(Quality::default()),
+        Some(Value::String(q)) => match q.as_str() {
+            "best" => Ok(Quality::default()),
+            "worst" => Ok(Quality {
+                max_height: None,
+                prefer: Prefer::Smallest,
+            }),
+            n => n
+                .trim_end_matches('p')
+                .parse::<u32>()
+                .ok()
+                .filter(|h| (1..=8640).contains(h))
+                .map(|h| Quality {
+                    max_height: Some(h),
+                    prefer: Prefer::Best,
+                })
+                .ok_or_else(bad),
+        },
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .filter(|h| (1..=8640).contains(h))
+            .map(|h| Quality {
+                max_height: Some(h as u32),
+                prefer: Prefer::Best,
+            })
+            .ok_or_else(bad),
+        _ => Err(bad()),
+    }
+}
+
+fn dir_of(a: &Value) -> Result<Option<PathBuf>> {
+    match a.get("dir").and_then(Value::as_str) {
+        None | Some("") => Ok(None),
+        Some(d) => {
+            let p = PathBuf::from(d);
+            if p.is_absolute() && p.is_dir() {
+                Ok(Some(p))
+            } else {
+                Err(Error::Invalid(
+                    "the folder must be an absolute path to an existing folder".into(),
+                ))
+            }
+        }
+    }
+}
+
+fn state_name(s: JobState) -> &'static str {
+    match s {
+        JobState::Queued => "queued",
+        JobState::Probing => "probing",
+        JobState::Running => "running",
+        JobState::Paused => "paused",
+        JobState::Verifying => "verifying",
+        JobState::Done => "done",
+        JobState::Failed => "failed",
+        JobState::Cancelled => "cancelled",
+    }
+}
+
+/// A job as the commands show it: numbers and a fixed sentence. No address,
+/// no title, no path.
+fn job_json(j: &JobView) -> Value {
+    json!({
+        "id": j.id,
+        "state": state_name(j.state),
+        "kind": match j.kind {
+            crate::download::JobKind::Direct => "direct",
+            crate::download::JobKind::Hls => "hls",
+            crate::download::JobKind::Dash => "dash",
+        },
+        "done_bytes": j.done_bytes, "total_bytes": j.total_bytes,
+        "fraction": j.fraction, "bps": j.bps, "eta_secs": j.eta_secs,
+        "height": j.height, "resumable": j.resumable, "error": j.error,
+    })
+}
+
+fn download_start(h: &mut FetchHost, a: &Value) -> Result<Value> {
+    let quality = quality_of(a)?;
+    let dir = dir_of(a)?;
+    let all = a.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let start = |svc: &FetchService, req: DownloadRequest| -> Result<Vec<JobId>> {
+        svc.download_start(req)
+            .map_err(|e| Error::Invalid(classify(&e).to_owned()))
+    };
+    if let Some(url) = a.get("url").and_then(Value::as_str) {
+        let mut req = DownloadRequest::url(url);
+        req.quality = quality;
+        req.dir = dir;
+        req.all_entries = all;
+        let ids = start(h.service()?, req)?;
+        return Ok(json!({ "ids": ids }));
+    }
+    let token = u(a, "token").ok_or_else(|| Error::Invalid("give `url` or `token`".into()))?;
+    let ex = h.extraction(token)?;
+    let entry = u(a, "entry").unwrap_or(0) as usize;
+    let format = u(a, "format").map(|f| f as usize);
+    let which: Vec<usize> = if all {
+        (0..ex.entries.len().min(MAX_ENTRIES)).collect()
+    } else {
+        vec![entry]
+    };
+    let mut reqs = Vec::new();
+    for i in which {
+        let e = ex
+            .entries
+            .get(i)
+            .ok_or_else(|| Error::NotFound(format!("entry {i}")))?;
+        let Ok(fmts) = muxed(e.formats.clone()) else {
+            if all {
+                continue;
+            }
+            return Err(Error::NotFound("format".into()));
+        };
+        let idx = match (format, all) {
+            (Some(f), false) => f,
+            _ => pick_format(&fmts, quality),
+        };
+        let f = fmts
+            .get(idx)
+            .ok_or_else(|| Error::NotFound(format!("format {idx}")))?;
+        reqs.push(DownloadRequest {
+            source: SaveSource::Picked {
+                format: f.clone(),
+                meta: e.meta.clone(),
+                page: Some(ex.page.clone()),
+                via: ex.via,
+                entry: i,
+                index: idx,
+            },
+            quality,
+            dir: dir.clone(),
+            all_entries: false,
+        });
+    }
+    let svc = h.service()?;
+    let mut ids = Vec::new();
+    for r in reqs {
+        ids.extend(start(svc, r)?);
+    }
+    Ok(json!({ "ids": ids }))
+}
+
+fn job_id(a: &Value) -> Result<JobId> {
+    u(a, "id").ok_or_else(|| Error::Invalid("missing `id`".into()))
+}
+
+fn on_job(
+    c: &mut impl HasFetch,
+    a: &Value,
+    f: impl Fn(&FetchService, JobId) -> bool,
+) -> Result<Value> {
+    let id = job_id(a)?;
+    let ok = c.fetch().running().is_some_and(|s| f(s, id));
+    if ok {
+        Ok(json!({}))
+    } else {
+        Err(Error::NotFound(format!("job {id}")))
+    }
+}
+
+/// Saving and extractor rules: everything that never blocks.
+pub fn register_download<C: HasFetch>(reg: &mut Registry<C>) {
+    reg.register(
+        "download.start",
+        "Save a video: {url} or {token, entry?, format?} from extract.page; quality?: best|worst|<height>, dir?: absolute existing folder, all?",
+        |c, a| download_start(c.fetch(), &a),
+    );
+    reg.register("download.pause", "Pause a download: {id}", |c, a| {
+        on_job(c, &a, |s, id| s.download_pause(id))
+    });
+    reg.register("download.resume", "Resume a download: {id}", |c, a| {
+        on_job(c, &a, |s, id| s.download_resume(id))
+    });
+    reg.register("download.cancel", "Cancel a download: {id}", |c, a| {
+        on_job(c, &a, |s, id| s.download_cancel(id))
+    });
+    reg.register(
+        "download.remove",
+        "Forget a finished download: {id}. The saved file is never deleted.",
+        |c, a| on_job(c, &a, |s, id| s.download_forget(id)),
+    );
+    reg.register(
+        "download.list",
+        "Downloads and their progress (no address, title or path)",
+        |c, _| {
+            let jobs: Vec<JobView> = c
+                .fetch()
+                .running()
+                .map(FetchService::download_list)
+                .unwrap_or_default();
+            let running = jobs.iter().filter(|j| j.state.holds_slot()).count();
+            let queued = jobs.iter().filter(|j| j.state == JobState::Queued).count();
+            let v: Vec<Value> = jobs.iter().map(job_json).collect();
+            Ok(json!({ "jobs": v, "running": running, "queued": queued }))
+        },
+    );
+    reg.register(
+        "extract.rules.import",
+        "Add extractor rules from a JSON file you wrote: {path} (up to 64 KiB). Nothing is fetched.",
+        |c, a| {
+            let p = PathBuf::from(s(&a, "path")?);
+            let len = std::fs::metadata(&p)?.len();
+            if len > crate::extract::rules::MAX_FILE as u64 {
+                return Err(Error::Invalid("the rules file is too large".into()));
+            }
+            let bytes = std::fs::read(&p)?;
+            let ids = c.fetch().import_rules(&bytes)?;
+            Ok(json!({ "ids": ids }))
+        },
+    );
+    reg.register(
+        "extract.rules.list",
+        "Extractor rules (names and counts; patterns are never shown)",
+        |c, _| {
+            let v: Vec<Value> = c
+                .fetch()
+                .config()
+                .extract_rules
+                .iter()
+                .map(|r| json!({ "id": r.id, "name": r.name, "enabled": r.enabled, "hosts": r.hosts.len() }))
+                .collect();
+            Ok(json!({ "rules": v }))
+        },
+    );
+    reg.register("extract.rules.remove", "Remove a rule: {id}", |c, a| {
+        let id = job_id(&a)? as u32;
+        if !c.fetch().config().extract_rules.iter().any(|r| r.id == id) {
+            return Err(Error::NotFound(format!("rule {id}")));
+        }
+        c.fetch().remove_rule(id)?;
+        Ok(json!({}))
+    });
+    reg.register(
+        "extract.rules.enable",
+        "Turn a rule on or off: {id, on}",
+        |c, a| {
+            let id = job_id(&a)? as u32;
+            let on = a
+                .get("on")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| Error::Invalid("missing `on`".into()))?;
+            if !c.fetch().config().extract_rules.iter().any(|r| r.id == id) {
+                return Err(Error::NotFound(format!("rule {id}")));
+            }
+            c.fetch().set_rule_enabled(id, on)?;
+            Ok(json!({}))
+        },
+    );
+}
+
+fn via_name(v: Via) -> &'static str {
+    match v {
+        Via::Direct => "direct",
+        Via::Builtin { embed: false } => "builtin",
+        Via::Builtin { embed: true } => "embed",
+        Via::Resolver(_) => "resolver",
+    }
+}
+
+fn extract_page(h: &mut FetchHost, a: &Value) -> Result<Value> {
+    let url = s(a, "url")?;
+    let mode = match a.get("mode").and_then(Value::as_str) {
+        None | Some("auto") => ExtractMode::Auto,
+        Some("builtin") => ExtractMode::Builtin,
+        Some("resolvers") => ExtractMode::Resolvers,
+        Some(_) => {
+            return Err(Error::Invalid(
+                "mode must be auto, builtin or resolvers".into(),
+            ));
+        }
+    };
+    let show = a.get("show_urls").and_then(Value::as_bool).unwrap_or(false);
+    let ex = h
+        .service()?
+        .extract(url, mode)
+        .recv_timeout(Duration::from_secs(90))
+        .map_err(|_| Error::Invalid(crate::errors::TIMEOUT.into()))?
+        .map_err(|e| Error::Invalid(classify(&e).to_owned()))?;
+    let mut entries = Vec::new();
+    for (i, e) in ex.entries.iter().enumerate() {
+        let Ok(fmts) = muxed(e.formats.clone()) else {
+            continue;
+        };
+        let formats: Vec<Value> = fmts
+            .iter()
+            .enumerate()
+            .map(|(k, f)| {
+                let mut o = json!({
+                    "index": k, "height": f.height, "protocol": f.protocol,
+                    "bitrate": f.bitrate,
+                });
+                if show {
+                    o["url"] = json!(f.url);
+                }
+                o
+            })
+            .collect();
+        entries.push(json!({ "index": i, "title": e.meta.title, "formats": formats }));
+    }
+    let first = ex.entries.first();
+    let out = json!({
+        "via": via_name(ex.via),
+        "title": first.and_then(|e| e.meta.title.clone()),
+        "duration": first.and_then(|e| e.meta.duration_secs),
+        "has_thumbnail": first.is_some_and(|e| e.meta.thumbnail.is_some()),
+        "entries": entries,
+    });
+    let token = h.keep_extraction(ex);
+    let mut out = out;
+    out["token"] = json!(token);
+    Ok(out)
+}
+
+fn download_wait(c: &mut impl HasFetch, a: &Value) -> Result<Value> {
+    let secs = u(a, "timeout_secs").unwrap_or(3600).min(86_400);
+    let ids: Option<Vec<JobId>> = a
+        .get("ids")
+        .and_then(Value::as_array)
+        .map(|v| v.iter().filter_map(Value::as_u64).collect());
+    let t0 = Instant::now();
+    let jobs = loop {
+        let jobs = c
+            .fetch()
+            .running()
+            .map(FetchService::download_list)
+            .unwrap_or_default();
+        let mine: Vec<&JobView> = jobs
+            .iter()
+            .filter(|j| ids.as_ref().is_none_or(|v| v.contains(&j.id)))
+            .collect();
+        if mine.iter().all(|j| j.state.is_over()) {
+            break jobs;
+        }
+        if t0.elapsed() >= Duration::from_secs(secs) {
+            return Err(Error::Invalid("download.wait timed out".into()));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let count = |st: JobState| {
+        jobs.iter()
+            .filter(|j| j.state == st && ids.as_ref().is_none_or(|v| v.contains(&j.id)))
+            .count()
+    };
+    let (done, failed) = (count(JobState::Done), count(JobState::Failed));
+    // The batch is over when nothing else is going: one import per batch.
+    let fin = c
+        .fetch()
+        .running()
+        .map(FetchService::download_take_finished)
+        .unwrap_or_default();
+    let mut imported = 0;
+    if c.fetch().config().save.import_after && fin.done > 0 {
+        for d in &fin.dirs {
+            if let Ok(r) = import_saved(c.db(), d) {
+                imported += r.added;
+            }
+        }
+    }
+    Ok(json!({ "done": done, "failed": failed, "imported": imported }))
+}
+
 pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
+    register_download(reg);
+    reg.register(
+        "extract.page",
+        "List the videos on a page: {url, mode?: auto|builtin|resolvers, show_urls?}. Returns a token for download.start.",
+        |c, a| extract_page(c.fetch(), &a),
+    );
+    reg.register(
+        "download.wait",
+        "Wait for downloads to end: {ids?, timeout_secs?}. Imports the saved videos once the queue is idle.",
+        |c, a| download_wait(c, &a),
+    );
     reg.register(
         "fetch.indexers.list",
         "Configured indexers (keys are never shown)",
@@ -580,7 +1085,7 @@ pub fn register_fetch<C: HasFetch>(reg: &mut Registry<C>) {
     });
     reg.register(
         "fetch.settings",
-        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…, require_proxy?, resume_on_start?: never|ask|always, seed_ratio?, seed_minutes?, bind_interface?}",
+        "Advanced: {dir?, down_mibps?, up_mibps?, seed?, dht?, proxy?: socks5://…, require_proxy?, resume_on_start?: never|ask|always, seed_ratio?, seed_minutes?, bind_interface?, save_dir?, save_concurrency?: 1-4, import_after_save?, extractor?: first|fallback|off, follow_embeds?, page_user_agent?}",
         |c, a| {
             c.fetch().apply_settings(&a)?;
             Ok(json!({}))
