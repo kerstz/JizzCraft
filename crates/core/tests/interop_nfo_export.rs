@@ -148,6 +148,20 @@ fn a_destination_that_contains_a_library_is_refused() {
 
 #[cfg(unix)]
 #[test]
+fn a_missing_root_named_through_a_symlink_is_still_refused() {
+    let work = tempfile::tempdir().unwrap();
+    let real = work.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let link = work.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    // The root does not exist yet and is spelled through the link.
+    let roots = vec![link.join("new").join("inner")];
+    assert!(check_export_dir(&real.join("new"), &roots).is_err());
+    assert!(check_export_dir(&real.join("other"), &roots).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
 fn a_symlink_leading_into_a_library_is_refused() {
     let t = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();

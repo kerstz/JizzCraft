@@ -51,11 +51,26 @@ fn refuse(msg: &str) -> Error {
     Error::Invalid(msg.into())
 }
 
+/// A root in the same form as a canonical destination, even when it does not
+/// exist (yet): the longest existing ancestor is resolved (symlinks, Windows
+/// verbatim prefix) and the rest re-joined. Falls back to the path as given.
+fn canon_root(r: &Path) -> PathBuf {
+    for a in r.ancestors() {
+        let Ok(base) = canonical(a) else { continue };
+        let Ok(rest) = r.strip_prefix(a) else { break };
+        if rest.as_os_str().is_empty() {
+            return base;
+        }
+        if rest.components().all(|c| matches!(c, Component::Normal(_))) {
+            return base.join(rest);
+        }
+        break;
+    }
+    r.to_path_buf()
+}
+
 fn canon_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-    roots
-        .iter()
-        .map(|r| canonical(r).unwrap_or_else(|_| r.clone()))
-        .collect()
+    roots.iter().map(PathBuf::as_path).map(canon_root).collect()
 }
 
 /// `dest` equals, is inside, or contains one of the (canonical) roots.
