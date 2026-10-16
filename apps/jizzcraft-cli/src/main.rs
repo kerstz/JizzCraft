@@ -632,6 +632,23 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Read Kodi-style .nfo files onto matching items. A dry run unless --apply.
+    ImportNfo {
+        /// Folder to read (default: every library folder).
+        dir: Option<PathBuf>,
+        /// Write the changes (without it, only count them).
+        #[arg(long)]
+        apply: bool,
+        /// Replace existing titles, dates, studios and ratings.
+        #[arg(long)]
+        overwrite: bool,
+        /// Import star ratings.
+        #[arg(long)]
+        ratings: bool,
+        /// Import play counts, last played dates and resume points.
+        #[arg(long)]
+        history: bool,
+    },
     /// Find items by content hash (give one of --oshash, --fp).
     Lookup {
         /// 16 hex digits.
@@ -1001,6 +1018,21 @@ fn run(cli: &Cli) -> Result<(), Fail> {
         Cmd::Tree => ("library.tree".to_owned(), json!({})),
         Cmd::Random => ("media.random".to_owned(), json!({})),
         Cmd::Fingerprint { all } => ("library.fingerprint".to_owned(), json!({ "all": all })),
+        Cmd::ImportNfo {
+            dir,
+            apply,
+            overwrite,
+            ratings,
+            history,
+        } => {
+            let mut a = json!({
+                "dry_run": !apply, "overwrite": overwrite, "ratings": ratings, "history": history,
+            });
+            if let Some(d) = dir {
+                a["dir"] = json!(d.to_string_lossy());
+            }
+            ("meta.import_nfo".to_owned(), a)
+        }
         Cmd::Lookup { oshash, fp } => {
             let mut a = json!({});
             if let Some(h) = oshash {
@@ -1414,6 +1446,23 @@ fn print_human(cmd: &str, v: &Value) {
                 r["marked_missing"],
                 r["skipped_symlinks"],
                 r["errors"]
+            );
+        }
+        "meta.import_nfo" => {
+            println!(
+                "{}: {} files · {} read · {} rejected · {} matched · {} changed · {} unmatched · {} ambiguous",
+                if v["dry_run"] == true {
+                    "dry run"
+                } else {
+                    "applied"
+                },
+                v["files_seen"],
+                v["parsed"],
+                v["rejected"],
+                v["matched"],
+                v["applied"],
+                v["unmatched"],
+                v["ambiguous"]
             );
         }
         "media.by_hash" => {

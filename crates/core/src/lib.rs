@@ -9,6 +9,7 @@ pub mod fingerprint;
 pub mod fsutil;
 pub mod history;
 pub mod integrity;
+pub mod interop;
 pub mod manifest;
 pub mod markers;
 pub mod meta;

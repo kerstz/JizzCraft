@@ -499,3 +499,40 @@ fn metadata_end_to_end_through_the_cli() {
     assert!(!bad.status.success());
     assert_eq!(tree_bytes(lib.path()), before, "media untouched");
 }
+
+#[test]
+fn import_nfo_is_a_dry_run_unless_applied() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    std::fs::write(lib.path().join("a.mp4"), b"not a real video, only a name").unwrap();
+    std::fs::write(
+        lib.path().join("a.nfo"),
+        "<movie><title>From nfo</title></movie>",
+    )
+    .unwrap();
+    let before = tree_bytes(lib.path());
+    json(&cli(
+        home.path(),
+        &["--json", "scan", lib.path().to_str().unwrap()],
+    ));
+    let id = json(&cli(home.path(), &["--json", "query", "--type", "video"]))["items"][0]["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+
+    let dry = json(&cli(home.path(), &["--json", "import-nfo"]));
+    assert_eq!(
+        (dry["dry_run"].clone(), dry["matched"].clone()),
+        (true.into(), 1.into()),
+        "{dry}"
+    );
+    assert!(json(&cli(home.path(), &["--json", "info", &id]))["title"].is_null());
+
+    let done = json(&cli(home.path(), &["--json", "import-nfo", "--apply"]));
+    assert_eq!(done["titles_set"], 1, "{done}");
+    assert_eq!(
+        json(&cli(home.path(), &["--json", "info", &id]))["title"],
+        "From nfo"
+    );
+    assert_eq!(tree_bytes(lib.path()), before, "files untouched");
+}

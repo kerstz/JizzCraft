@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 mod browser;
 #[cfg(feature = "network")]
 mod downloads;
+mod interop;
 mod meta_ui;
 mod onboarding;
 mod organize;
@@ -120,6 +121,8 @@ struct Toast {
 enum JobMsg {
     Scan(Result<(i64, ScanReport), String>),
     Folder(Option<PathBuf>),
+    /// The folder dialog of the import window closed (None: cancelled).
+    InteropFolder(Option<PathBuf>),
     Image {
         token: u64,
         result: Result<egui::ColorImage, String>,
@@ -301,6 +304,7 @@ pub struct JizzApp {
     downloads: downloads::Downloads,
     /// Settings window (General page only in the offline edition).
     settings: settings::Settings,
+    interop: interop::InteropUi,
     #[cfg(feature = "network")]
     web_pages: web_pages::WebPages,
     #[cfg(feature = "network")]
@@ -624,6 +628,7 @@ impl JizzApp {
         register_core::<JizzApp>(&mut registry);
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
+        interop::register(&mut registry);
         settings::register(&mut registry);
         vault_ui::register(&mut registry);
         #[cfg(feature = "network")]
@@ -701,6 +706,7 @@ impl JizzApp {
             #[cfg(feature = "network")]
             downloads: downloads::Downloads::new(opts.disguised),
             settings: settings::Settings::default(),
+            interop: interop::InteropUi::default(),
             #[cfg(feature = "network")]
             web_pages: web_pages::WebPages::default(),
             #[cfg(feature = "network")]
@@ -1347,6 +1353,7 @@ impl JizzApp {
             match msg {
                 JobMsg::Folder(Some(dir)) => self.start_scan(Some(dir)),
                 JobMsg::Folder(None) => {}
+                JobMsg::InteropFolder(f) => self.interop_folder_chosen(f),
                 JobMsg::OrgExport(id, dest) => self.org_export_to(id, dest),
                 JobMsg::Codecs => self.toast(
                     ToastKind::Info,
@@ -2919,6 +2926,7 @@ impl eframe::App for JizzApp {
             self.browser_tick();
         }
         self.settings_window(&ctx);
+        self.interop_window(&ctx);
         self.vault_windows(&ctx);
 
         self.drain_queue();

@@ -208,6 +208,11 @@ fn engine_never_touches_media() {
     let t = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
     let mut db = lib(t.path());
+    std::fs::write(
+        t.path().join("v.nfo"),
+        "<movie><title>T</title><genre>g</genre><actor><name>A</name></actor></movie>",
+    )
+    .unwrap();
     let before = hash_tree(t.path());
 
     let mut reg: Registry<Db> = Registry::new();
@@ -275,6 +280,13 @@ fn engine_never_touches_media() {
     );
     run(&mut db, "media.relink", json!({ "from": b, "to": a }));
 
+    // Reading sidecar files: a dry run, then for real.
+    run(&mut db, "meta.import_nfo", json!({}));
+    run(
+        &mut db,
+        "meta.import_nfo",
+        json!({ "dry_run": false, "ratings": true, "history": true, "overwrite": true }),
+    );
     // Descriptive metadata: database rows only.
     run(
         &mut db,

@@ -16,6 +16,7 @@ walkdir.workspace = true
 directories.workspace = true
 image.workspace = true
 blake3.workspace = true
+quick-xml.workspace = true
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 zeroize = { version = "1.9", features = ["derive"] }

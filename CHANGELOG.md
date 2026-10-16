@@ -13,6 +13,11 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Import Kodi-style `.nfo` files (Kodi, Jellyfin, Emby, Plex) onto matching
+  items: title, date, studio, performers, tags (through aliases), foreign ids,
+  and with switches ratings and play history. Read-only, bounded, refuses
+  DOCTYPE, previews with exact counts before importing. CLI `import-nfo`
+  (dry run unless `--apply`); Tools, "Import from other apps…" in the app.
 - Descriptive metadata: a title (shown in the grid), release date, studio and
   performers per item, aliases for tags and performers, external ids; all
   searchable (schema v6, full-text index rebuilt), filterable

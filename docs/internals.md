@@ -80,6 +80,7 @@ Rules (from [AGENTS.md](../AGENTS.md)), and what holds them:
 | The engine never modifies, moves or deletes media | `engine_never_touches_media` in [`crates/core/tests/portability.rs`](../crates/core/tests/portability.rs): hashes a tree before and after every command |
 | Content hashes: `oshash` matches independent references, `fp1` is unchanged | [`crates/core/tests/hashes.rs`](../crates/core/tests/hashes.rs) |
 | Private performers and studios are never indexed or exported by default | `private_people_and_studios_are_not_indexed` and `export_import_round_trip_and_privacy` in [`crates/core/tests/meta.rs`](../crates/core/tests/meta.rs) |
+| NFO import is read-only, bounded, refuses DOCTYPE, and a dry run writes nothing | [`crates/core/tests/interop_nfo.rs`](../crates/core/tests/interop_nfo.rs) (`hostile_input_is_refused`, `dry_run_changes_nothing_and_reports_exactly_what_apply_does`, `interop_sources_never_print`) and `engine_never_touches_media` |
 | Old migrations are never edited | `migrations_are_frozen` in [`crates/core/tests/migrations.rs`](../crates/core/tests/migrations.rs) |
 | No listening socket or server crate in any build | `default_build_has_no_network_crates` (its list also bans DLNA, WebDAV, mDNS and HTTP server crates); [interop.md](interop.md) |
 | Paths become stable opaque tags before reaching logs | `redacted_paths_are_stable_opaque_tags` in [`crates/core/src/privacy.rs`](../crates/core/src/privacy.rs) |

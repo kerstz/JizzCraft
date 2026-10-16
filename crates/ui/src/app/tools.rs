@@ -96,6 +96,12 @@ impl JizzApp {
             "meta.import",
             json!({}),
         );
+        item(
+            ui,
+            crate::i18n::tr("Import from other apps…"),
+            "interop.open",
+            json!({}),
+        );
         ui.separator();
         ui.label(theme::hud(crate::i18n::tr("Privacy"), MUTED));
         if self.opener.key.is_some() {

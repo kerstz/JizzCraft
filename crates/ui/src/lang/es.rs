@@ -1252,4 +1252,47 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Remove alias", "Quitar alias"),
     ("Close", "Cerrar"),
     ("New studio name", "Nombre del nuevo estudio"),
+    (
+        "Import from other apps…",
+        "Importar desde otras aplicaciones…",
+    ),
+    (
+        "Import from other apps",
+        "Importar desde otras aplicaciones",
+    ),
+    ("Source", "Origen"),
+    (
+        "NFO files (Kodi, Jellyfin, Emby, Plex)",
+        "Archivos NFO (Kodi, Jellyfin, Emby, Plex)",
+    ),
+    ("Stash export folder", "Carpeta de exportación de Stash"),
+    ("Library folders", "Carpetas de la biblioteca"),
+    ("Choose…", "Elegir…"),
+    (
+        "Replace existing titles",
+        "Reemplazar los títulos existentes",
+    ),
+    ("Import ratings", "Importar valoraciones"),
+    (
+        "Import play history",
+        "Importar el historial de reproducción",
+    ),
+    ("Preview", "Vista previa"),
+    (
+        "Files are only read. Nothing changes until you press Import, and the counts are exact.",
+        "Los archivos solo se leen. Nada cambia hasta que pulses Importar, y las cifras son exactas.",
+    ),
+    ("Result", "Resultado"),
+    ("Matched", "Asociados"),
+    ("Unmatched", "Sin coincidencia"),
+    ("Ambiguous", "Ambiguos"),
+    ("Rejected", "Rechazados"),
+    ("Created", "Creados"),
+    ("Changed", "Modificados"),
+    ("NFO preview", "Vista previa NFO"),
+    ("NFO import", "Importación NFO"),
+    (
+        "{} matched · {} unmatched · {} ambiguous · {} rejected",
+        "{} asociados · {} sin coincidencia · {} ambiguos · {} rechazados",
+    ),
 ];

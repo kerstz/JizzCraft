@@ -3365,6 +3365,7 @@ dependencies = [
  "directories",
  "getrandom 0.4.3",
  "image",
+ "quick-xml",
  "rusqlite",
  "serde",
  "serde_json",
