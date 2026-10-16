@@ -729,8 +729,28 @@ pub const TABLE: &[(&str, &str)] = &[
         "Le site limite les requêtes. Patientez quelques minutes.",
     ),
     (
-        "This video cannot be streamed without saving it, which JizzCraft does not do for web pages.",
-        "Cette vidéo ne peut pas être lue en continu sans être enregistrée, ce que JizzCraft ne fait pas pour les pages web.",
+        "This video cannot be streamed without saving it. Use Download to save it first.",
+        "Cette vidéo ne peut pas être lue en continu sans être enregistrée. Utilisez Télécharger pour l'enregistrer d'abord.",
+    ),
+    (
+        "This page builds its video with scripts, which JizzCraft does not run. A resolver tool you installed may read it.",
+        "Cette page construit sa vidéo avec des scripts, que JizzCraft n'exécute pas. Un résolveur que vous avez installé pourra peut-être la lire.",
+    ),
+    (
+        "Live streams cannot be saved.",
+        "Les directs ne peuvent pas être enregistrés.",
+    ),
+    (
+        "The address did not send a video file.",
+        "L'adresse n'a pas envoyé de fichier vidéo.",
+    ),
+    (
+        "The download ended before the whole file arrived.",
+        "Le téléchargement s'est terminé avant l'arrivée du fichier complet.",
+    ),
+    (
+        "The save folder changed during the download. Nothing was saved.",
+        "Le dossier d'enregistrement a changé pendant le téléchargement. Rien n'a été enregistré.",
     ),
     (
         "The tool understood this page: {} formats.",

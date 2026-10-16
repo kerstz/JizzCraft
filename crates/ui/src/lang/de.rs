@@ -714,8 +714,28 @@ pub const TABLE: &[(&str, &str)] = &[
         "Die Seite begrenzt Anfragen. Warte ein paar Minuten.",
     ),
     (
-        "This video cannot be streamed without saving it, which JizzCraft does not do for web pages.",
-        "Dieses Video kann nicht gestreamt werden, ohne es zu speichern; das tut JizzCraft für Webseiten nicht.",
+        "This video cannot be streamed without saving it. Use Download to save it first.",
+        "Dieses Video kann nicht gestreamt werden, ohne es zu speichern. Speichere es zuerst mit Herunterladen.",
+    ),
+    (
+        "This page builds its video with scripts, which JizzCraft does not run. A resolver tool you installed may read it.",
+        "Diese Seite baut ihr Video mit Skripten auf, die JizzCraft nicht ausführt. Ein Auflöser, den du installiert hast, kann sie vielleicht lesen.",
+    ),
+    (
+        "Live streams cannot be saved.",
+        "Livestreams können nicht gespeichert werden.",
+    ),
+    (
+        "The address did not send a video file.",
+        "Die Adresse hat keine Videodatei gesendet.",
+    ),
+    (
+        "The download ended before the whole file arrived.",
+        "Der Download endete, bevor die ganze Datei angekommen war.",
+    ),
+    (
+        "The save folder changed during the download. Nothing was saved.",
+        "Der Speicherordner hat sich während des Downloads geändert. Es wurde nichts gespeichert.",
     ),
     (
         "The tool understood this page: {} formats.",
