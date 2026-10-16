@@ -12,6 +12,12 @@ anything may change between minor versions.
   (`Ctrl+Shift+M`) and the vault lock key (`Ctrl+Shift+L`); a test keeps every
   `Ctrl+Shift+` binding documented.
 
+### Added
+- `cargo xtask perf --player [FILE]`: runs `jizzcraft --bench` and checks time
+  to first frame, UI frame cost, peak RSS and dropped frames against
+  `perf/player_budgets.json` (local, needs a GPU). `--bench` now reports
+  `ttff_ms`.
+
 ### Changed
 - Dependencies: `clap_mangen` 0.3 and `windows-sys` 0.61 (one fewer duplicate
   `windows-sys` in the tree). `gen man` is now covered by a test.

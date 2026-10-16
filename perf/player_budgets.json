@@ -1,0 +1,9 @@
+{
+  "note": "Ceilings for `cargo xtask perf --player` (jizzcraft --bench on the 1080p30 fixture, release build, needs a GPU). Generous first guesses, tighten with data. Keys are BENCH_JSON keys.",
+  "budgets": {
+    "ttff_ms": 3000,
+    "ui_cost_p95_ms": 10,
+    "rss_peak_mb": 600,
+    "dropped": 5
+  }
+}

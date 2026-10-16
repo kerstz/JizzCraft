@@ -85,8 +85,18 @@ The `perf` job in `.github/workflows/ci.yml` runs `cargo xtask perf`. It has
 `continue-on-error: true` until shared runners have proven stable; remove it
 then.
 
+## Player budgets (local, needs a GPU)
+
+`cargo xtask perf --player [FILE]` builds the release app, runs
+`jizzcraft --bench FILE --seconds 10` (default
+`fixtures/videos/bench-1080p30.mp4`, made by `cargo xtask fixtures`) and checks
+the `BENCH_JSON` line against `perf/player_budgets.json`: time to first frame
+(`ttff_ms`), UI frame cost p95 (`ui_cost_p95_ms`), peak RSS (`rss_peak_mb`) and
+dropped frames (`dropped`). It exits non-zero when one is over. It needs
+GStreamer, a GPU and a display, so it is not part of CI. The ceilings are first
+guesses; tighten them with data from real machines.
+
 ## Not covered yet
 
-Issue #17 also lists RSS per stream, time to first frame and UI frame cost at
-1080p. Those need GStreamer and a GPU, so they stay manual for now
-(`docs/bench.md`, `jizzcraft --bench`).
+Issue #17 asked for RSS per stream, time to first frame and UI frame cost at
+1080p. They are now measured by `--player`, locally only (`docs/bench.md`).

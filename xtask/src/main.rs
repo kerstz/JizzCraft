@@ -28,7 +28,7 @@ fn main() -> ExitCode {
         Some("perf") => perf::run(args.collect()),
         _ => Err(
             "usage: cargo xtask fixtures [OUT_DIR] | icons | screenshots | dist [--edition offline|online] [--browser] \
-             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging | e2e [--allow-skips] [FILTER...] | perf"
+             [--prefix P] [--destdir D] [--no-build] [--tarball] | check-packaging | e2e [--allow-skips] [FILTER...] | perf [--player [FILE]]"
                 .into(),
         ),
     };

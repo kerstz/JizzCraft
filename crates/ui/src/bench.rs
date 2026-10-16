@@ -60,6 +60,10 @@ pub struct BenchState {
     pub ui_cost_ms: Vec<f32>,
     pub interval_ms: Vec<f32>,
     pub last_start: Option<Instant>,
+    /// When the player was asked to open the file.
+    pub opened: Instant,
+    /// Open to first presentable frame, set once.
+    pub ttff_ms: Option<f32>,
 }
 
 pub struct Started {
@@ -79,6 +83,8 @@ impl BenchState {
             ui_cost_ms: Vec::new(),
             interval_ms: Vec::new(),
             last_start: None,
+            opened: Instant::now(),
+            ttff_ms: None,
         }
     }
 }
@@ -97,6 +103,8 @@ pub struct Report {
     pub interval: [f32; 3],
     pub cpu_pct: f64,
     pub rss: (f64, f64),
+    /// Time from open to the first frame, in milliseconds.
+    pub ttff_ms: f32,
 }
 
 impl Report {
@@ -136,13 +144,14 @@ impl Report {
             "  frame interval  p50 {:.1} ms · p95 {:.1} ms · max {:.1} ms",
             self.interval[0], self.interval[1], self.interval[2]
         );
+        println!("  first frame     {:.0} ms after open", self.ttff_ms);
         println!("  cpu             {:.1} % of one core", self.cpu_pct);
         println!(
             "  rss             {:.0} MB (peak {:.0} MB)",
             self.rss.0, self.rss.1
         );
         println!(
-            "BENCH_JSON {{\"label\":\"{label}\",\"width\":{},\"height\":{},\"fps\":{:.2},\"seconds\":{:.1},\"expected\":{:.0},\"delivered\":{},\"uploaded\":{},\"dropped\":{},\"qos_dropped\":{},\"ui_cost_p95_ms\":{:.3},\"interval_p95_ms\":{:.2},\"cpu_pct\":{:.1},\"rss_mb\":{:.0},\"rss_peak_mb\":{:.0}}}",
+            "BENCH_JSON {{\"label\":\"{label}\",\"width\":{},\"height\":{},\"fps\":{:.2},\"seconds\":{:.1},\"expected\":{:.0},\"delivered\":{},\"uploaded\":{},\"dropped\":{},\"qos_dropped\":{},\"ui_cost_p95_ms\":{:.3},\"interval_p95_ms\":{:.2},\"cpu_pct\":{:.1},\"rss_mb\":{:.0},\"rss_peak_mb\":{:.0},\"ttff_ms\":{:.1}}}",
             self.width,
             self.height,
             self.fps,
@@ -156,7 +165,8 @@ impl Report {
             self.interval[1],
             self.cpu_pct,
             self.rss.0,
-            self.rss.1
+            self.rss.1,
+            self.ttff_ms
         );
     }
 }

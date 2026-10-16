@@ -7773,6 +7773,7 @@ version = "0.2.0"
 dependencies = [
  "image",
  "resvg",
+ "serde_json",
 ]
 
 [[package]]

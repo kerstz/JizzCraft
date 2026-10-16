@@ -1528,6 +1528,9 @@ impl JizzApp {
             b.interval_ms
                 .push(t0.duration_since(last).as_secs_f32() * 1000.0);
         }
+        if b.ttff_ms.is_none() && pv.has_frame() {
+            b.ttff_ms = Some(b.opened.elapsed().as_secs_f32() * 1000.0);
+        }
         if b.started.is_none() {
             // Skip start-up (clock sync, first-frame hiccups).
             if pv.has_frame() && pv.player.position() > Duration::from_millis(1500) {
@@ -1575,6 +1578,7 @@ impl JizzApp {
             interval: stats(&interval),
             cpu_pct: (bench::cpu_seconds_of("self").unwrap_or(0.0) - st.cpu0) / wall * 100.0,
             rss: bench::rss_mb_of("self").unwrap_or((0.0, 0.0)),
+            ttff_ms: b.ttff_ms.unwrap_or(0.0),
         };
         let (w, h) = pv.video_size();
         let report = bench::Report {
