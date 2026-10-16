@@ -88,31 +88,7 @@ jobs:
           key: gstreamer-msvc-1.26.11
       - name: GStreamer (MSVC runtime + devel)
         shell: pwsh
-        run: |
-          $v = '1.26.11'
-          New-Item -ItemType Directory -Force gst-msi | Out-Null
-          foreach ($k in 'gstreamer-1.0-msvc-x86_64', 'gstreamer-1.0-devel-msvc-x86_64') {
-            $u = "https://gstreamer.freedesktop.org/data/pkg/windows/$v/msvc/$k-$v.msi"
-            # curl.exe retries on dropped connections ("ResponseEnded"), which
-            # Invoke-WebRequest -MaximumRetryCount does not; the MSIs are cached too.
-            if (-not (Test-Path "gst-msi/$k.msi")) {
-              # The mirror drops the connection every few MB; curl's own retry
-              # budget runs out first, so resume (-C -) in an outer loop too.
-              for ($try = 1; $try -le 15; $try++) {
-                curl.exe --fail --location --silent --show-error -C - --retry 20 --retry-all-errors --retry-delay 3 -o "gst-msi/$k.msi" $u
-                if ($LASTEXITCODE -eq 0) { break }
-                Write-Host "attempt $try failed for $k, resuming"
-                Start-Sleep -Seconds 10
-              }
-              if ($LASTEXITCODE -ne 0) { throw "download failed for $k" }
-            }
-            curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 -o "$k.msi.sha256sum" "$u.sha256sum"
-            if ($LASTEXITCODE -ne 0) { throw "checksum download failed for $k" }
-            $want = ((Get-Content "$k.msi.sha256sum" -Raw).Trim() -split '\s+')[0].ToLower()
-            if ((Get-FileHash "gst-msi/$k.msi" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "checksum mismatch for $k" }
-            Start-Process msiexec -ArgumentList "/i `"$PWD\gst-msi\$k.msi`" /qn ADDLOCAL=ALL" -Wait
-          }
-          choco install pkgconfiglite -y
+        run: ./packaging/windows/install-gstreamer.ps1
       # glib-sys could not find glib-2.0.pc: locate the real install dir
       # instead of guessing the layout, and say so loudly if it is absent.
       - name: Locate GStreamer pkg-config files
