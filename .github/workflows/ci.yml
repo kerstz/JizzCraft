@@ -236,7 +236,7 @@ jobs:
       # `vault` tests, whose canary and stdin round trip are portable. Only
       # `--passphrase-fd` (a Unix descriptor) is `cfg(unix)`.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       # The network build needs NASM for aws-lc; the first run settles whether
       # it builds without CMake.
       - name: Network build compiles
