@@ -1276,7 +1276,7 @@ impl Db {
         let base: Option<PathBuf> = dest
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+            .map(|p| crate::pathbytes::canonical(p).unwrap_or_else(|_| p.to_path_buf()));
         let mut st = self.conn.prepare(
             "SELECT m.path, m.name, m.duration_ms, m.missing
              FROM playlist_items i JOIN media m ON m.id = i.media_id

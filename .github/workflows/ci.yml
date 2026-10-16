@@ -235,6 +235,10 @@ jobs:
       # `vault_convert` (kill -9 of a converting child included) and the CLI
       # `vault` tests, whose canary and stdin round trip are portable. Only
       # `--passphrase-fd` (a Unix descriptor) is `cfg(unix)`.
+      # `offline_deps` runs `cargo tree --offline` on the network feature set,
+      # so every crate must already be in the registry cache.
+      - name: Fetch crates
+        run: cargo fetch --locked
       - name: Test
         run: cargo test --workspace --no-fail-fast
       # The network build needs NASM for aws-lc; the first run settles whether

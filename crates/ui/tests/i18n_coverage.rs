@@ -109,7 +109,9 @@ fn every_tr_literal_is_in_every_catalog() {
     assert!(files.len() > 5, "sources not found");
     let mut keys: Vec<String> = files
         .iter()
-        .flat_map(|f| literals(&std::fs::read_to_string(f).unwrap()))
+        // Windows checkouts may convert to CRLF; a `\` continuation then ends in
+        // `\r\n`, which `unescape` does not know.
+        .flat_map(|f| literals(&std::fs::read_to_string(f).unwrap().replace("\r\n", "\n")))
         .collect();
     keys.sort();
     keys.dedup();

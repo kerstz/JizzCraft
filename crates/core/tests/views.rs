@@ -41,7 +41,9 @@ fn id_of(db: &Db, name: &str) -> i64 {
 #[test]
 fn dir_filter_does_not_match_sibling_prefix() {
     let (t, db) = library();
-    let a = t.path().join("a");
+    let a = jizzcraft_core::pathbytes::canonical(t.path())
+        .unwrap()
+        .join("a");
     let rec = names(
         &db,
         &Filter {
@@ -256,7 +258,8 @@ fn saved_views_and_random_pick_through_registry() {
         .map(|c| c["name"].as_str().unwrap())
         .collect();
     assert_eq!(kids, ["a", "ab"]);
-    assert_eq!(root["path"], json!(t.path().to_string_lossy()));
+    let canon = jizzcraft_core::pathbytes::canonical(t.path()).unwrap();
+    assert_eq!(root["path"], json!(canon.to_string_lossy()));
 
     // Injection and unknown keys are refused. The SQL stays the SQL we wrote.
     assert!(

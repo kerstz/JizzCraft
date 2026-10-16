@@ -140,7 +140,9 @@ fn private_labels_are_not_indexed() {
 #[test]
 fn folder_removal_clears_the_index_and_scan_fills_it() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("lib");
+    let root = jizzcraft_core::pathbytes::canonical(dir.path())
+        .unwrap()
+        .join("lib");
     std::fs::create_dir(&root).unwrap();
     image::RgbImage::new(4, 4)
         .save(root.join("Crème Brûlée.png"))

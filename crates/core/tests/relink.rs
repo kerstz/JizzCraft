@@ -79,7 +79,10 @@ fn move_between_imported_folders() {
     assert_eq!(rep.relinked, 1, "{rep:?}");
     let m = find(&db, "x.png");
     assert_eq!((m.id, m.rating), (id, 5));
-    assert!(m.path.starts_with(&b) || m.path.starts_with(fs::canonicalize(&b).unwrap()));
+    assert!(
+        m.path
+            .starts_with(jizzcraft_core::pathbytes::canonical(&b).unwrap())
+    );
 }
 
 #[test]
