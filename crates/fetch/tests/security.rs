@@ -536,6 +536,212 @@ fn streams_that_are_already_open_recheck_the_kill_switch() {
     }
 }
 
+/// Production lines with comments dropped only when the line starts with one
+/// (so `https://` inside a literal survives), 1-based numbers.
+fn raw_prod_lines(p: &Path) -> Vec<(usize, String)> {
+    let text = std::fs::read_to_string(p).unwrap();
+    let mut out = Vec::new();
+    for (i, l) in text.lines().enumerate() {
+        if l.trim() == "#[cfg(test)]" {
+            break;
+        }
+        if l.trim_start().starts_with("//") {
+            continue;
+        }
+        out.push((i + 1, l.to_owned()));
+    }
+    out
+}
+
+fn src_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+fn norm(p: &Path, src: &Path) -> String {
+    p.strip_prefix(src)
+        .unwrap()
+        .display()
+        .to_string()
+        .replace('\\', "/")
+}
+
+fn prod_text(name: &str) -> String {
+    prod_lines(&src_dir().join(name))
+        .iter()
+        .map(|(_, l)| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every module that fetches pages or saves files asks the kill switch.
+#[test]
+fn downloads_and_pages_recheck_the_kill_switch() {
+    for f in [
+        "download/direct.rs",
+        "download/segmented.rs",
+        "download/manager.rs",
+        "service/extract.rs",
+    ] {
+        assert!(
+            prod_text(f).contains("proxy_blocked()"),
+            "src/{f}:1: no proxy_blocked() in a module that fetches"
+        );
+    }
+}
+
+/// A download never replaces, truncates or deletes a file it did not create.
+#[test]
+fn downloads_never_overwrite() {
+    let src = src_dir();
+    let mut files = Vec::new();
+    rs_files(&src.join("download"), &mut files);
+    assert!(files.len() >= 4, "download files not found");
+    let mut problems = Vec::new();
+    let (mut parts, mut finishes, mut own_removals) = (0, 0, 0);
+    for f in &files {
+        let name = norm(f, &src);
+        for (n, l) in prod_lines(f) {
+            let at = format!("src/{name}:{n}");
+            for bad in [
+                "File::create(",
+                ".truncate(true)",
+                "fs::rename(",
+                "fsutil::replace(",
+                "fs::write(",
+                "fs::remove_file(",
+                "remove_dir_all(",
+            ] {
+                if l.contains(bad) {
+                    problems.push(format!("{at}: `{bad}` in a download module"));
+                }
+            }
+            if l.contains("OpenOptions") || l.contains(".create(true)") {
+                problems.push(format!("{at}: file opened outside create_part"));
+            }
+            if l.contains("create_part(") && !l.contains("use ") {
+                parts += 1;
+            }
+            if l.contains("rename_noclobber(") && !l.contains("use ") {
+                finishes += 1;
+            }
+            if l.contains("remove_own_part(") && !l.contains("use ") {
+                own_removals += 1;
+            }
+        }
+    }
+    // The primitives themselves: create_new only, no clobbering fallback
+    // that replaces without a check.
+    let sn = prod_text("savename.rs");
+    let cp = sn.split("pub fn create_part").nth(1).unwrap_or("");
+    let cp = cp.split("\npub fn ").next().unwrap_or("");
+    if !cp.contains(".create_new(true)") || cp.contains(".truncate(") {
+        problems.push("src/savename.rs: create_part must be create_new and never truncate".into());
+    }
+    let rp = sn.split("pub fn remove_own_part").nth(1).unwrap_or("");
+    let rp = rp.split("\npub fn ").next().unwrap_or("");
+    if !rp.contains("same_file(") {
+        problems.push("src/savename.rs: remove_own_part does not check the inode".into());
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    assert!(
+        parts >= 2,
+        "found {parts} create_part calls: pattern drifted"
+    );
+    assert!(finishes >= 1, "no rename_noclobber finish found");
+    assert!(own_removals >= 2, "found {own_removals} own-part removals");
+}
+
+/// The page reader is a plain GET reader: no POST, no cookies, no meta-refresh
+/// following.
+#[test]
+fn page_reader_has_no_bypass() {
+    let src = src_dir();
+    let mut files = Vec::new();
+    rs_files(&src.join("extract"), &mut files);
+    files.push(src.join("service/extract.rs"));
+    let mut problems = Vec::new();
+    for f in &files {
+        let name = norm(f, &src);
+        for (n, l) in prod_lines(f) {
+            let low = l.to_ascii_lowercase();
+            let at = format!("src/{name}:{n}");
+            if low.contains(".post(") || low.contains("multipart") || low.contains(".form(") {
+                problems.push(format!("{at}: page reader must only GET"));
+            }
+            if low.contains("cookie") {
+                problems.push(format!("{at}: page reader handles cookies"));
+            }
+            if low.contains("set-cookie") {
+                problems.push(format!("{at}: set-cookie"));
+            }
+            // A meta refresh may be recorded, never followed.
+            if low.contains("meta_refresh") && !name.starts_with("extract/") {
+                problems.push(format!("{at}: meta refresh read outside the pure scanner"));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Nothing site-specific ships in the page reader or the downloader: URL
+/// literals are bare scheme checks and no string carries a well-known TLD.
+#[test]
+fn page_reader_bundles_no_site() {
+    let src = src_dir();
+    let mut files = Vec::new();
+    rs_files(&src.join("extract"), &mut files);
+    rs_files(&src.join("download"), &mut files);
+    files.push(src.join("service/extract.rs"));
+    let mut problems = Vec::new();
+    for f in &files {
+        let name = norm(f, &src);
+        for (n, l) in raw_prod_lines(f) {
+            let at = format!("src/{name}:{n}");
+            // Literals only: split on quotes, odd chunks are inside a string.
+            for (i, chunk) in l.split('"').enumerate() {
+                if i % 2 == 0 {
+                    continue;
+                }
+                let rest = chunk
+                    .replace("https://", "")
+                    .replace("http://", "")
+                    .to_ascii_lowercase();
+                if rest.contains("://") {
+                    problems.push(format!("{at}: URL literal beyond a scheme check"));
+                }
+                for tld in [".com", ".net", ".org", ".xxx", ".tv", ".io", ".co"] {
+                    let hit = rest.match_indices(tld).any(|(p, _)| {
+                        !rest[p + tld.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphanumeric())
+                    });
+                    if hit {
+                        problems.push(format!("{at}: literal contains `{tld}`"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Every URL a page yields is resolved by `resolve_candidate`, which asks
+/// `inward_ok` against the page it came from.
+#[test]
+fn extracted_urls_pass_inward_ok() {
+    let ex = prod_text("service/extract.rs");
+    assert!(
+        ex.matches("resolve_candidate(").count() >= 3,
+        "src/service/extract.rs: page URLs not resolved through resolve_candidate"
+    );
+    let rs = prod_text("extract/resolve.rs");
+    assert!(
+        rs.contains("inward_ok("),
+        "src/extract/resolve.rs: resolve_candidate does not call inward_ok"
+    );
+}
+
 /// A torrent is added over existing files in one place only, and only after
 /// `may_reuse` has shown they are the files this session wrote.
 #[test]

@@ -16,10 +16,12 @@ use jizzcraft_e2e::{
     FMP4, FMP4_AV, Svc, TS, WEBM, assert_clean, assert_sentence, fixtures, ready, serial,
 };
 use jizzcraft_fetch::config::ResumeOnStart;
+use jizzcraft_fetch::download::manager::DownloadRequest;
+use jizzcraft_fetch::download::{JobState, JobView};
 use jizzcraft_fetch::errors;
 use jizzcraft_fetch::resolver::ResolverDef;
 use jizzcraft_fetch::segmented::{AbrConfig, open_hls};
-use jizzcraft_fetch::service::{FetchService, Source, StreamOpts, StreamTicket};
+use jizzcraft_fetch::service::{ExtractMode, FetchService, Source, StreamOpts, StreamTicket};
 use jizzcraft_fetch::{FetchConfig, Indexer, Secret};
 use jizzcraft_media::player::{PlayState, Player};
 
@@ -1115,6 +1117,39 @@ fn s14_kill_switch_means_zero_connections() {
                 .unwrap(),
             "stream_via_resolver",
         );
+        // The page reader and the save queue obey the switch too.
+        for mode in [
+            ExtractMode::Auto,
+            ExtractMode::Builtin,
+            ExtractMode::Resolvers,
+        ] {
+            let e = s
+                .svc
+                .extract(srv.url("/page"), mode)
+                .recv_timeout(wait)
+                .unwrap()
+                .expect_err("a page was read with no proxy");
+            assert_sentence(&e, errors::PROXY_REQUIRED);
+        }
+        for p in ["/v/clip.mp4", "/page", "/v/index.m3u8", "/v/s.mpd"] {
+            s.svc
+                .download_start(DownloadRequest::url(srv.url(p)))
+                .unwrap();
+        }
+        let t0 = Instant::now();
+        loop {
+            let l = s.svc.download_list();
+            if l.len() == 4 && l.iter().all(|j| j.state.is_over()) {
+                for j in &l {
+                    assert_eq!(j.state, JobState::Failed);
+                    assert_eq!(j.error, Some(errors::PROXY_REQUIRED));
+                }
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "saves never ended");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(s.downloaded_files(), 0);
         let out = s
             .svc
             .search(None, "q", &[], 10, Arc::default())
@@ -1482,4 +1517,239 @@ fn s15_disk_full_is_a_sentence_and_leaves_nothing_behind() {
     if text.contains("skipped:") {
         eprintln!("skipped inside the namespace (see reason above)");
     }
+}
+
+// ---- 16 - 19: the page reader and the save queue ----------------------------
+
+fn page(body: &str) -> Reply {
+    Reply::ok("text/html", body.as_bytes())
+}
+
+/// Wait until every listed job is over; returns the final list.
+fn settle(s: &Svc, secs: u64) -> Vec<JobView> {
+    let t0 = Instant::now();
+    loop {
+        let l = s.svc.download_list();
+        if !l.is_empty() && l.iter().all(|j| j.state.is_over()) {
+            return l;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(secs),
+            "saves never ended"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+fn saved(s: &Svc) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(s.dl.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn s16_page_og_video_plays_through_the_builtin_reader() {
+    let _g = serial();
+    if !ready(WEBM) {
+        return;
+    }
+    let clip = big_clip();
+    let c2 = clip.clone();
+    let srv = Server::start(Arc::new(move |r: &Req| match r.path.as_str() {
+        "/watch" => page(
+            r#"<html><head><meta property="og:title" content="A Page Clip">
+               <meta property="og:video" content="/v/clip.webm"></head><body>hi</body></html>"#,
+        ),
+        "/v/clip.webm" => Reply::shared("video/webm", c2.clone()),
+        _ => Reply::status(404),
+    }));
+    let base = Baseline::take();
+    {
+        let s = Svc::plain();
+        let p = live(open(&s, srv.url("/watch")).expect("ticket from a page"));
+        let mut pump = Pump::new(&p);
+        first_frame(&mut pump);
+        pump.to_end(90);
+        assert!(pump.frames > 20);
+        assert!(srv.hits_for("/watch") >= 1 && srv.hits_for("/v/clip.webm") >= 1);
+        // Watching is not saving.
+        assert_eq!(s.downloaded_files(), 0);
+        drop(p);
+    }
+    base.assert_settled();
+}
+
+#[test]
+fn s17_page_hls_is_saved_imported_and_plays_from_the_file() {
+    let _g = serial();
+    if !ready(TS) {
+        return;
+    }
+    let segs = fixtures::ts_segments(320, 240, 3).expect("encode TS segments");
+    let mut routes: Vec<(String, &str, Arc<Vec<u8>>)> = vec![
+        (
+            "/watch".into(),
+            "text/html",
+            Arc::new(
+                br#"<meta property="og:title" content="Stream Page">
+                    <meta property="og:video" content="/v/index.m3u8">"#
+                    .to_vec(),
+            ),
+        ),
+        (
+            "/v/index.m3u8".into(),
+            M3U8,
+            Arc::new(fixtures::playlist(segs.len(), 1.0, "seg", "ts", "").into_bytes()),
+        ),
+    ];
+    for (i, sg) in segs.iter().enumerate() {
+        routes.push((format!("/v/seg{i}.ts"), "video/mp2t", Arc::new(sg.clone())));
+    }
+    let srv = Server::start(Arc::new(move |r: &Req| {
+        match routes.iter().find(|(p, _, _)| *p == r.path) {
+            Some((_, t, b)) => Reply::shared(t, b.clone()),
+            None => Reply::status(404),
+        }
+    }));
+    let base = Baseline::take();
+    {
+        let s = Svc::plain();
+        s.svc
+            .download_start(DownloadRequest::url(srv.url("/watch")))
+            .unwrap();
+        let l = settle(&s, 60);
+        assert_eq!(l[0].state, JobState::Done, "{:?}", l[0].error);
+        let files = saved(&s);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].file_name().unwrap(), "Stream Page.ts");
+        let want: Vec<u8> = segs.iter().flatten().copied().collect();
+        assert_eq!(std::fs::read(&files[0]).unwrap(), want);
+        let fin = s.svc.download_take_finished();
+        assert_eq!((fin.done, fin.failed), (1, 0));
+        // Into the library, counts only, then played from the file.
+        let mut db = jizzcraft_core::Db::open_in_memory().unwrap();
+        let rep = jizzcraft_fetch::commands::import_saved(&mut db, s.dl.path()).unwrap();
+        assert_eq!(rep.added, 1);
+        let p = Player::open(&files[0], 0.0, wake());
+        let mut pump = Pump::new(&p);
+        first_frame(&mut pump);
+        pump.to_end(60);
+        assert!(pump.frames > 10);
+        drop(p);
+    }
+    srv.quiesce();
+    base.assert_settled();
+}
+
+#[test]
+fn s18_save_resumes_after_a_cut_and_bytes_match() {
+    let _g = serial();
+    if !ready(WEBM) {
+        return;
+    }
+    let clip = big_clip();
+    let cuts = Arc::new(AtomicUsize::new(0));
+    let (c2, k2) = (clip.clone(), cuts.clone());
+    let srv = Server::start(Arc::new(move |r: &Req| {
+        let rep = Reply::shared("video/webm", c2.clone());
+        // The first big body loses its connection halfway.
+        let big = r
+            .range
+            .is_none_or(|(a, b)| b.is_none_or(|b| b - a > 64 * 1024));
+        if big && k2.fetch_add(1, Ordering::SeqCst) == 0 {
+            rep.cut()
+        } else {
+            rep
+        }
+    }));
+    let base = Baseline::take();
+    {
+        let s = Svc::plain();
+        s.svc
+            .download_start(DownloadRequest::url(srv.url("/v/clip.webm")))
+            .unwrap();
+        let l = settle(&s, 60);
+        assert_eq!(l[0].state, JobState::Done, "{:?}", l[0].error);
+        assert!(cuts.load(Ordering::SeqCst) >= 1, "nothing was cut");
+        let files = saved(&s);
+        assert_eq!(files.len(), 1, "no .part or stray file left: {files:?}");
+        assert!(
+            std::fs::read(&files[0]).unwrap() == *clip,
+            "the saved bytes differ"
+        );
+    }
+    srv.quiesce();
+    base.assert_settled();
+}
+
+#[test]
+fn s19_low_disk_pauses_the_save_with_a_sentence_and_it_resumes() {
+    let _g = serial();
+    if !ready(WEBM) {
+        return;
+    }
+    // The volume is simulated by the free-space probe the queue asks every
+    // second; the real ENOSPC path is s15's. Nothing is deleted on a pause.
+    let clip = big_clip();
+    let srv = {
+        let c2 = clip.clone();
+        Server::start(Arc::new(move |_: &Req| {
+            let mut r = Reply::shared("video/webm", c2.clone()).bps(500_000);
+            r.ranges = false;
+            r
+        }))
+    };
+    let low = Arc::new(AtomicBool::new(false));
+    let base = Baseline::take();
+    {
+        let l2 = low.clone();
+        let mut s = Svc::plain();
+        s.svc = s.svc.with_free_space(Arc::new(move |_| {
+            Some(if l2.load(Ordering::SeqCst) {
+                1024 * 1024
+            } else {
+                u64::MAX / 4
+            })
+        }));
+        let id = s
+            .svc
+            .download_start(DownloadRequest::url(srv.url("/v/clip.webm")))
+            .unwrap()[0];
+        let job = |s: &Svc| {
+            s.svc
+                .download_list()
+                .into_iter()
+                .find(|j| j.id == id)
+                .unwrap()
+        };
+        wait_for(20, "bytes moving", || job(&s).done_bytes > 20_000);
+        low.store(true, Ordering::SeqCst);
+        wait_for(20, "paused for lack of room", || {
+            job(&s).state == JobState::Paused
+        });
+        let j = job(&s);
+        assert_eq!(j.error, Some(errors::DISK_FULL));
+        assert_clean(j.error.unwrap());
+        // What was written is kept, as one .part file.
+        let files = saved(&s);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].to_string_lossy().ends_with(".part"));
+        let at = job(&s).done_bytes;
+        std::thread::sleep(Duration::from_millis(800));
+        assert_eq!(job(&s).done_bytes, at, "a paused save kept writing");
+        // Room is back.
+        low.store(false, Ordering::SeqCst);
+        assert!(s.svc.download_resume(id));
+        let l = settle(&s, 60);
+        assert_eq!(l[0].state, JobState::Done, "{:?}", l[0].error);
+        let files = saved(&s);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(std::fs::read(&files[0]).unwrap() == *clip, "bytes differ");
+    }
+    srv.quiesce();
+    base.assert_settled();
 }
