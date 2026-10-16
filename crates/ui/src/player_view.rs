@@ -122,6 +122,11 @@ pub struct PlayerView {
     pub stream_probe: Option<Box<dyn Fn() -> StreamFacts + Send>>,
     /// Local `.srt` / `.vtt` sidecars, drawn as an overlay (no pipeline).
     pub subs: crate::subs::Subs,
+    /// Local `.funscript` sidecar, drawn as a decorative heatmap band above
+    /// the track. Display only.
+    pub heat: crate::subs::Heat,
+    /// Config switch (`no_funscript_heatmap` off), set by the app each frame.
+    pub heat_enabled: bool,
 }
 
 /// Menu label of an audio track: its language code, else its number. Never a
@@ -168,6 +173,8 @@ impl PlayerView {
             actions: Vec::new(),
             stream_probe: None,
             subs: crate::subs::Subs::default(),
+            heat: crate::subs::Heat::default(),
+            heat_enabled: true,
         }
     }
 
@@ -266,7 +273,7 @@ impl PlayerView {
         if moved {
             self.last_mouse = Instant::now();
         }
-        if self.subs.poll() {
+        if self.subs.poll() | self.heat.poll() {
             ui.ctx().request_repaint();
         }
         let state = self.player.state();
@@ -642,6 +649,28 @@ impl PlayerView {
                         (track.top() - 5.0)..=(track.bottom() + 5.0),
                         egui::Stroke::new(1.5, theme::ACCENT_INK),
                     );
+                }
+            }
+            // Funscript heatmap: a decorative 3 px band, one hue, intensity
+            // only. Hidden in discreet mode; the inspector has the text.
+            if self.heat_enabled && !discreet {
+                let cells = self.heat.cells(
+                    d.as_millis() as u64,
+                    crate::subs::heat_buckets(track.width()),
+                );
+                if !cells.is_empty() {
+                    let w = track.width() / cells.len() as f32;
+                    for (i, v) in cells.iter().enumerate() {
+                        let x0 = track.left() + w * i as f32;
+                        painter.rect_filled(
+                            Rect::from_min_max(
+                                pos2(x0, track.top() - 6.0),
+                                pos2(x0 + w + 0.5, track.top() - 3.0),
+                            ),
+                            CornerRadius::ZERO,
+                            theme::APP.gamma_multiply(0.15 + 0.85 * v),
+                        );
+                    }
                 }
             }
             // Marker ticks.

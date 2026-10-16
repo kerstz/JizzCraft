@@ -15,6 +15,7 @@ Filled in as each piece lands.
 | Title, release date, studio, performers, tag aliases, external ids | stored in the library database; set by hand or imported; exported in `jizzcraft-meta` version 3 (private ones only with `--private`) | `media.info*`, `studio.*`, `person.*`, `tag.alias.*`; see [organise.md](organise.md#title-studio-performers-and-aliases) |
 | Kodi-style `.nfo` files (Kodi, Jellyfin, Emby, Plex) | read only, never written; applied to the library database | `meta.import_nfo`, CLI `import-nfo`, Tools menu "Import from other apps…" |
 | Stash JSON export folders | read only, never written; applied to the library database | `meta.import_stash`, CLI `import-stash`, same Tools window |
+| Funscript sidecars (`<name>.funscript` next to a video) | read only, on a worker thread; shown as a decorative heatmap band above the timeline and as "Script: N actions" in the inspector; never stored, never sent anywhere | `media.funscript`, CLI `funscript`, Settings toggle, command `player.heatmap.toggle` |
 | Metadata import | reads versions 1 to 3; matches by `fp`, then by `oshash` and size | `meta.import` |
 
 ### The oshash
@@ -119,6 +120,21 @@ through a float) or as a string of 16 hex digits, else decimal.
 Limits: at most 500 000 JSON files in total (more is refused), 256 KiB per
 file, 16 MiB per scene, 4 MiB per performer or studio, 1 MiB per tag file;
 anything over is counted as rejected.
+
+## Funscripts
+
+A `.funscript` with the same name as the video (case ignored) in the same
+folder is read for display only. Per-axis variants such as `name.roll.funscript`
+are ignored. Only the `actions` list (`at` in milliseconds, `pos` 0 to 100) is
+used; `inverted`, `range` and every other field are ignored. Entries with a
+negative or non-integer time, or a non-numeric position, are dropped; positions
+are clamped to 0..100; the list is sorted, de-duplicated by time and cut at
+200 000 actions. Files over 8 MiB are ignored.
+
+The timeline band shows the mean stroke speed per cell (position units per
+second, 400 and above reads as full intensity) in a single hue. It is hidden
+in discreet mode and can be turned off in Settings. Nothing is ever sent to a
+device and nothing is written next to the video.
 
 ## Refused, and why
 

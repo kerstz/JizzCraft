@@ -1282,4 +1282,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("Stash preview", "Stash-Vorschau"),
     ("Stash import", "Stash-Import"),
+    ("Script", "Skript"),
+    ("{} actions", "{} Aktionen"),
+    (
+        "Show funscript heatmap on the timeline",
+        "Funscript-Heatmap auf der Zeitleiste anzeigen",
+    ),
 ];

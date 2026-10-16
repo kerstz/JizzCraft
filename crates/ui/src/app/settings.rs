@@ -258,6 +258,14 @@ impl JizzApp {
             crate::theme::set_reduce_motion(ui.ctx(), rm);
             self.save_cfg();
         }
+        let mut heat = !self.cfg.no_funscript_heatmap;
+        if ui
+            .checkbox(&mut heat, tr("Show funscript heatmap on the timeline"))
+            .changed()
+        {
+            self.cfg.no_funscript_heatmap = !heat;
+            self.save_cfg();
+        }
         ui.add_space(6.0);
         let same = tr("Same as the interface");
         let none = tr("Default track");

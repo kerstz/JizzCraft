@@ -7,6 +7,7 @@ pub mod distro;
 pub mod error;
 pub mod fingerprint;
 pub mod fsutil;
+pub mod funscript;
 pub mod history;
 pub mod integrity;
 pub mod interop;

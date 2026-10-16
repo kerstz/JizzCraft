@@ -13,6 +13,10 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Funscript sidecars: a `.funscript` next to a video draws a one-hue intensity
+  band above the timeline (decorative, off in discreet mode, switch in
+  Settings) and "Script: N actions" in the inspector. Display only: nothing is
+  sent to a device. CLI `funscript`.
 - Import a Stash JSON export folder (scenes, files, performers, tags): items
   are matched by content (size and oshash, else size, duration and name),
   never by path. Titles, dates, studios, performers with aliases, tags with

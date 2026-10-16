@@ -24,6 +24,10 @@ as unverified.
 - **Reduce motion.** Settings > Appearance > Reduce motion sets egui's
   animation time to 0 (`reduce_motion` in config). It does not read the OS
   setting.
+- **Funscript heatmap is decorative.** The 3 px band above the timeline (shown
+  only when a `.funscript` sits next to the video) carries no information that
+  is not also in text: the inspector shows "Script: N actions". It can be
+  switched off in Settings, and it is hidden in discreet mode.
 
 ## Not supported / unknown
 

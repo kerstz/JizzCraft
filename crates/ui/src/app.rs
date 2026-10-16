@@ -272,6 +272,11 @@ pub struct JizzApp {
     alias_edit: Option<meta_ui::AliasEdit>,
     /// When the next item starts by itself (autoplay), if pending.
     autoplay_at: Option<Instant>,
+    /// Funscript action counts for the inspector, read on worker threads
+    /// (`None`: no usable script; absent: not asked yet).
+    script_counts: HashMap<i64, Option<usize>>,
+    script_tx: std::sync::mpsc::Sender<(i64, Option<usize>)>,
+    script_rx: std::sync::mpsc::Receiver<(i64, Option<usize>)>,
     /// Applied built-in/saved view or folder filter (replaces the tab filter).
     extra: Option<Filter>,
     view_label: String,
@@ -640,6 +645,7 @@ impl JizzApp {
         }
 
         let workers = jizzcraft_media::service::Workers::new();
+        let (script_tx, script_rx) = std::sync::mpsc::channel();
         let mut app = JizzApp {
             ctx: ctx.clone(),
             db,
@@ -679,6 +685,9 @@ impl JizzApp {
             info_ui: meta_ui::InfoUi::default(),
             alias_edit: None,
             autoplay_at: None,
+            script_counts: HashMap::new(),
+            script_tx,
+            script_rx,
             extra: None,
             view_label: String::new(),
             seed: 1,
@@ -1199,6 +1208,10 @@ impl JizzApp {
             pv.subs = crate::subs::spawn_for(path, self.cfg.subs.clone(), move || {
                 ctx.request_repaint();
             });
+        }
+        {
+            let ctx = self.ctx.clone();
+            pv.heat = crate::subs::Heat::spawn(path.to_path_buf(), move || ctx.request_repaint());
         }
         pv.autoplay_on = self.cfg.autoplay_next;
         pv.previews_enabled = !self.cfg.no_previews;
@@ -1942,6 +1955,38 @@ impl JizzApp {
             });
     }
 
+    /// Action count of the funscript next to `m`, read on a worker thread the
+    /// first time it is asked for. `None` until known, and when there is none.
+    fn script_actions(&mut self, m: &Media) -> Option<usize> {
+        while let Ok((id, n)) = self.script_rx.try_recv() {
+            if self.script_counts.len() > 512 {
+                self.script_counts.clear();
+            }
+            self.script_counts.insert(id, n);
+        }
+        match self.script_counts.get(&m.id) {
+            Some(n) => *n,
+            None => {
+                // Mark as asked so one read is in flight at most.
+                self.script_counts.insert(m.id, None);
+                let (tx, ctx, id, path) = (
+                    self.script_tx.clone(),
+                    self.ctx.clone(),
+                    m.id,
+                    m.path.clone(),
+                );
+                std::thread::spawn(move || {
+                    let n = jizzcraft_core::funscript::load_for(&path).map(|s| s.actions.len());
+                    if n.is_some() {
+                        let _ = tx.send((id, n));
+                        ctx.request_repaint();
+                    }
+                });
+                None
+            }
+        }
+    }
+
     fn inspector(&mut self, ui: &mut Ui) {
         if !self.cfg.inspector_open || self.stats.total == 0 {
             return;
@@ -2003,6 +2048,15 @@ impl JizzApp {
                     crate::i18n::tr("Codec"),
                     m.codec.as_deref().unwrap_or("—"),
                 );
+                if m.kind == MediaKind::Video
+                    && let Some(n) = self.script_actions(&m)
+                {
+                    widgets::kv(
+                        ui,
+                        crate::i18n::tr("Script"),
+                        &crate::i18n::trf("{} actions", &[&n.to_string()]),
+                    );
+                }
                 widgets::kv(ui, crate::i18n::tr("Added"), &fmt_date(m.added_at));
                 widgets::kv(
                     ui,
@@ -2132,11 +2186,13 @@ impl JizzApp {
                     let blur = self.cfg.discreet || self.cfg.screen_share_safe;
                     let (previews, autoplay) = (!self.cfg.no_previews, self.cfg.autoplay_next);
                     let discreet = self.cfg.discreet;
+                    let heat_on = !self.cfg.no_funscript_heatmap;
                     let mut actions = Vec::new();
                     if let View::Player(pv) = &mut self.view {
                         pv.marker_ticks = ticks;
                         pv.blur_previews = blur;
                         pv.previews_enabled = previews;
+                        pv.heat_enabled = heat_on;
                         pv.autoplay_on = autoplay;
                         pv.show(ui, discreet);
                         actions = std::mem::take(&mut pv.actions);
@@ -3617,6 +3673,15 @@ fn register_ui_commands(reg: &mut Registry<JizzApp>) {
                 app.save_cfg();
             }
             Ok(out)
+        },
+    );
+    reg.register(
+        "player.heatmap.toggle",
+        "Show or hide the funscript heatmap on the timeline",
+        |app, _| {
+            app.cfg.no_funscript_heatmap = !app.cfg.no_funscript_heatmap;
+            app.save_cfg();
+            Ok(json!({ "heatmap": !app.cfg.no_funscript_heatmap }))
         },
     );
     reg.register(

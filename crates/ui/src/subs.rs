@@ -235,6 +235,82 @@ impl Subs {
     }
 }
 
+/// Funscript sidecar of one open video, for the timeline heatmap only. The
+/// file is read on a worker thread; nothing is ever sent to a device.
+#[derive(Default)]
+pub struct Heat {
+    script: Option<jizzcraft_core::funscript::Script>,
+    pending: Option<Receiver<Option<jizzcraft_core::funscript::Script>>>,
+    /// `(duration_ms, buckets)` the cells below were computed for.
+    key: (u64, usize),
+    cells: Vec<f32>,
+}
+
+impl Heat {
+    pub fn spawn(media: PathBuf, wake: impl Fn() + Send + 'static) -> Heat {
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let found = jizzcraft_core::funscript::load_for(&media);
+            let _ = tx.send(found);
+            wake();
+        });
+        Heat {
+            pending: Some(rx),
+            ..Heat::default()
+        }
+    }
+
+    /// Take the script once the worker is done. True when it just arrived.
+    pub fn poll(&mut self) -> bool {
+        let Some(rx) = &self.pending else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(found) => {
+                self.pending = None;
+                self.script = found;
+                self.key = (0, 0);
+                self.cells.clear();
+                self.script.is_some()
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(_) => {
+                self.pending = None;
+                false
+            }
+        }
+    }
+
+    pub fn with_script(script: jizzcraft_core::funscript::Script) -> Heat {
+        Heat {
+            script: Some(script),
+            ..Heat::default()
+        }
+    }
+
+    pub fn actions(&self) -> usize {
+        self.script.as_ref().map_or(0, |s| s.actions.len())
+    }
+
+    /// Intensity cells (0..=1) for a track `buckets` wide; empty without a
+    /// script. Recomputed only when the duration or the width changes.
+    pub fn cells(&mut self, duration_ms: u64, buckets: usize) -> &[f32] {
+        let Some(script) = &self.script else {
+            return &[];
+        };
+        if self.key != (duration_ms, buckets) {
+            self.cells = jizzcraft_core::funscript::heatmap(script, duration_ms, buckets);
+            self.key = (duration_ms, buckets);
+        }
+        &self.cells
+    }
+}
+
+/// Number of heatmap cells for a track of `width` points (about 3 px each).
+pub fn heat_buckets(width: f32) -> usize {
+    ((width / 3.0) as usize).clamp(1, 1000)
+}
+
 /// Only local paths have sidecars; streams never do.
 pub fn spawn_for(path: &Path, pref: Option<String>, wake: impl Fn() + Send + 'static) -> Subs {
     Subs::spawn(

@@ -213,6 +213,11 @@ fn engine_never_touches_media() {
         "<movie><title>T</title><genre>g</genre><actor><name>A</name></actor></movie>",
     )
     .unwrap();
+    std::fs::write(
+        t.path().join("v.funscript"),
+        json!({ "actions": [{ "at": 0, "pos": 0 }, { "at": 500, "pos": 100 }] }).to_string(),
+    )
+    .unwrap();
     let before = hash_tree(t.path());
 
     let mut reg: Registry<Db> = Registry::new();
@@ -256,6 +261,24 @@ fn engine_never_touches_media() {
     run(&mut db, "library.checksum", json!({ "scope": "all" }));
     let oh = run(&mut db, "media.get", json!({ "id": v }))["oshash"].clone();
     run(&mut db, "media.by_hash", json!({ "oshash": oh }));
+    let fs_out = run(
+        &mut db,
+        "media.funscript",
+        json!({ "id": v, "buckets": 10 }),
+    );
+    assert_eq!(fs_out["found"], true);
+    assert_eq!(fs_out["actions"], 2);
+    assert!(fs_out.to_string().find("funscript").is_none());
+    let none = run(&mut db, "media.funscript", json!({ "id": a }));
+    assert_eq!(none["found"], false);
+    assert!(
+        reg.run(
+            &mut db,
+            "media.funscript",
+            json!({ "id": v, "buckets": 5000 })
+        )
+        .is_err()
+    );
     run(
         &mut db,
         "views.save",

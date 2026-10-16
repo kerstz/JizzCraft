@@ -56,6 +56,8 @@ pub struct Config {
     pub autolock_minutes: Option<u32>,
     /// The boss key also locks an encrypted library.
     pub boss_locks: bool,
+    /// Hide the funscript intensity band on the timeline.
+    pub no_funscript_heatmap: bool,
 }
 
 /// Language codes offered for the audio preference, in menu order.

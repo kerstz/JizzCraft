@@ -675,6 +675,14 @@ enum Cmd {
         #[arg(long)]
         fp: Option<String>,
     },
+    /// Read the funscript sidecar of an item (display only; prints counts and
+    /// the timeline heatmap).
+    Funscript {
+        id: i64,
+        /// Heatmap cells, 1 to 1000.
+        #[arg(long, default_value_t = 200)]
+        buckets: u32,
+    },
     /// Merge a vanished entry into its new location.
     Relink { from: i64, to: i64 },
     /// Decode-test files and flag damaged ones.
@@ -1073,6 +1081,10 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             }
             ("media.by_hash".to_owned(), a)
         }
+        Cmd::Funscript { id, buckets } => (
+            "media.funscript".to_owned(),
+            json!({ "id": id, "buckets": buckets }),
+        ),
         Cmd::Relink { from, to } => ("media.relink".to_owned(), json!({ "from": from, "to": to })),
         Cmd::Check {
             full,
