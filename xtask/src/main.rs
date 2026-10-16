@@ -1018,6 +1018,48 @@ fn check_packaging() -> Result<(), String> {
             missing.push(format!("deb metadata lacks {needle}"));
         }
     }
+    // Arch recipes: a release recipe names a real version and a real checksum.
+    // The version is held to the workspace's only while it is the last tag's;
+    // between releases the recipes still describe the published tag.
+    let cargo_ver = env!("CARGO_PKG_VERSION");
+    let last_tag = Command::new("git")
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .trim_start_matches('v')
+                .to_string()
+        });
+    let expect = if last_tag.as_deref() == Some(cargo_ver) {
+        cargo_ver
+    } else {
+        ""
+    };
+    for (dir, git) in [
+        ("jizzcraft", false),
+        ("jizzcraft-online", false),
+        ("jizzcraft-git", true),
+    ] {
+        let f = format!("packaging/arch/{dir}/PKGBUILD");
+        let text = read(&f)?;
+        missing.extend(
+            pkgbuild_problems(&text, expect, git)
+                .into_iter()
+                .map(|e| format!("{f}: {e}")),
+        );
+        let si = format!("packaging/arch/{dir}/.SRCINFO");
+        match std::fs::read_to_string(&si) {
+            Ok(t) => missing.extend(
+                srcinfo_problems(&text, &t)
+                    .into_iter()
+                    .map(|e| format!("{si}: {e}")),
+            ),
+            Err(_) => missing.push(format!("missing {si} (makepkg --printsrcinfo > .SRCINFO)")),
+        }
+    }
     if missing.is_empty() {
         println!("check-packaging: ok");
         Ok(())
@@ -1026,9 +1068,80 @@ fn check_packaging() -> Result<(), String> {
     }
 }
 
+/// First `key=value` assignment of a PKGBUILD, quotes removed.
+fn pkgbuild_var(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+        .map(|v| v.trim().trim_matches(|c| c == '\'' || c == '"').to_string())
+}
+
+/// What is wrong with an Arch recipe. A release recipe (`git == false`) names
+/// a concrete `pkgver` (equal to `version`, unless that is empty: the
+/// workspace is ahead of the last tag) and checks its source; only the -git
+/// recipe may use `SKIP`.
+pub fn pkgbuild_problems(text: &str, version: &str, git: bool) -> Vec<String> {
+    let mut v = Vec::new();
+    if git {
+        return v;
+    }
+    match pkgbuild_var(text, "pkgver") {
+        None => v.push("no pkgver".into()),
+        Some(p) if !version.is_empty() && p != version => {
+            v.push(format!("pkgver {p} is not the workspace version {version}"));
+        }
+        Some(_) => {}
+    }
+    if text.contains("SKIP") {
+        v.push("checksum is SKIP: run updpkgsums on the release tarball".into());
+    }
+    v
+}
+
+/// `.SRCINFO` must exist for the same `pkgver` as its PKGBUILD.
+pub fn srcinfo_problems(pkgbuild: &str, srcinfo: &str) -> Vec<String> {
+    let want = pkgbuild_var(pkgbuild, "pkgver");
+    let got = srcinfo
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("pkgver = "))
+        .map(str::to_string);
+    if want.is_some() && want == got {
+        Vec::new()
+    } else {
+        vec![format!(
+            "pkgver {got:?} differs from the PKGBUILD's {want:?}: regenerate with makepkg --printsrcinfo"
+        )]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const REL: &str = "pkgver=0.2.0\nsha256sums=('abc')\n";
+
+    #[test]
+    fn release_recipes_need_the_version_and_a_real_checksum() {
+        assert!(pkgbuild_problems(REL, "0.2.0", false).is_empty());
+        assert!(!pkgbuild_problems(REL, "0.3.0", false).is_empty());
+        // Workspace ahead of the last tag: version not compared.
+        assert!(pkgbuild_problems(REL, "", false).is_empty());
+        let skip = "pkgver=0.2.0\nsha256sums=('SKIP')\n";
+        assert_eq!(pkgbuild_problems(skip, "0.2.0", false).len(), 1);
+        assert!(pkgbuild_problems("sha256sums=('abc')", "0.2.0", false)[0].contains("pkgver"));
+    }
+
+    #[test]
+    fn the_git_recipe_may_skip() {
+        let g = "pkgver=0.2.0.r0.g0000000\nsha256sums=('SKIP')\n";
+        assert!(pkgbuild_problems(g, "0.2.0", true).is_empty());
+    }
+
+    #[test]
+    fn srcinfo_must_match_the_pkgbuild() {
+        assert!(srcinfo_problems(REL, "pkgbase = x\n\tpkgver = 0.2.0\n").is_empty());
+        assert!(!srcinfo_problems(REL, "pkgbase = x\n\tpkgver = 0.1.0\n").is_empty());
+        assert!(!srcinfo_problems(REL, "").is_empty());
+    }
 
     #[test]
     fn vault_shot_args_never_carry_the_passphrase() {

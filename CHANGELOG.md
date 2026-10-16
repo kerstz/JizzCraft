@@ -13,6 +13,11 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Arch recipes: the release PKGBUILDs carry the real checksum of the v0.2.0
+  source tarball, all three recipes ship a `.SRCINFO`, and
+  `cargo xtask check-packaging` fails on a `SKIP` checksum in a release recipe,
+  a stale `.SRCINFO`, or a `pkgver` behind the workspace version once that is
+  the last tag. Refs #16.
 - `cargo xtask screenshots` also renders the vault lock screen
   (`vault-lock.png`, from a throw-away encrypted library in its own home; the
   passphrase only goes through a pipe) and the Privacy settings page

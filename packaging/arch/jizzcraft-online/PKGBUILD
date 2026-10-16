@@ -26,7 +26,7 @@ provides=(jizzcraft)
 conflicts=(jizzcraft)
 replaces=()
 source=("$_pkgbase-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('ebf9f3dc7a314284bc11c20e1917e880df1c3c26be854308cb89a2c2f7e5b9e9')
 options=(!lto)
 
 prepare() {

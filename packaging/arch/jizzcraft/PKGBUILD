@@ -1,6 +1,6 @@
 # Maintainer: JizzCraft contributors <noreply@example.invalid>
 #
-# Release build. `updpkgsums` fills the checksum after each tag.
+# Release build. After each tag: `updpkgsums`, then `makepkg --printsrcinfo > .SRCINFO`.
 # jizzcraft is the Offline edition (no network code at all).
 # The Online edition lives in ../jizzcraft-online.
 
@@ -14,7 +14,7 @@ url='https://github.com/kerstz/JizzCraft'
 license=('MIT OR Apache-2.0')
 makedepends=(cargo pkgconf perl make gcc gstreamer gst-plugins-base-libs)
 source=("$pkgbase-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('ebf9f3dc7a314284bc11c20e1917e880df1c3c26be854308cb89a2c2f7e5b9e9')
 options=(!lto)
 
 prepare() {
