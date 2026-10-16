@@ -632,6 +632,20 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Write Kodi-style .nfo files into DEST (an empty or new folder outside
+    /// every library folder). Files are never written next to your media.
+    ExportNfo {
+        dest: PathBuf,
+        /// Include private performers, studios and tags.
+        #[arg(long)]
+        private: bool,
+        /// Include play count, last played and resume point.
+        #[arg(long)]
+        history: bool,
+        /// Leave out star ratings.
+        #[arg(long)]
+        no_ratings: bool,
+    },
     /// Compute visual fingerprints of videos (decodes 25 frames each, in
     /// memory only) so that `duplicates` can compare them.
     Phash {
@@ -1063,6 +1077,18 @@ fn run(cli: &Cli) -> Result<(), Fail> {
         Cmd::Tree => ("library.tree".to_owned(), json!({})),
         Cmd::Random => ("media.random".to_owned(), json!({})),
         Cmd::Fingerprint { all } => ("library.fingerprint".to_owned(), json!({ "all": all })),
+        Cmd::ExportNfo {
+            dest,
+            private,
+            history,
+            no_ratings,
+        } => (
+            "meta.export_nfo".to_owned(),
+            json!({
+                "dest": dest.to_string_lossy(), "include_private": private,
+                "history": history, "ratings": !no_ratings,
+            }),
+        ),
         Cmd::Phash { all, limit } => (
             "library.phash".to_owned(),
             json!({ "all": all, "limit": limit }),
@@ -1544,6 +1570,10 @@ fn print_human(cmd: &str, v: &Value) {
                 v["hashed"]
             );
         }
+        "meta.export_nfo" => println!(
+            "{} file(s) written · {} without data · {} skipped",
+            v["written"], v["skipped_empty"], v["skipped_unsafe"]
+        ),
         "library.phash" => println!(
             "{} hashed · {} failed · {} left{}",
             v["hashed"],

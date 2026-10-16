@@ -1325,4 +1325,17 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} groups · {} fingerprinted · {} failed",
         "{} Gruppen · {} analysiert · {} fehlgeschlagen",
     ),
+    (
+        "Export NFO files to a folder…",
+        "NFO-Dateien in einen Ordner exportieren…",
+    ),
+    (
+        "These .nfo files are not encrypted, even though your library is. Anyone who can read them can read the titles, performers, tags and ratings they contain.",
+        "Diese .nfo-Dateien sind nicht verschlüsselt, auch wenn Ihre Bibliothek es ist. Wer sie lesen kann, sieht die enthaltenen Titel, Darsteller, Tags und Bewertungen.",
+    ),
+    ("NFO export", "NFO-Export"),
+    (
+        "{} files written · {} empty · {} skipped",
+        "{} Dateien geschrieben · {} leer · {} übersprungen",
+    ),
 ];

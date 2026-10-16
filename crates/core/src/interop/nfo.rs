@@ -8,6 +8,7 @@
 //! depth and element counts. A file holding only an address is counted and
 //! never fetched. Text after the root element is ignored.
 
+pub use super::nfo_export::{NfoExportOpts, NfoExportReport, check_export_dir, export_nfo};
 use super::{
     ImportOpts, InteropReport, MAX_DEPTH, MAX_FILES, PersonRec, Record, TagRec, apply_record,
     clean_text, day_start, read_capped, walk_files,
@@ -541,7 +542,7 @@ fn record_of(doc: &NfoDoc) -> Record {
         external_ids: doc
             .uniqueids
             .iter()
-            .filter(|(k, _)| k != "jizzcraft-fp1" && !k.is_empty())
+            .filter(|(k, _)| k != "jizzcraft-fp1" && k != "oshash" && !k.is_empty())
             .cloned()
             .collect(),
         stars: doc.userrating.map(super::stars_from_ten).filter(|s| *s > 0),

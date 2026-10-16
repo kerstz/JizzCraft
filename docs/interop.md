@@ -6,8 +6,6 @@ It is never a server and it never phones a service. The rules are in
 
 ## What is read and written
 
-Filled in as each piece lands.
-
 | What | Direction | Where |
 | --- | --- | --- |
 | Content hash `oshash` (OpenSubtitles-style, 16 hex digits) | stored in the library database, computed from the first and last 64 KiB of a file by `library.fingerprint`; read-only on the file | `jizzcraft-cli lookup --oshash HEX`, command `media.by_hash` |
@@ -15,6 +13,7 @@ Filled in as each piece lands.
 | Title, release date, studio, performers, tag aliases, external ids | stored in the library database; set by hand or imported; exported in `jizzcraft-meta` version 3 (private ones only with `--private`) | `media.info*`, `studio.*`, `person.*`, `tag.alias.*`; see [organise.md](organise.md#title-studio-performers-and-aliases) |
 | Kodi-style `.nfo` files (Kodi, Jellyfin, Emby, Plex) | read only, never written; applied to the library database | `meta.import_nfo`, CLI `import-nfo`, Tools menu "Import from other apps…" |
 | Stash JSON export folders | read only, never written; applied to the library database | `meta.import_stash`, CLI `import-stash`, same Tools window |
+| Kodi-style `.nfo` files, written | new files in a folder you choose, never inside or above a library folder, never overwriting, mode 0600; plain text even when the library is encrypted (the app warns first) | `meta.export_nfo`, CLI `export-nfo`, Tools menu "Export NFO files to a folder…" |
 | Funscript sidecars (`<name>.funscript` next to a video) | read only, on a worker thread; shown as a decorative heatmap band above the timeline and as "Script: N actions" in the inspector; never stored, never sent anywhere | `media.funscript`, CLI `funscript`, Settings toggle, command `player.heatmap.toggle` |
 | Visual fingerprint (perceptual hash, 64 bits) of videos | computed by `library.phash` from 25 frames decoded in memory (never written to disk); stored in the library database (schema v7); compared only by Hamming distance | `library.phash`, `media.duplicates`, `media.phash.distance`, CLI `phash` and `duplicates`, Tools menu "Find possible duplicates…" |
 | Metadata import | reads versions 1 to 3; matches by `fp`, then by `oshash` and size | `meta.import` |
@@ -121,6 +120,34 @@ through a float) or as a string of 16 hex digits, else decimal.
 Limits: at most 500 000 JSON files in total (more is refused), 256 KiB per
 file, 16 MiB per scene, 4 MiB per performer or studio, 1 MiB per tag file;
 anything over is counted as rejected.
+
+## NFO export
+
+`jizzcraft-cli export-nfo DEST [--private] [--history] [--no-ratings]` writes
+one `<movie>` file per video that has something to say, as
+`DEST/<library folder name>/<relative folder>/<video name>.nfo`. `DEST` must be
+an empty folder or a new folder inside an existing one, and it is refused when
+it is, is inside, or contains a library folder (symbolic links are resolved,
+and the check is repeated after each folder is created). Files are created
+with `create_new`, so nothing is ever overwritten, and with mode 0600 on Unix.
+Copying them next to your media is your step; JizzCraft never writes there.
+
+| Library | NFO element |
+| --- | --- |
+| title, release date | `title`, `premiered` |
+| studio | `studio` |
+| performers (listed order) | `actor` with `name` and `order` |
+| tags (categories are not exported) | `tag` |
+| stars | `userrating` = stars x 2, unless `--no-ratings` |
+| play count, last played, resume point | `playcount`, `lastplayed`, `resume/position`, only with `--history` |
+| external ids | `uniqueid type="<scheme>"` (`phash.stash` is left out) |
+| fingerprint, oshash | `uniqueid type="jizzcraft-fp1"` and `type="oshash"`, so the importer finds the item again wherever the files go |
+
+Private performers, studios and tags are left out unless `--private`. Only
+videos are exported. A video with no exported field gets no file; two videos
+that differ only by extension (`a.mp4`, `a.mkv`) would share `a.nfo`, so the
+first one wins. Writing the same library twice into two empty folders gives
+byte-identical trees.
 
 ## Funscripts
 

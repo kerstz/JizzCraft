@@ -110,6 +110,12 @@ impl JizzApp {
         );
         item(
             ui,
+            crate::i18n::tr("Export NFO files to a folder…"),
+            "meta.export_nfo",
+            json!({}),
+        );
+        item(
+            ui,
             crate::i18n::tr("Import from other apps…"),
             "interop.open",
             json!({}),
@@ -348,7 +354,7 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
                 && args.get("dest").is_none()
                 && args.get("ack_clear").and_then(Value::as_bool) != Some(true)
             {
-                app.vault_ui.warn_export(args.clone());
+                app.vault_ui.warn_clear_export("meta.export", args.clone());
                 return Ok(json!({ "warning": "export is not encrypted" }));
             }
             let args2 = args.clone();
@@ -372,6 +378,40 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
                     t += &format!(" · {} skipped (run Fingerprint first)", r.skipped_no_fp);
                 }
                 Ok(t)
+            });
+            Ok(json!({ "started": true }))
+        },
+    );
+    reg.register(
+        "meta.export_nfo",
+        "Write Kodi-style .nfo files outside every library folder: {dest?, include_private?, ratings?=true, history?} (folder dialog when dest is omitted)",
+        |app, args| {
+            // The files are clear text even when the library is encrypted.
+            if app.opener.key.is_some()
+                && args.get("dest").is_none()
+                && args.get("ack_clear").and_then(Value::as_bool) != Some(true)
+            {
+                app.vault_ui
+                    .warn_clear_export("meta.export_nfo", args.clone());
+                return Ok(json!({ "warning": "export is not encrypted" }));
+            }
+            let flag = |k: &str, d: bool| args.get(k).and_then(Value::as_bool).unwrap_or(d);
+            let o = jizzcraft_core::interop::nfo::NfoExportOpts {
+                include_private: flag("include_private", false),
+                ratings: flag("ratings", true),
+                history: flag("history", false),
+            };
+            let dest = args.get("dest").and_then(Value::as_str).map(PathBuf::from);
+            app.spawn_job("NFO export", move |db| {
+                let dest = dest
+                    .or_else(|| rfd::FileDialog::new().pick_folder())
+                    .ok_or_else(|| "cancelled".to_owned())?;
+                let r = jizzcraft_core::interop::nfo::export_nfo(db, &dest, &o)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "{} files written · {} empty · {} skipped",
+                    r.written, r.skipped_empty, r.skipped_unsafe
+                ))
             });
             Ok(json!({ "started": true }))
         },

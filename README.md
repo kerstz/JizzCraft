@@ -136,6 +136,7 @@ What changed in this version: [CHANGELOG.md](CHANGELOG.md).
 **Library.** Import a folder (native dialog) and JizzCraft indexes images and videos recursively. Symbolic links and hidden folders are skipped, Unicode names are fine, duplicate imports are no-ops, and a file that went missing stays flagged instead of silently dropped. Search is full text (SQLite FTS5) over file names, tags, categories and marker labels: case and accent insensitive, every word a prefix. Filter by Images / Videos / Favorites, sort by name, date added, size, duration, rating or play history.
 
 - **Views**: Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers, plus your own saved views and a folder tree with counts.
+- **Interop**: reads NFO files, Stash exports and funscripts, finds possible duplicates by look, writes NFO files outside your library; never a server. See [docs/interop.md](docs/interop.md).
 - **Organise**: 0–5 star ratings, a reversible *hide* (a database flag, nothing else), playlists, categories (a tree) and tags; private tags and categories are not indexed for search. Multi-select with bulk rate, favorite, hide and "Add to". See [docs/organise.md](docs/organise.md).
 - **Inbox triage**: review new imports one at a time with `V`: keep, hide, favorite, undo. Nothing is ever deleted. Tinder for files, without the matches and without the regrets.
 - **Moves are recognised**: once files are fingerprinted (size plus the first and last 64 KiB), a renamed or moved file keeps its rating, history and markers at the next rescan. It judges a file by its cover and its last page. You can rename `definitely_not_that.mp4` all you like; it will still know.
@@ -312,7 +313,7 @@ What it exposes: your IP is visible to the indexers you configure, to BitTorrent
 
 ## Roadmap
 
-YUV→RGB in a shader, embedded subtitles and audio tracks for local files, perceptual-hash duplicates, file watching, sandboxed decoding, AUR/Flatpak/AppImage, and real-hardware runs on Windows and macOS. The full list, including what is explicitly not planned, is in [ROADMAP.md](ROADMAP.md). Features are proposed and voted on in the open: [docs/feature-process.md](docs/feature-process.md). The app never contacts GitHub by itself.
+YUV→RGB in a shader, embedded subtitles and audio tracks for local files, file watching, sandboxed decoding, AUR/Flatpak/AppImage, and real-hardware runs on Windows and macOS. The full list, including what is explicitly not planned, is in [ROADMAP.md](ROADMAP.md). Features are proposed and voted on in the open: [docs/feature-process.md](docs/feature-process.md). The app never contacts GitHub by itself.
 
 ## Contributing and security
 

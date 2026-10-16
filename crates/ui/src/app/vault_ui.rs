@@ -254,8 +254,9 @@ impl Dialog {
 #[derive(Default)]
 pub(super) struct VaultUi {
     pub(super) dialog: Option<Dialog>,
-    /// `meta.export` arguments waiting for the user to accept a clear file.
-    pub(super) export_warn: Option<Value>,
+    /// Command and arguments of a clear-text export (`meta.export`,
+    /// `meta.export_nfo`) waiting for the user to accept an unencrypted file.
+    pub(super) export_warn: Option<(&'static str, Value)>,
     /// Playlist whose `.m3u8` export waits for the user to accept that the
     /// file lists media paths in clear.
     pub(super) m3u_warn: Option<i64>,
@@ -266,8 +267,8 @@ impl VaultUi {
         self.dialog = Some(Dialog::new(kind));
     }
 
-    pub(super) fn warn_export(&mut self, args: Value) {
-        self.export_warn = Some(args);
+    pub(super) fn warn_clear_export(&mut self, cmd: &'static str, args: Value) {
+        self.export_warn = Some((cmd, args));
     }
 }
 
@@ -561,11 +562,19 @@ impl JizzApp {
             .default_width(420.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                let nfo = self
+                    .vault_ui
+                    .export_warn
+                    .as_ref()
+                    .is_some_and(|(c, _)| *c == "meta.export_nfo");
                 ui.add(
-                    egui::Label::new(tr(
-                        "This JSON file is not encrypted, even though your library is. \
-                         Anyone who can read the file can read what it contains.",
-                    ))
+                    egui::Label::new(if nfo {
+                        tr("These .nfo files are not encrypted, even though your library is. \
+                            Anyone who can read them can read the titles, performers, tags and ratings they contain.")
+                    } else {
+                        tr("This JSON file is not encrypted, even though your library is. \
+                           Anyone who can read the file can read what it contains.")
+                    })
                     .wrap(),
                 );
                 ui.add_space(6.0);
@@ -579,9 +588,9 @@ impl JizzApp {
                 });
             });
         if proceed {
-            if let Some(Value::Object(mut a)) = self.vault_ui.export_warn.take() {
+            if let Some((cmd, Value::Object(mut a))) = self.vault_ui.export_warn.take() {
                 a.insert("ack_clear".into(), json!(true));
-                self.push("meta.export", Value::Object(a));
+                self.push(cmd, Value::Object(a));
             }
         } else if cancel || !open {
             self.vault_ui.export_warn = None;

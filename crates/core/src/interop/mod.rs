@@ -7,6 +7,7 @@
 //! is rolled back, so its counts are exact.
 
 pub mod nfo;
+pub mod nfo_export;
 pub mod stash;
 
 use crate::commands::{HasLibrary, Registry};
@@ -152,6 +153,7 @@ pub fn opts_from_args(a: &Value) -> Result<ImportOpts> {
 }
 
 pub fn register<C: HasLibrary>(reg: &mut Registry<C>) {
+    nfo_export::register(reg);
     reg.register(
         "meta.import_stash",
         "Read a Stash JSON export folder onto matching items (dry run unless dry_run is false): {dir, dry_run?=true, overwrite?, ratings?, history?}",

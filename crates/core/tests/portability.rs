@@ -469,5 +469,24 @@ fn engine_never_touches_media() {
     run(&mut db, "tag.delete", json!({ "id": t1 }));
     run(&mut db, "playlist.delete", json!({ "id": pl }));
 
+    // NFO files go outside every library; into the library is refused.
+    run(
+        &mut db,
+        "meta.export_nfo",
+        json!({ "dest": work.path().join("nfo"), "history": true }),
+    );
+    assert!(
+        reg.run(&mut db, "meta.export_nfo", json!({ "dest": t.path() }))
+            .is_err()
+    );
+    assert!(
+        reg.run(
+            &mut db,
+            "meta.export_nfo",
+            json!({ "dest": t.path().join("inside") })
+        )
+        .is_err()
+    );
+
     assert_eq!(hash_tree(t.path()), before, "media tree changed");
 }

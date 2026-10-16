@@ -13,6 +13,12 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Export NFO files (Kodi style) with titles, dates, studio, performers, tags,
+  ratings and, on request, play history and private entries. Written only to
+  an empty or new folder outside every library folder (symlinks resolved),
+  never overwriting, mode 0600; the app warns first on an encrypted library.
+  CLI `export-nfo`, Tools > "Export NFO files to a folder…". An `oshash`
+  uniqueid in an imported NFO is no longer stored as an external id.
 - Possible duplicates: videos get a visual fingerprint (25 frames decoded in
   memory, nothing written to disk, schema v7) and Tools > "Find possible
   duplicates…" groups the ones that look alike, with a similarity choice

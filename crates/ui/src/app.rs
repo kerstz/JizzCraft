@@ -4590,7 +4590,7 @@ mod tests {
         assert!(app.vault_ui.export_warn.as_ref().is_none());
         app.run("meta.export", json!({}));
         let held = app.vault_ui.export_warn.as_ref().cloned().expect("warned");
-        assert_eq!(held, json!({}));
+        assert_eq!(held, ("meta.export", json!({})));
         assert!(app.jobs_finished(), "no job was started");
         assert!(app.vault_ui.dialog.is_none());
         // A scripted export with a destination is an explicit choice.

@@ -29,7 +29,7 @@ Windows and macOS machines (issues #14, #15).
 - **Player**: NV12/I420 caps with YUV→RGB in a wgpu shader (skips the CPU
   `videoconvert`); embedded subtitles and an audio-track picker for local
   files; seamless segment loops.
-- **Library**: perceptual-hash duplicate detection, file watching instead
+- **Library**: file watching instead
   of manual rescan, a relink picker for moved library roots, a
   restore-from-backup flow.
 - **Privacy**: encrypted vault for the library database and thumbnail cache
