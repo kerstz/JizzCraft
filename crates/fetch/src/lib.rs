@@ -10,6 +10,7 @@ pub mod config;
 pub mod dash;
 pub mod detect;
 pub mod diskspace;
+pub mod download;
 pub mod errors;
 pub mod extract;
 pub mod fetch_error;

@@ -112,7 +112,7 @@ fn parse_content_range(v: &str) -> Option<(u64, u64, u64)> {
     (total > 0 && a <= b && b < total).then_some((a, b, total))
 }
 
-fn content_range(resp: &reqwest::Response) -> Option<(u64, u64, u64)> {
+pub(crate) fn content_range(resp: &reqwest::Response) -> Option<(u64, u64, u64)> {
     resp.headers()
         .get("content-range")
         .and_then(|v| v.to_str().ok())
@@ -120,7 +120,7 @@ fn content_range(resp: &reqwest::Response) -> Option<(u64, u64, u64)> {
 }
 
 /// Strong ETag, else Last-Modified.
-fn validator_of(resp: &reqwest::Response) -> Option<String> {
+pub(crate) fn validator_of(resp: &reqwest::Response) -> Option<String> {
     resp.headers()
         .get("etag")
         .and_then(|v| v.to_str().ok())
@@ -207,7 +207,7 @@ pub async fn send_ttfb(req: reqwest::RequestBuilder) -> Result<reqwest::Response
     }
 }
 
-fn status_reason(code: u16) -> String {
+pub(crate) fn status_reason(code: u16) -> String {
     match code {
         429 | 503 => format!("server busy (HTTP {code})"),
         300..=399 => format!("redirect refused (HTTP {code})"),
@@ -375,7 +375,7 @@ async fn renew_url(sh: &Shared, used: &str) -> bool {
 }
 
 /// Cheap jitter in 0.75..1.25 without a random-number dependency.
-fn jitter(d: Duration, salt: u64) -> Duration {
+pub(crate) fn jitter(d: Duration, salt: u64) -> Duration {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|t| t.subsec_nanos() as u64)

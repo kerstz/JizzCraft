@@ -21,6 +21,8 @@ pub struct Cfg {
     pub busy_idx: Option<(usize, usize)>,
     /// From this request on the ETag header changes (still 206).
     pub flip_etag_from: Option<usize>,
+    /// Every request gets an ETag of its own number.
+    pub etag_per_request: bool,
     /// Paths starting with this prefix get 403 from this request on.
     pub forbid: Option<(String, usize)>,
     /// Every request is answered with a redirect to this address.
@@ -57,6 +59,7 @@ impl Cfg {
             drop_idx: None,
             busy_idx: None,
             flip_etag_from: None,
+            etag_per_request: false,
             forbid: None,
             redirect_to: None,
             routes: Vec::new(),
@@ -165,10 +168,12 @@ fn handle(mut s: TcpStream, cfg: &Cfg, n: usize) -> std::io::Result<()> {
         )?;
         return Ok(());
     }
-    let etag = if cfg.flip_etag_from.is_some_and(|f| n >= f) {
-        "\"v2\""
+    let etag = if cfg.etag_per_request {
+        format!("\"r{n}\"")
+    } else if cfg.flip_etag_from.is_some_and(|f| n >= f) {
+        "\"v2\"".to_owned()
     } else {
-        "\"v1\""
+        "\"v1\"".to_owned()
     };
     let cut = in_range(cfg.drop_idx, n);
     let bare = path.split('?').next().unwrap_or("");
