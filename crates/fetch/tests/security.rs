@@ -530,6 +530,38 @@ fn streams_that_are_already_open_recheck_the_kill_switch() {
     }
 }
 
+/// A torrent is added over existing files in one place only, and only after
+/// `may_reuse` has shown they are the files this session wrote.
+#[test]
+fn overwrite_true_is_always_gated() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rs_files(&src, &mut files);
+    let (mut problems, mut found) = (Vec::new(), 0);
+    for f in &files {
+        let lines = prod_lines(f);
+        for (idx, (n, l)) in lines.iter().enumerate() {
+            if l.contains("overwrite: true") {
+                found += 1;
+                let from = idx.saturating_sub(40);
+                let window: String = lines[from..idx]
+                    .iter()
+                    .map(|(_, l)| l.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !window.contains("may_reuse(") {
+                    problems.push(format!(
+                        "src/{}:{n}: overwrite: true without may_reuse()",
+                        f.strip_prefix(&src).unwrap().display()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    assert!(found >= 1, "found no overwrite: true: pattern drifted");
+}
+
 // ---------------------------------------------------------------------------
 // Network feature: resolvers, secrets through real flows.
 // ---------------------------------------------------------------------------

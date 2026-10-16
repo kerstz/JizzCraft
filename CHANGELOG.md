@@ -8,6 +8,10 @@ anything may change between minor versions.
 ## [Unreleased]
 
 ### Fixed
+- Online edition: restarting a torrent that went to the error state over its
+  own partial files now first checks that every existing file is still the
+  one the session wrote (same inode, regular file, not longer than expected).
+  A swapped file or a link makes the restart refuse instead of writing through.
 - Online edition: an unreadable or corrupt `fetch.json` now fails closed. The
   "Block the network without a proxy" switch comes up on instead of silently
   reverting to off; the banner says how to go on.

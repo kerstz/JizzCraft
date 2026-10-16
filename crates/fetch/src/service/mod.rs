@@ -4,13 +4,17 @@
 //! - the service owns a private tokio runtime; callers never see async;
 //! - no socket is opened until the first search or add;
 //! - torrent file paths are validated with a `list_only` pass before anything
-//!   is written, and torrents never overwrite an existing file;
+//!   is written, and torrents never overwrite an existing file (the one
+//!   exception, restarting a torrent in the error state over its own partial
+//!   files, first shows every existing file to be the one this session wrote:
+//!   see `reuse`);
 //! - `forget` never deletes downloaded files;
 //! - no `tracing` subscriber is ever installed (librqbit logs torrent names).
 
 mod http;
 mod open;
 mod proxy;
+mod reuse;
 mod torrent;
 
 use crate::config::FetchConfig;

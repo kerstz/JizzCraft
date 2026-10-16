@@ -1,5 +1,6 @@
 //! Torrent session, add/list/pause/resume/forget and file readers.
 
+use super::reuse::{Stamp, may_reuse, stamp};
 use super::{FetchService, StreamReader, StreamTicket};
 use crate::config::{FetchConfig, ResumeOnStart};
 use crate::diskspace::{self, Fault, Verdict};
@@ -124,6 +125,9 @@ struct SharedInner {
     run_margin: Mutex<Option<u64>>,
     /// Peers given at add time, to feed a torrent that is started again.
     peers: Mutex<HashMap<usize, Vec<std::net::SocketAddr>>>,
+    /// Files this session saw being created, per torrent: what a restart
+    /// over the partial files is checked against (see `reuse`).
+    owned: Mutex<HashMap<usize, HashMap<PathBuf, Stamp>>>,
 }
 
 /// State shared between the service and its spawned tasks.
@@ -549,7 +553,10 @@ impl FetchService {
     /// there: it tries to create its files anew and refuses because they
     /// exist. It is then forgotten (files stay) and added again over its own
     /// partial files, with the same file selection and peers. The id changes.
-    /// Only torrents this session added get here, so the files are its own.
+    /// Only torrents this session added get here, and the torrent is added
+    /// over existing files only after `reuse::may_reuse` has shown that every
+    /// one of them is the same file this session wrote (same inode, regular,
+    /// not longer than the torrent says). Otherwise the restart is refused.
     async fn start_again(
         session: &Arc<Session>,
         shared: &TorrentShared,
@@ -572,6 +579,24 @@ impl FetchService {
             .ok()
             .and_then(|g| g.get(&id).cloned())
             .unwrap_or_default();
+        let files: Vec<(PathBuf, u64)> = h
+            .with_metadata(|m| {
+                m.file_infos
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| only.as_ref().is_none_or(|o| o.contains(i)))
+                    .map(|(_, f)| (f.relative_filename.clone(), f.len))
+                    .collect()
+            })
+            .map_err(|e| e.to_string())?;
+        let stamps = shared
+            .0
+            .owned
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&id).cloned())
+            .unwrap_or_default();
+        may_reuse(dir, &files, &stamps)?;
         session
             .delete(TorrentIdOrHash::Id(id), false)
             .await
@@ -599,6 +624,11 @@ impl FetchService {
             if !peers.is_empty() {
                 g.insert(new, peers);
             }
+        }
+        if let Ok(mut g) = shared.0.owned.lock()
+            && let Some(m) = g.remove(&id)
+        {
+            g.insert(new, m);
         }
         Ok(new)
     }
@@ -1050,6 +1080,9 @@ impl FetchService {
                 let mut v = Vec::with_capacity(items.len());
                 for (id, h) in items {
                     let s = h.stats();
+                    if s.error.is_none() {
+                        record_owned(&shared, id, &h);
+                    }
                     let disk_full = s.error.as_deref().is_some_and(is_enospc);
                     // Paused by the watchdog: typed status until it runs again.
                     let halted = shared.halted(id).filter(|_| {
@@ -1191,9 +1224,41 @@ impl FetchService {
     /// We forget; we do not shred.
     pub fn forget(&self, id: usize) {
         if let Some(s) = self.session.get().cloned() {
+            if let Ok(mut g) = self.tor.0.owned.lock() {
+                g.remove(&id);
+            }
             self.rt().spawn(async move {
                 let _ = s.delete(TorrentIdOrHash::Id(id), false).await;
             });
+        }
+    }
+}
+
+/// Remember the identity of every selected file of torrent `id` that exists
+/// and was not stamped yet. A file that is a link, or not there, is skipped.
+fn record_owned(shared: &TorrentShared, id: usize, h: &Arc<librqbit::ManagedTorrent>) {
+    let only = h.only_files();
+    let base = h.output_folder().to_path_buf();
+    let Ok(files) = h.with_metadata(|m| {
+        m.file_infos
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| only.as_ref().is_none_or(|o| o.contains(i)))
+            .map(|(_, f)| (f.relative_filename.clone(), f.len))
+            .collect::<Vec<_>>()
+    }) else {
+        return;
+    };
+    let Ok(mut g) = shared.0.owned.lock() else {
+        return;
+    };
+    let m = g.entry(id).or_default();
+    for (rel, len) in files {
+        if !m.contains_key(&rel)
+            && path_is_safe(&rel)
+            && let Some(st) = stamp(&base.join(&rel), len)
+        {
+            m.insert(rel, st);
         }
     }
 }

@@ -82,7 +82,11 @@ not patch librqbit; it guarantees, on the paths it controls:
   from there (it refuses to "create" files that exist), so it is forgotten
   (files kept) and added again over its own partial files with the same file
   selection and peers; its id changes. This is the one place where a torrent
-  is added with `overwrite: true`, and only for a torrent this session added.
+  is added with `overwrite: true`, and only after every existing file is shown
+  to be the same inode it wrote (a regular file, never longer than the torrent
+  says; a link or a replaced file makes the restart refuse with "files
+  changed on disk; refused"). `security.rs::overwrite_true_is_always_gated`
+  keeps it that way.
 
 Not guaranteed: a disk that fills between two checks (another program
 writing fast) can still hit ENOSPC, and then the engine's own panic or fatal
