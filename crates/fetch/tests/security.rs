@@ -430,7 +430,13 @@ fn every_network_entry_point_is_behind_the_kill_switch() {
     rs_files(&src, &mut files);
     let mut problems: Vec<String> = Vec::new();
     let (mut builders, mut sessions, mut senders) = (0, 0, 0);
-    let rel = |p: &Path| p.strip_prefix(&src).unwrap().display().to_string().replace('\\', "/");
+    let rel = |p: &Path| {
+        p.strip_prefix(&src)
+            .unwrap()
+            .display()
+            .to_string()
+            .replace('\\', "/")
+    };
 
     for f in &files {
         let name = rel(f);
