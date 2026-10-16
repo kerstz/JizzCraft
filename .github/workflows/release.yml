@@ -120,15 +120,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-about --locked --features cli
-      - name: Build the zip
+      # The runner image normally ships Inno Setup; install it if it does not.
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'could not install Inno Setup' }
+          }
+      - name: Tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME != version $v" }
+      # Offline (default) edition, like the main Linux tarball. The online
+      # edition is not built for Windows yet.
+      - name: Build the zip and the installer (experimental)
         shell: pwsh
         run: ./packaging/windows/build.ps1
+      - name: Check the Windows files exist
+        shell: pwsh
+        run: |
+          $zip = @(Get-ChildItem dist -Filter 'JizzCraft-*-windows-x86_64.zip')
+          $exe = @(Get-ChildItem dist -Filter 'JizzCraft-*-windows-x86_64-setup.exe')
+          if ($zip.Count -ne 1 -or $exe.Count -ne 1) { throw "expected one zip and one installer in dist" }
+          Get-ChildItem dist | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: windows
+          if-no-files-found: error
           path: |
-            dist/JizzCraft-windows-x86_64.zip
-            dist/*-setup.exe
+            dist/JizzCraft-*-windows-x86_64.zip
+            dist/JizzCraft-*-windows-x86_64-setup.exe
 
   macos:
     name: macOS (.app zip, manual runs only)
@@ -176,7 +200,9 @@ jobs:
           make_latest: true
           body: |
             **Alpha release.** Linux is the tested platform. The Windows files are
-            experimental (never run on real hardware yet) and there is no macOS build.
+            experimental (never run on real hardware yet): `JizzCraft-*-windows-x86_64.zip`
+            (portable) and `JizzCraft-*-windows-x86_64-setup.exe` (unsigned installer), offline
+            edition only. There is no macOS build.
 
             Install on Linux in one command:
 

@@ -7,6 +7,15 @@ if (-not $gst) { $gst = 'C:\gstreamer\1.0\msvc_x86_64' }
 $env:PKG_CONFIG_PATH = "$gst\lib\pkgconfig"
 $env:PATH = "$gst\bin;$env:PATH"
 
+# Version for the file names: JIZZCRAFT_VERSION (CI), else the workspace version.
+$ver = $env:JIZZCRAFT_VERSION
+if (-not $ver) {
+  $ver = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+}
+if (-not $ver) { throw 'cannot determine the version' }
+$env:JIZZCRAFT_VERSION = $ver
+$zip = "dist\JizzCraft-$ver-windows-x86_64.zip"
+
 cargo build --release --locked -p jizzcraft -p jizzcraft-cli
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 
@@ -36,6 +45,14 @@ $scanner = "$gst\libexec\gstreamer-1.0\gst-plugin-scanner.exe"
 if (Test-Path $scanner) { Copy-Item $scanner $out }
 # Only the plugins the player needs: never gstsoup, gstgio or the adaptive demuxers.
 Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE, NOTICE $out
+@(
+  "EXPERIMENTAL Windows build.",
+  "",
+  "This build compiles and passes the automated tests on a CI runner, but it has",
+  "not been validated on real Windows hardware. Expect rough edges and report them.",
+  "Builds are unsigned: SmartScreen will warn (More info, then Run anyway).",
+  "See docs/windows.md in the source repository."
+) | Set-Content -Encoding utf8 "$out\EXPERIMENTAL.txt"
 # Third-party licences of the Rust crates (cargo-about; required in CI).
 $lic = "$out\licenses"
 New-Item -ItemType Directory -Force "$lic\gstreamer" | Out-Null
@@ -73,10 +90,15 @@ foreach ($f in Get-ChildItem "$out\gstreamer\lib\gstreamer-1.0" -Filter *.dll) {
   $src += "  $($f.Name)  $($f.VersionInfo.ProductVersion)"
 }
 $src | Set-Content -Encoding utf8 "$lic\gstreamer\SOURCE.txt"
-Compress-Archive -Path $out -DestinationPath dist\JizzCraft-windows-x86_64.zip -Force
-Write-Host 'dist\JizzCraft-windows-x86_64.zip'
+Compress-Archive -Path $out -DestinationPath $zip -Force
+Write-Host $zip
 
 # Installer (Inno Setup), when ISCC is available.
 $iscc = Get-Command iscc -ErrorAction SilentlyContinue
 if (-not $iscc) { $c = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"; if (Test-Path $c) { $iscc = $c } }
-if ($iscc) { & $iscc packaging\windows\jizzcraft.iss; Write-Host 'installer built' }
+if ($iscc) {
+  & $iscc packaging\windows\jizzcraft.iss
+  if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+  Write-Host 'installer built'
+} elseif ($ci) { throw 'Inno Setup (ISCC) is required in CI' }
+else { Write-Warning 'Inno Setup not found: installer not built' }
