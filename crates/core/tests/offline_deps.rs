@@ -4,7 +4,9 @@
 //! The lock file lists optional dependencies even when their feature is off,
 //! so this asks `cargo tree`, which resolves features like a real build.
 
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 const BANNED: &[&str] = &[
     "reqwest",
@@ -47,7 +49,26 @@ const BANNED: &[&str] = &[
     "gtk",
 ];
 
+/// Results of `cargo tree`, keyed by arguments. The lock is held while cargo
+/// runs, so the tests (parallel threads) never contend for cargo's package
+/// cache lock, which made some of them fail on Windows CI.
+static TREES: OnceLock<Mutex<HashMap<Vec<String>, Vec<String>>>> = OnceLock::new();
+
 fn tree(args: &[&str]) -> Vec<String> {
+    let key: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+    let mut cache = TREES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(hit) = cache.get(&key) {
+        return hit.clone();
+    }
+    let names = run_tree(args);
+    cache.insert(key, names.clone());
+    names
+}
+
+fn run_tree(args: &[&str]) -> Vec<String> {
     let out = Command::new(env!("CARGO"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args([
