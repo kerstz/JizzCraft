@@ -11,6 +11,7 @@
 //! - `forget` never deletes downloaded files;
 //! - no `tracing` subscriber is ever installed (librqbit logs torrent names).
 
+mod extract;
 mod http;
 mod open;
 mod proxy;
@@ -33,6 +34,9 @@ pub use torrent::{
     TorrentStatus, path_is_safe,
 };
 
+#[doc(hidden)]
+pub use extract::set_page_deadline;
+pub use extract::{ExtractMode, Extraction, Via};
 pub use proxy::{Connection, ProxyProbe, connection_state, probe_proxy};
 pub(crate) use proxy::{current_proxy, proxy_blocked, same_origin_policy};
 

@@ -186,7 +186,10 @@ fn mock(mode: Mode, auth: Option<(&'static str, &'static str)>, h: Handler) -> M
                         .map(str::to_owned)
                 });
                 let body = h(&host, &path);
-                if body.is_empty() {
+                if body.starts_with(b"HTTP/1.1 ") {
+                    // The handler wrote the whole response (a redirect, say).
+                    let _ = s.write_all(&body);
+                } else if body.is_empty() {
                     let _ = write!(
                         s,
                         "HTTP/1.1 404 X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -220,7 +223,11 @@ fn mock(mode: Mode, auth: Option<(&'static str, &'static str)>, h: Handler) -> M
 /// setting, so a request to it must go through the proxy). It counts every
 /// connection: a "direct" connection that escaped the proxy shows up here.
 fn trap() -> (u16, Arc<AtomicUsize>) {
-    let l = TcpListener::bind("127.0.0.2:0").unwrap();
+    trap_on("127.0.0.2")
+}
+
+fn trap_on(ip: &str) -> (u16, Arc<AtomicUsize>) {
+    let l = TcpListener::bind(format!("{ip}:0")).unwrap();
     let port = l.local_addr().unwrap().port();
     let hits = Arc::new(AtomicUsize::new(0));
     let h2 = hits.clone();
@@ -590,4 +597,152 @@ fn the_proxy_pair_is_filled_in_and_the_media_goes_through_the_proxy() {
     );
     let hosts = m.hosts();
     assert!(hosts.iter().any(|h| h == "media.invalid"), "{hosts:?}");
+}
+
+const PAGE_HOST: &str = "site.example.invalid";
+
+#[test]
+fn extracted_inward_urls_never_connect() {
+    use jizzcraft_fetch::service::ExtractMode;
+    let _g = serial();
+    let (p1, t1) = trap_on("127.0.0.1");
+    let (p2, t2) = trap();
+    let html = format!(
+        r#"<video src="http://127.0.0.1:{p1}/a.mp4"></video>
+        <video src="http://localhost:{p1}/b.mp4"></video>
+        <video src="http://[::1]:{p1}/c.mp4"></video>
+        <video src="http://0x7f000001:{p1}/d.mp4"></video>
+        <video src="http://127.1:{p1}/e.mp4"></video>
+        <video src="http://127.0.0.2:{p2}/f.mp4"></video>
+        <video src="http://127.0.0.1\@x.invalid:{p1}/g.mp4"></video>
+        <meta property="og:video" content="http://192.168.1.1/h.mp4">
+        <iframe src="http://192.168.1.1/embed"></iframe>
+        <iframe src="http://127.0.0.1:{p1}/embed"></iframe>"#
+    );
+    let mock = mock(
+        Mode::Serve,
+        None,
+        Arc::new(move |host, path| {
+            if host == PAGE_HOST && path == "/" {
+                html.clone().into_bytes()
+            } else {
+                Vec::new()
+            }
+        }),
+    );
+    let e = env(FetchConfig {
+        proxy: Some(Secret::new(mock.url())),
+        ..Default::default()
+    });
+    for mode in [ExtractMode::Auto, ExtractMode::Builtin] {
+        let r = wait(e.svc.extract(format!("http://{PAGE_HOST}/"), mode));
+        assert_eq!(r.unwrap_err(), "no media");
+    }
+    assert!(
+        wait(
+            e.svc
+                .open_any(format!("http://{PAGE_HOST}/"), StreamOpts::default())
+        )
+        .is_err()
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t1.load(Ordering::SeqCst), 0, "loopback was contacted");
+    assert_eq!(t2.load(Ordering::SeqCst), 0, "a request escaped the proxy");
+    let hosts = mock.hosts();
+    assert!(
+        !hosts.is_empty() && hosts.iter().all(|h| h == PAGE_HOST),
+        "{hosts:?}"
+    );
+}
+
+#[test]
+fn page_redirect_to_loopback_is_stopped() {
+    use jizzcraft_fetch::service::ExtractMode;
+    let _g = serial();
+    let (p1, t1) = trap_on("127.0.0.1");
+    let mock = mock(
+        Mode::Serve,
+        None,
+        Arc::new(move |host, path| {
+            if host == PAGE_HOST && path == "/r" {
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{p1}/x.mp4\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .into_bytes()
+            } else {
+                Vec::new()
+            }
+        }),
+    );
+    let e = env(FetchConfig {
+        proxy: Some(Secret::new(mock.url())),
+        ..Default::default()
+    });
+    let r = wait(
+        e.svc
+            .extract(format!("http://{PAGE_HOST}/r"), ExtractMode::Builtin),
+    );
+    assert!(r.is_err());
+    assert!(
+        wait(
+            e.svc
+                .open_any(format!("http://{PAGE_HOST}/r"), StreamOpts::default())
+        )
+        .is_err()
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t1.load(Ordering::SeqCst), 0, "the redirect was followed");
+    assert!(mock.hosts().iter().all(|h| h == PAGE_HOST));
+}
+
+#[test]
+fn require_proxy_without_proxy_extraction_connects_to_nothing() {
+    use jizzcraft_fetch::config::{ExtractorMode, SaveSettings};
+    use jizzcraft_fetch::service::ExtractMode;
+    let _g = serial();
+    let (tport, hits) = trap();
+    let target = format!("127.0.0.2:{tport}");
+    for extractor in [
+        ExtractorMode::First,
+        ExtractorMode::Fallback,
+        ExtractorMode::Off,
+    ] {
+        let e = env(FetchConfig {
+            require_proxy: true,
+            save: SaveSettings {
+                extractor,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        for mode in [
+            ExtractMode::Auto,
+            ExtractMode::Builtin,
+            ExtractMode::Resolvers,
+        ] {
+            let r = wait(e.svc.extract(format!("http://{target}/page"), mode));
+            let msg = r.unwrap_err();
+            assert!(
+                jizzcraft_fetch::errors::classify(&msg) != jizzcraft_fetch::errors::GENERIC,
+                "{msg}"
+            );
+            if mode != ExtractMode::Resolvers {
+                assert_eq!(
+                    jizzcraft_fetch::errors::classify(&msg),
+                    jizzcraft_fetch::errors::PROXY_REQUIRED,
+                    "{extractor:?}/{mode:?}"
+                );
+            }
+        }
+        let r = wait(
+            e.svc
+                .open_any(format!("http://{target}/page"), StreamOpts::default()),
+        );
+        assert_eq!(
+            jizzcraft_fetch::errors::classify(&r.err().unwrap()),
+            jizzcraft_fetch::errors::PROXY_REQUIRED
+        );
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "something connected");
 }

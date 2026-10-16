@@ -150,3 +150,37 @@ fn unreadable_config_turns_the_kill_switch_on() {
     assert!(!c.load_error && !c.require_proxy);
     assert!(!FetchConfig::default().require_proxy);
 }
+
+#[test]
+fn save_settings_default_and_old_files_still_load() {
+    use jizzcraft_fetch::config::{DEFAULT_PAGE_UA, ExtractorMode, SaveSettings};
+    let c: FetchConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(c.save, SaveSettings::default());
+    assert_eq!(c.save.extractor, ExtractorMode::Fallback);
+    assert_eq!(c.save.concurrency(), 2);
+    assert!(c.save.import_after && c.save.follow_embeds);
+    assert_eq!(c.save.user_agent(), DEFAULT_PAGE_UA);
+    let c: FetchConfig = serde_json::from_str(
+        r#"{"save":{"concurrency":99,"extractor":"first","page_user_agent":"bad\u0007ua"}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.save.concurrency(), 4);
+    assert_eq!(c.save.extractor, ExtractorMode::First);
+    assert_eq!(c.save.user_agent(), DEFAULT_PAGE_UA);
+    let s = SaveSettings {
+        concurrency: 0,
+        page_user_agent: Some("Plain UA/1.0".into()),
+        ..Default::default()
+    };
+    assert_eq!(s.concurrency(), 1);
+    assert_eq!(s.user_agent(), "Plain UA/1.0");
+    assert_eq!(ExtractorMode::parse("off"), Some(ExtractorMode::Off));
+    assert_eq!(ExtractorMode::parse("x"), None);
+    let mut c = FetchConfig::default();
+    assert_eq!(c.effective_save_dir(), c.effective_download_dir());
+    c.save.dir = Some("/somewhere/saved".into());
+    assert_eq!(
+        c.effective_save_dir(),
+        std::path::PathBuf::from("/somewhere/saved")
+    );
+}

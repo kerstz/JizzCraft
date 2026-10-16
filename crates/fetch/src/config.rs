@@ -97,6 +97,88 @@ impl Default for BrowserPrefs {
     }
 }
 
+/// Which page readers run for an address that is a page, and in what order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtractorMode {
+    /// The built-in reader first, then the user's resolver tools.
+    First,
+    /// The user's resolver tools first, then the built-in reader.
+    #[default]
+    Fallback,
+    /// Only the user's resolver tools.
+    Off,
+}
+
+impl ExtractorMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "first" => Some(Self::First),
+            "fallback" => Some(Self::Fallback),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// The User-Agent the page reader sends unless the user sets another: a
+/// generic desktop browser string, nothing that names this program.
+pub const DEFAULT_PAGE_UA: &str =
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
+
+/// Saving videos and reading pages (online edition). Nothing here is a secret.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaveSettings {
+    /// Where saved videos go (absolute). `None`: the download folder.
+    pub dir: Option<PathBuf>,
+    /// Saves running at once; kept between 1 and 4.
+    pub concurrency: u8,
+    /// Saved videos are added to the library when a batch finishes.
+    pub import_after: bool,
+    pub extractor: ExtractorMode,
+    /// Look inside the embedded players (iframes) of a page that shows no
+    /// video itself.
+    pub follow_embeds: bool,
+    /// User-Agent for page and media requests. `None`: [`DEFAULT_PAGE_UA`].
+    pub page_user_agent: Option<String>,
+}
+
+impl Default for SaveSettings {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            concurrency: 2,
+            import_after: true,
+            extractor: ExtractorMode::default(),
+            follow_embeds: true,
+            page_user_agent: None,
+        }
+    }
+}
+
+impl SaveSettings {
+    /// Saves at once, clamped to 1..=4.
+    pub fn concurrency(&self) -> usize {
+        usize::from(self.concurrency.clamp(1, 4))
+    }
+
+    /// The User-Agent in force: the user's if it is printable ASCII and
+    /// short, else the generic default.
+    pub fn user_agent(&self) -> &str {
+        match self.page_user_agent.as_deref() {
+            Some(u)
+                if !u.is_empty()
+                    && u.len() <= 256
+                    && u.bytes().all(|b| (0x20..0x7f).contains(&b)) =>
+            {
+                u
+            }
+            _ => DEFAULT_PAGE_UA,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FetchConfig {
     #[serde(default)]
@@ -150,6 +232,9 @@ pub struct FetchConfig {
     /// Browser helper preferences (online edition).
     #[serde(default)]
     pub browser: BrowserPrefs,
+    /// Page reading and saving preferences.
+    #[serde(default)]
+    pub save: SaveSettings,
     /// Runtime only: the file on disk was unreadable and was set aside as
     /// `fetch.json.corrupt-<unixtime>`; defaults are in use, except that
     /// `require_proxy` is on. Never saved.
@@ -181,6 +266,7 @@ impl Default for FetchConfig {
             seed_minutes: None,
             bind_interface: None,
             browser: BrowserPrefs::default(),
+            save: SaveSettings::default(),
             load_error: false,
             disguised: false,
         }
@@ -317,6 +403,14 @@ impl FetchConfig {
         directories::UserDirs::new()
             .and_then(|u| u.download_dir().map(|p| p.join(leaf)))
             .unwrap_or_else(|| jizzcraft_core::paths::state_dir().join("downloads"))
+    }
+
+    /// Where saved videos go: the chosen save folder, else the download folder.
+    pub fn effective_save_dir(&self) -> PathBuf {
+        self.save
+            .dir
+            .clone()
+            .unwrap_or_else(|| self.effective_download_dir())
     }
 
     pub fn next_indexer_id(&self) -> u32 {

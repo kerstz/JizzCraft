@@ -9,6 +9,8 @@
 //! recorded, never followed.
 
 pub mod html;
+#[cfg(feature = "network")]
+pub mod resolve;
 pub mod scripts;
 pub mod signals;
 

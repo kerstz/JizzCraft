@@ -45,9 +45,10 @@ impl FetchService {
             .clone()
     }
 
-    fn spawn_open<F>(&self, fut: F) -> Receiver<Result<StreamTicket, String>>
+    pub(super) fn spawn_open<T, F>(&self, fut: F) -> Receiver<Result<T, String>>
     where
-        F: std::future::Future<Output = Result<StreamTicket, String>> + Send + 'static,
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
         let (tx, rx) = channel();
         let tok = self.cancel_token();
@@ -100,7 +101,7 @@ impl FetchService {
 }
 
 /// `Ok(None)`: the address is not media or a manifest (a page).
-async fn open_direct(
+pub(super) async fn open_direct(
     cfg: &FetchConfig,
     handle: tokio::runtime::Handle,
     url: String,
@@ -272,7 +273,7 @@ async fn resolve_and_open(
 }
 
 /// How specific a failure is, to keep the most useful one across resolvers.
-fn fault_rank(e: &str) -> u8 {
+pub(super) fn fault_rank(e: &str) -> u8 {
     use crate::resolver::{Fault, NEEDS_SAVING};
     if let Some(f) = Fault::from_keyword(e) {
         f.rank()
@@ -294,19 +295,46 @@ async fn open_any_task(
     if let Some(t) = open_direct(&cfg, handle.clone(), url.clone(), &opts, None, None).await? {
         return Ok(t);
     }
-    // Not media: a page. Each enabled resolver in order, first usable wins.
+    // Not media: a page. The built-in reader and the user's resolvers, in the
+    // order the `extractor` setting says; the first usable answer wins.
     let mut blocked = false;
     let mut best = String::from("no media");
-    for def in cfg.resolvers.iter().filter(|r| r.enabled) {
-        if cfg.require_proxy && (current_proxy().is_none() || !def.proxy_aware()) {
-            blocked = true;
-            continue;
-        }
-        match resolve_and_open(&cfg, handle.clone(), def.clone(), url.clone(), &opts).await {
-            Ok(t) => return Ok(t),
-            Err(e) => {
-                if fault_rank(&e) > fault_rank(&best) {
-                    best = e;
+    for reader in super::extract::reader_order(cfg.save.extractor) {
+        match reader {
+            super::extract::Reader::Resolvers => {
+                for def in cfg.resolvers.iter().filter(|r| r.enabled) {
+                    if cfg.require_proxy && (current_proxy().is_none() || !def.proxy_aware()) {
+                        blocked = true;
+                        continue;
+                    }
+                    match resolve_and_open(&cfg, handle.clone(), def.clone(), url.clone(), &opts)
+                        .await
+                    {
+                        Ok(t) => return Ok(t),
+                        Err(e) => {
+                            if fault_rank(&e) > fault_rank(&best) {
+                                best = e;
+                            }
+                        }
+                    }
+                }
+            }
+            super::extract::Reader::Builtin => {
+                match super::extract::extract_and_open(
+                    cfg.clone(),
+                    handle.clone(),
+                    url.clone(),
+                    &opts,
+                )
+                .await
+                {
+                    Ok(t) => return Ok(t),
+                    Err(e) => {
+                        blocked |= e == "proxy required";
+                        if fault_rank(&e) > fault_rank(&best) {
+                            best = e;
+                        }
+                    }
                 }
             }
         }

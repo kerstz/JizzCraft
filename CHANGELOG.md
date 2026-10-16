@@ -18,6 +18,17 @@ anything may change between minor versions.
   `lookup --oshash|--fp`; metadata export version 3 matches by it. Interop
   guardrails in AGENTS.md and `docs/interop.md`; HTTP server and DLNA/WebDAV
   crates are banned in every build.
+- Online edition: a built-in page reader. Playing a page address that is not a
+  media file now reads the page itself (standard markup only, bounded) and
+  streams the video it declares, next to the resolver tools you installed.
+  New `save.extractor` setting in `fetch.json`: `fallback` (default: your tools
+  first), `first` (built-in reader first) or `off`. It is GET-only, sends no
+  cookie, submits no form, follows no meta refresh and runs no script; pages
+  that need scripts, an age confirmation, a sign-in or DRM are declined with a
+  plain sentence. A page with no video of its own may show one inside an
+  embedded player; that is looked into once (up to 3 players, setting
+  `save.follow_embeds`). Every address found in a page passes the same
+  loopback/LAN and kill-switch checks as any other request.
 - Online edition, groundwork for a generic page reader: a pure, bounded page
   scanner (`jizzcraft_fetch::extract::scan`) that reads standard markup only
   (JSON-LD VideoObject, Open Graph, `<video>` / `<source>`, alternate
