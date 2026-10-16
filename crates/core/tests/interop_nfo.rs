@@ -326,6 +326,47 @@ fn ratings_and_history_need_their_switches() {
 }
 
 #[test]
+fn watched_counts_as_one_play_only_with_history() {
+    let body = "<movie><title>T</title><watched>true</watched><lockdata>true</lockdata>\
+                <dateadded>2021-03-04 01:01:01</dateadded></movie>";
+    let d = parse_nfo(body.as_bytes()).unwrap();
+    assert_eq!((d.watched, d.playcount, d.ignored), (Some(true), None, 2));
+
+    let mut l = lib(&["a.mp4", "b.mp4"]);
+    nfo(&l.root, "a.nfo", body);
+    nfo(
+        &l.root,
+        "b.nfo",
+        &body.replace("<title>", "<playcount>4</playcount><title>"),
+    );
+    run(&mut l.db, None, &apply());
+    assert_eq!(
+        find(&l.db, "a.mp4").play_count,
+        0,
+        "needs the history switch"
+    );
+    let h = ImportOpts {
+        history: true,
+        ..apply()
+    };
+    let dry = run(&mut l.db, None, &ImportOpts { dry_run: true, ..h });
+    assert_eq!(find(&l.db, "a.mp4").play_count, 0);
+    let real = run(&mut l.db, None, &h);
+    assert_eq!(
+        (dry.applied, dry.ignored_fields),
+        (real.applied, real.ignored_fields)
+    );
+    assert_eq!(find(&l.db, "a.mp4").play_count, 1);
+    assert_eq!(find(&l.db, "b.mp4").play_count, 4, "an explicit count wins");
+    // Already watched more often: unchanged.
+    l.db.conn_for_tests()
+        .execute("UPDATE media SET play_count = 6", [])
+        .unwrap();
+    run(&mut l.db, None, &h);
+    assert_eq!(find(&l.db, "a.mp4").play_count, 6);
+}
+
+#[test]
 fn fill_versus_overwrite() {
     let mut l = lib(&["a.mp4"]);
     let id = find(&l.db, "a.mp4").id;

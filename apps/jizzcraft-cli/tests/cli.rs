@@ -538,6 +538,59 @@ fn import_nfo_is_a_dry_run_unless_applied() {
 }
 
 #[test]
+fn export_nfo_lock_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(
+        lib.path().join("clip.mp4"),
+        b"not a real video, only a name",
+    )
+    .unwrap();
+    json(&cli(
+        home.path(),
+        &["--json", "scan", lib.path().to_str().unwrap()],
+    ));
+    let id = json(&cli(home.path(), &["--json", "query", "--type", "video"]))["items"][0]["id"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    json(&cli(
+        home.path(),
+        &["--json", "info", &id, "--title", "Quokka"],
+    ));
+
+    let read = |name: &str, extra: &[&str]| {
+        let dest = work.path().join(name);
+        let mut args = vec!["export-nfo", dest.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let out = cli(home.path(), &args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Counts only: no file or folder name on stdout.
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(!said.contains("clip") && !said.contains(".nfo"), "{said}");
+        assert!(said.contains("1 file(s) written"), "{said}");
+        let dir = std::fs::read_dir(&dest)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::read_to_string(dir.join("clip.nfo")).unwrap()
+    };
+    let plain = read("plain", &[]);
+    assert!(plain.contains("<title>Quokka</title>") && !plain.contains("lockdata"));
+    let locked = read("locked", &["--lock"]);
+    assert!(locked.contains("<lockdata>true</lockdata>"), "{locked}");
+    assert!(!locked.contains("dateadded"));
+    assert!(read("dated", &["--date-added"]).contains("<dateadded>"));
+}
+
+#[test]
 fn import_stash_is_a_dry_run_unless_applied() {
     let home = tempfile::tempdir().unwrap();
     let lib = tempfile::tempdir().unwrap();

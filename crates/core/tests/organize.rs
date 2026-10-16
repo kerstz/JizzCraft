@@ -870,6 +870,45 @@ fn m3u8_export_rules() {
     assert!(t.path().join("a.png").exists());
 }
 
+#[test]
+fn m3u8_refuses_a_destination_inside_a_library() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let mut db = file_lib(t.path());
+    let a = id_of(&db, "a.png");
+    let p = db.playlist_create("p", None).unwrap();
+    db.playlist_add(p, &[a], None).unwrap();
+    let o = M3uOpts::default();
+
+    assert!(db.export_m3u(p, &t.path().join("list.m3u8"), &o).is_err());
+    fs::create_dir_all(t.path().join("deep/er")).unwrap();
+    assert!(
+        db.export_m3u(p, &t.path().join("deep/er/list.m3u8"), &o)
+            .is_err()
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(t.path(), out.path().join("link")).unwrap();
+        assert!(
+            db.export_m3u(p, &out.path().join("link/list.m3u8"), &o)
+                .is_err()
+        );
+        assert!(
+            db.export_m3u(p, &out.path().join("link/deep/er/list.m3u8"), &o)
+                .is_err()
+        );
+    }
+    assert!(!t.path().join("list.m3u8").exists());
+    assert!(!t.path().join("deep/er/list.m3u8").exists());
+    let msg = db
+        .export_m3u(p, &t.path().join("list.m3u8"), &o)
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("outside every library folder"), "{msg}");
+    // Outside a library it still works.
+    db.export_m3u(p, &out.path().join("ok.m3u8"), &o).unwrap();
+}
+
 // ---- command surface ----------------------------------------------------------------------
 
 #[test]

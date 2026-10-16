@@ -192,6 +192,8 @@ fn round_trip_through_a_fresh_library_and_a_stable_second_export() {
     let (d1, d2) = (work.path().join("one"), work.path().join("two"));
     let o = NfoExportOpts {
         history: true,
+        lock: true,
+        date_added: true,
         ..opts()
     };
     let rep = export_nfo(&db, &d1, &o).unwrap();
@@ -365,4 +367,82 @@ fn two_roots_with_the_same_name_get_distinct_folders_and_the_command_works() {
         },
         "exporting into a library is refused"
     );
+}
+
+#[test]
+fn media_server_fields_are_opt_in() {
+    let t = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let mut db = library(&t.path().join("lib"));
+    describe(&mut db);
+    let a = id_of(&db, "a.mp4");
+    db.conn_for_tests()
+        .execute(
+            "UPDATE media SET added_at = 1614816000 + 3661 WHERE id = ?1",
+            [a],
+        )
+        .unwrap();
+    let read = |name: &str, o: &NfoExportOpts| {
+        let dest = work.path().join(name);
+        let rep = export_nfo(&db, &dest, o).unwrap();
+        (
+            rep,
+            fs::read_to_string(dest.join("lib").join("a.nfo")).unwrap(),
+        )
+    };
+
+    let (_, plain) = read("plain", &opts());
+    for tag in ["lockdata", "dateadded", "watched"] {
+        assert!(!plain.contains(tag), "{tag} must be opt-in");
+    }
+    let (_, same) = read(
+        "explicit",
+        &NfoExportOpts {
+            lock: false,
+            date_added: false,
+            ..opts()
+        },
+    );
+    assert_eq!(plain, same, "default output is unchanged");
+
+    let (_, locked) = read(
+        "lock",
+        &NfoExportOpts {
+            lock: true,
+            ..opts()
+        },
+    );
+    assert_eq!(locked.matches("<lockdata>true</lockdata>").count(), 1);
+    assert!(!locked.contains("dateadded"));
+
+    let (_, dated) = read(
+        "date",
+        &NfoExportOpts {
+            date_added: true,
+            ..opts()
+        },
+    );
+    assert!(dated.contains("<dateadded>2021-03-04 01:01:01</dateadded>"));
+    assert!(!dated.contains("lockdata"));
+
+    let (_, hist) = read(
+        "hist",
+        &NfoExportOpts {
+            history: true,
+            ..opts()
+        },
+    );
+    assert!(hist.contains("<playcount>1</playcount>\n  <watched>true</watched>"));
+
+    // An item with nothing else to say gets no file from these alone.
+    let (rep, _) = read(
+        "all",
+        &NfoExportOpts {
+            lock: true,
+            date_added: true,
+            ..opts()
+        },
+    );
+    assert_eq!((rep.written, rep.skipped_empty), (2, 1));
+    assert!(!work.path().join("all").join("lib").join("c.nfo").exists());
 }

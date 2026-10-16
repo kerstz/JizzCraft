@@ -26,6 +26,11 @@ pub struct NfoExportOpts {
     pub ratings: bool,
     /// Write play count, last played and resume point.
     pub history: bool,
+    /// Write `<lockdata>`: Jellyfin then keeps the file's values and refuses
+    /// edits made inside it.
+    pub lock: bool,
+    /// Write `<dateadded>` (UTC) from the date the item entered the library.
+    pub date_added: bool,
 }
 
 impl Default for NfoExportOpts {
@@ -34,6 +39,8 @@ impl Default for NfoExportOpts {
             include_private: false,
             ratings: true,
             history: false,
+            lock: false,
+            date_added: false,
         }
     }
 }
@@ -118,6 +125,21 @@ pub fn check_export_dir(dest: &Path, roots: &[PathBuf]) -> Result<PathBuf> {
         return Err(refuse("destination must be outside every library folder"));
     }
     Ok(canon)
+}
+
+/// Guard for exports that write one file: its folder must not be, or be
+/// inside, a library root (symlinks resolved). The file itself is checked by
+/// the caller (`check_dest`).
+pub(crate) fn check_file_outside_roots(dest: &Path, roots: &[PathBuf]) -> Result<()> {
+    let parent = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let folder = canonical(parent)?;
+    if canon_roots(roots).iter().any(|r| folder.starts_with(r)) {
+        return Err(refuse("destination must be outside every library folder"));
+    }
+    Ok(())
 }
 
 fn escape(s: &str) -> String {
@@ -207,6 +229,7 @@ struct Item {
     resume: Option<i64>,
     fp: Option<Vec<u8>>,
     oshash: Option<i64>,
+    added_at: i64,
 }
 
 fn line(body: &mut String, tag: &str, v: &str) {
@@ -260,6 +283,7 @@ fn nfo_text(db: &Db, it: &Item, o: &NfoExportOpts) -> Result<Option<String>> {
     if o.history {
         if it.plays > 0 {
             line(&mut body, "playcount", &it.plays.to_string());
+            line(&mut body, "watched", "true");
             fields += 1;
         }
         if let Some(t) = it.last {
@@ -290,6 +314,13 @@ fn nfo_text(db: &Db, it: &Item, o: &NfoExportOpts) -> Result<Option<String>> {
     }
     if fields == 0 {
         return Ok(None);
+    }
+    // These alone never make a file.
+    if o.date_added {
+        line(&mut body, "dateadded", &kodi_datetime(it.added_at));
+    }
+    if o.lock {
+        line(&mut body, "lockdata", "true");
     }
     // Identity, so the importer finds the item again wherever the files go.
     if let Some(fp) = &it.fp {
@@ -337,7 +368,7 @@ pub fn export_nfo(db: &Db, dest: &Path, o: &NfoExportOpts) -> Result<NfoExportRe
     {
         let mut st = db.conn.prepare(
             "SELECT m.id, m.path, f.path, m.rating, m.play_count, m.last_played_at,
-                    m.resume_ms, m.fp, m.oshash
+                    m.resume_ms, m.fp, m.oshash, m.added_at
              FROM media m JOIN folders f ON f.id = m.folder_id
              WHERE m.kind = 1 AND m.missing = 0 ORDER BY f.id, m.id",
         )?;
@@ -352,6 +383,7 @@ pub fn export_nfo(db: &Db, dest: &Path, o: &NfoExportOpts) -> Result<NfoExportRe
                 r.get::<_, Option<i64>>(6)?,
                 r.get::<_, Option<Vec<u8>>>(7)?,
                 r.get::<_, Option<i64>>(8)?,
+                r.get::<_, i64>(9)?,
             ))
         })?;
         let index: HashMap<&Path, usize> = roots
@@ -360,7 +392,7 @@ pub fn export_nfo(db: &Db, dest: &Path, o: &NfoExportOpts) -> Result<NfoExportRe
             .map(|(i, r)| (r.as_path(), i))
             .collect();
         for r in rows {
-            let (id, path, root, rating, plays, last, resume, fp, oshash) = r?;
+            let (id, path, root, rating, plays, last, resume, fp, oshash, added_at) = r?;
             let Some(&ri) = index.get(root.as_path()) else {
                 rep.skipped_unsafe += 1;
                 continue;
@@ -375,6 +407,7 @@ pub fn export_nfo(db: &Db, dest: &Path, o: &NfoExportOpts) -> Result<NfoExportRe
                 resume,
                 fp,
                 oshash,
+                added_at,
             });
         }
     }
@@ -482,7 +515,7 @@ pub fn register<C: crate::commands::HasLibrary>(reg: &mut crate::commands::Regis
     use serde_json::{Value, json};
     reg.register(
         "meta.export_nfo",
-        "Write Kodi-style .nfo files outside every library folder: {dest, include_private?, ratings?=true, history?}",
+        "Write Kodi-style .nfo files outside every library folder: {dest, include_private?, ratings?=true, history?, lock?, date_added?}",
         |c, a| {
             let dest = a
                 .get("dest")
@@ -494,6 +527,8 @@ pub fn register<C: crate::commands::HasLibrary>(reg: &mut crate::commands::Regis
                 include_private: flag("include_private", false),
                 ratings: flag("ratings", true),
                 history: flag("history", false),
+                lock: flag("lock", false),
+                date_added: flag("date_added", false),
             };
             Ok(json!(export_nfo(c.db(), &dest, &o)?))
         },

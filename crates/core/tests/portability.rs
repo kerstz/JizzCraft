@@ -490,3 +490,26 @@ fn engine_never_touches_media() {
 
     assert_eq!(hash_tree(t.path()), before, "media tree changed");
 }
+
+#[test]
+fn meta_export_refuses_inside_a_library() {
+    let t = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let db = lib(t.path());
+    fs::create_dir(t.path().join("sub")).unwrap();
+    let before = hash_tree(t.path());
+    let o = ExportOpts::default();
+    assert!(export_meta(&db, &t.path().join("meta.json"), &o).is_err());
+    assert!(export_meta(&db, &t.path().join("sub/meta.json"), &o).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(t.path(), work.path().join("link")).unwrap();
+        assert!(export_meta(&db, &work.path().join("link/meta.json"), &o).is_err());
+    }
+    assert_eq!(
+        hash_tree(t.path()),
+        before,
+        "nothing written in the library"
+    );
+    export_meta(&db, &work.path().join("meta.json"), &o).unwrap();
+}

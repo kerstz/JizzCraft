@@ -1300,6 +1300,8 @@ impl Db {
     pub fn export_m3u(&self, id: i64, dest: &Path, o: &M3uOpts) -> Result<M3uReport> {
         pl_exists(&self.conn, id)?;
         crate::portability::check_dest(dest)?;
+        let roots: Vec<PathBuf> = self.folders()?.into_iter().map(|(_, p)| p).collect();
+        crate::interop::nfo_export::check_file_outside_roots(dest, &roots)?;
         let base: Option<PathBuf> = dest
             .parent()
             .filter(|p| !p.as_os_str().is_empty())

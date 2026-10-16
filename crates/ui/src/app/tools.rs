@@ -116,6 +116,12 @@ impl JizzApp {
         );
         item(
             ui,
+            crate::i18n::tr("Export NFO files for a media server…"),
+            "meta.export_nfo",
+            json!({"lock": true}),
+        );
+        item(
+            ui,
             crate::i18n::tr("Import from other apps…"),
             "interop.open",
             json!({}),
@@ -384,7 +390,7 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
     );
     reg.register(
         "meta.export_nfo",
-        "Write Kodi-style .nfo files outside every library folder: {dest?, include_private?, ratings?=true, history?} (folder dialog when dest is omitted)",
+        "Write Kodi-style .nfo files outside every library folder: {dest?, include_private?, ratings?=true, history?, lock?, date_added?} (folder dialog when dest is omitted)",
         |app, args| {
             // The files are clear text even when the library is encrypted.
             if app.opener.key.is_some()
@@ -400,6 +406,8 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
                 include_private: flag("include_private", false),
                 ratings: flag("ratings", true),
                 history: flag("history", false),
+                lock: flag("lock", false),
+                date_added: flag("date_added", false),
             };
             let dest = args.get("dest").and_then(Value::as_str).map(PathBuf::from);
             app.spawn_job("NFO export", move |db| {

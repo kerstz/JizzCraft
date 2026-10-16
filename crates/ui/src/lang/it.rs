@@ -1356,6 +1356,12 @@ pub const TABLE: &[(&str, &str)] = &[
         "Esporta i file NFO in una cartella…",
     ),
     (
+        "Export NFO files for a media server…",
+        "Esporta file NFO per un media server…",
+    ),
+    ("Forced", "Forzati"),
+    ("SDH", "SDH"),
+    (
         "These .nfo files are not encrypted, even though your library is. Anyone who can read them can read the titles, performers, tags and ratings they contain.",
         "Questi file .nfo non sono cifrati, anche se la tua libreria lo è. Chiunque possa leggerli può leggere i titoli, gli interpreti, i tag e le valutazioni che contengono.",
     ),

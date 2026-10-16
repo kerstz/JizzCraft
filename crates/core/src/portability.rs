@@ -118,6 +118,8 @@ pub fn export_meta_ext(
     use crate::organize::{LabelInfo, LabelKind};
     use std::collections::HashMap;
     check_dest(dest)?;
+    let roots: Vec<std::path::PathBuf> = db.folders()?.into_iter().map(|(_, p)| p).collect();
+    crate::interop::nfo_export::check_file_outside_roots(dest, &roots)?;
     let mut rep = ExportReport::default();
     // Labels visible in this export, keyed by id.
     let mut vis_tags: HashMap<i64, LabelInfo> = HashMap::new();

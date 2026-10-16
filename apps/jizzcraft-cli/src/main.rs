@@ -645,6 +645,12 @@ enum Cmd {
         /// Leave out star ratings.
         #[arg(long)]
         no_ratings: bool,
+        /// Write lockdata: Jellyfin keeps the file's values and refuses edits.
+        #[arg(long)]
+        lock: bool,
+        /// Write dateadded (UTC) from the date each item entered the library.
+        #[arg(long)]
+        date_added: bool,
     },
     /// Compute visual fingerprints of videos (decodes 25 frames each, in
     /// memory only) so that `duplicates` can compare them.
@@ -1082,11 +1088,14 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             private,
             history,
             no_ratings,
+            lock,
+            date_added,
         } => (
             "meta.export_nfo".to_owned(),
             json!({
                 "dest": dest.to_string_lossy(), "include_private": private,
                 "history": history, "ratings": !no_ratings,
+                "lock": lock, "date_added": date_added,
             }),
         ),
         Cmd::Phash { all, limit } => (

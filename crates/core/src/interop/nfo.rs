@@ -65,6 +65,8 @@ pub struct NfoDoc {
     /// 0 to 10.
     pub userrating: Option<f32>,
     pub playcount: Option<u32>,
+    /// `<watched>`: Jellyfin and Plex style flag, without a count.
+    pub watched: Option<bool>,
     /// Seconds since the epoch, midnight UTC of the written day.
     pub lastplayed: Option<i64>,
     pub resume_s: Option<f64>,
@@ -84,6 +86,7 @@ enum Field {
     Tag,
     UserRating,
     PlayCount,
+    Watched,
     LastPlayed,
     UniqueId,
     ActorName,
@@ -177,6 +180,7 @@ pub fn parse_nfo(bytes: &[u8]) -> std::result::Result<NfoDoc, NfoReject> {
                     b"tag" => Some(Field::Tag),
                     b"userrating" => Some(Field::UserRating),
                     b"playcount" => Some(Field::PlayCount),
+                    b"watched" => Some(Field::Watched),
                     b"lastplayed" => Some(Field::LastPlayed),
                     b"uniqueid" => Some(Field::UniqueId),
                     b"actor" => {
@@ -366,6 +370,13 @@ fn finish_field(
                 .ok()
                 .map(|n| n.clamp(0, u32::MAX as i64) as u32);
         }
+        Field::Watched => {
+            doc.watched = match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            };
+        }
         Field::LastPlayed => doc.lastplayed = day_start(raw),
         Field::UniqueId => {
             let v = clean_text(raw, 128);
@@ -546,7 +557,10 @@ fn record_of(doc: &NfoDoc) -> Record {
             .cloned()
             .collect(),
         stars: doc.userrating.map(super::stars_from_ten).filter(|s| *s > 0),
-        play_count: doc.playcount,
+        // A bare "watched" means one play; the importer only ever raises a count.
+        play_count: doc
+            .playcount
+            .or_else(|| (doc.watched == Some(true)).then_some(1)),
         last_played: doc.lastplayed,
         resume_ms: doc.resume_s.map(|s| (s * 1000.0).round() as i64),
         markers: Vec::new(),
