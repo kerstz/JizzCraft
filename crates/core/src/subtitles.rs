@@ -23,18 +23,28 @@ pub enum Format {
     Vtt,
 }
 
+/// Flags spelled in a sidecar name (`name.en.forced.srt`), Jellyfin-style.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubFlags {
+    pub default: bool,
+    pub forced: bool,
+    pub hearing_impaired: bool,
+}
+
 /// A sidecar found next to a media file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sidecar {
     pub path: PathBuf,
     /// Lower-case language tag from `name.fr.srt`, if any.
     pub lang: Option<String>,
+    pub flags: SubFlags,
     pub format: Format,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
     pub lang: Option<String>,
+    pub flags: SubFlags,
     pub format: Format,
     /// Sorted by start time.
     pub cues: Vec<Cue>,
@@ -239,9 +249,46 @@ fn is_lang_tag(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// Parse what sits between the stem and the extension (`en.forced`, without
+/// the leading dot): at most 4 dot-separated segments, flags `default`,
+/// `forced`/`foreign`, `sdh`/`cc`/`hi` in any order and at most one language
+/// tag. None when anything else is left over. A lone `hi` is Hindi; it only
+/// reads as a flag next to another language segment.
+fn parse_suffix(rest: &str) -> Option<(Option<String>, SubFlags)> {
+    let segs: Vec<&str> = rest.split('.').collect();
+    if segs.len() > 4 {
+        return None;
+    }
+    let has_other_lang = segs.iter().any(|s| {
+        !matches!(
+            s.to_ascii_lowercase().as_str(),
+            "default" | "forced" | "foreign" | "sdh" | "cc" | "hi"
+        ) && is_lang_tag(s)
+    });
+    let mut flags = SubFlags::default();
+    let mut lang: Option<String> = None;
+    for seg in segs {
+        match seg.to_ascii_lowercase().as_str() {
+            "default" => flags.default = true,
+            "forced" | "foreign" => flags.forced = true,
+            "sdh" | "cc" => flags.hearing_impaired = true,
+            "hi" if has_other_lang => flags.hearing_impaired = true,
+            other if is_lang_tag(other) => {
+                if lang.is_some() {
+                    return None;
+                }
+                lang = Some(other.to_owned());
+            }
+            _ => return None,
+        }
+    }
+    Some((lang, flags))
+}
+
 /// Sidecars of `media`: same directory, same base name (case-insensitive),
-/// `.srt` or `.vtt`, with an optional language tag (`name.fr.srt`).
-/// Untagged first, then by tag. Not recursive.
+/// `.srt` or `.vtt`, with an optional language tag and flags
+/// (`name.fr.srt`, `name.en.forced.srt`). Untagged first, then by tag, plain
+/// before forced before SDH, default first. Not recursive.
 pub fn find_sidecars(media: &Path) -> Vec<Sidecar> {
     let (Some(dir), Some(stem)) = (media.parent(), media.file_stem().and_then(|s| s.to_str()))
     else {
@@ -272,30 +319,35 @@ pub fn find_sidecars(media: &Path) -> Vec<Sidecar> {
         } else {
             continue;
         };
-        let lang = if base == stem {
-            None
-        } else if let Some(tag) = base
+        let (lang, flags) = if base == stem {
+            (None, SubFlags::default())
+        } else if let Some(parsed) = base
             .strip_prefix(&stem)
             .and_then(|r| r.strip_prefix('.'))
-            .filter(|t| is_lang_tag(t))
+            .and_then(parse_suffix)
         {
-            Some(tag.to_owned())
+            parsed
         } else {
             continue;
         };
         found.push(Sidecar {
             path: entry.path(),
             lang,
+            flags,
             format,
         });
     }
-    found.sort_by(|a, b| {
-        (a.lang.is_some(), &a.lang, a.format as u8).cmp(&(
-            b.lang.is_some(),
-            &b.lang,
-            b.format as u8,
-        ))
-    });
+    let key = |s: &Sidecar| {
+        (
+            s.lang.is_some(),
+            s.lang.clone(),
+            s.flags.forced,
+            s.flags.hearing_impaired,
+            !s.flags.default,
+            s.format as u8,
+        )
+    };
+    found.sort_by_key(key);
     found
 }
 
@@ -308,6 +360,7 @@ pub fn load(sc: &Sidecar) -> Option<Track> {
     let cues = parse(&std::fs::read(&sc.path).ok()?);
     (!cues.is_empty()).then(|| Track {
         lang: sc.lang.clone(),
+        flags: sc.flags,
         format: sc.format,
         cues,
     })
@@ -404,6 +457,7 @@ mod tests {
     fn active_cues_follow_time_and_overlaps() {
         let t = Track {
             lang: None,
+            flags: SubFlags::default(),
             format: Format::Srt,
             cues: parse_str(
                 "00:00:01,000 --> 00:00:05,000\nlong\n\n00:00:02,000 --> 00:00:03,000\nshort\n",
@@ -440,14 +494,88 @@ mod tests {
             .collect();
         assert_eq!(
             langs,
-            [None, Some("fr".into()), Some("pt-br".into())],
+            [
+                None,
+                Some("en".into()),
+                Some("fr".into()),
+                Some("pt-br".into())
+            ],
             "{langs:?}"
         );
-        assert_eq!(load_all(&p("clip.mp4")).len(), 3);
+        assert_eq!(load_all(&p("clip.mp4")).len(), 4);
         // Oversized and empty files are skipped, never fatal.
         std::fs::write(p("big.srt"), vec![b'a'; MAX_BYTES as usize + 1]).unwrap();
         std::fs::write(p("big.mp4"), b"").unwrap();
         assert!(load_all(&p("big.mp4")).is_empty());
         assert!(find_sidecars(&p("nowhere/none.mp4")).is_empty());
+    }
+
+    type Parsed = Option<(Option<&'static str>, (bool, bool, bool))>;
+
+    fn suffix(s: &str) -> Parsed {
+        parse_suffix(s).map(|(l, f)| {
+            (
+                l.map(|l| &*Box::leak(l.into_boxed_str())),
+                (f.default, f.forced, f.hearing_impaired),
+            )
+        })
+    }
+
+    #[test]
+    fn suffix_flags_and_languages() {
+        assert_eq!(
+            suffix("en.forced"),
+            Some((Some("en"), (false, true, false)))
+        );
+        assert_eq!(suffix("forced.en"), suffix("en.forced"));
+        assert_eq!(suffix("en.sdh"), Some((Some("en"), (false, false, true))));
+        assert_eq!(suffix("default"), Some((None, (true, false, false))));
+        assert_eq!(suffix("hi"), Some((Some("hi"), (false, false, false))));
+        assert_eq!(suffix("en.hi"), Some((Some("en"), (false, false, true))));
+        assert_eq!(suffix("en.fr"), None);
+        assert_eq!(suffix("x.y.z.w.v"), None);
+    }
+
+    #[test]
+    fn flagged_sidecars_are_found_and_ordered() {
+        let d = tempfile::tempdir().unwrap();
+        let p = |n: &str| d.path().join(n);
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nhi\n";
+        for n in [
+            "a.mp4",
+            "a.en.forced.srt",
+            "a.EN.SDH.vtt",
+            "a.default.srt",
+            "a.hi.srt",
+            "a.en.hi.srt",
+            "a.en.fr.srt",
+            "a.x.y.z.w.v.srt",
+            "a.en.srt",
+        ] {
+            std::fs::write(p(n), srt).unwrap();
+        }
+        let got: Vec<_> = find_sidecars(&p("a.mp4"))
+            .into_iter()
+            .map(|s| {
+                (
+                    s.lang,
+                    s.flags.forced,
+                    s.flags.hearing_impaired,
+                    s.flags.default,
+                )
+            })
+            .collect();
+        let en = Some("en".to_owned());
+        assert_eq!(
+            got,
+            [
+                (None, false, false, true),
+                (en.clone(), false, false, false),
+                (en.clone(), false, true, false),
+                (en.clone(), false, true, false),
+                (en, true, false, false),
+                (Some("hi".into()), false, false, false),
+            ]
+        );
     }
 }

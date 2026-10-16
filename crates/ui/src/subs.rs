@@ -2,7 +2,7 @@
 //! file (read on a worker thread), which one is shown, and the timing shift.
 //! The text is drawn by the UI as an overlay; GStreamer never sees it.
 
-use jizzcraft_core::subtitles::{Format, Track};
+use jizzcraft_core::subtitles::{Format, SubFlags, Track};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
@@ -32,13 +32,24 @@ pub struct Subs {
 }
 
 /// Which track to show: the saved choice, else the interface language, else
-/// the first one. `None` also when the user saved "off".
-pub fn pick(langs: &[Option<&str>], pref: Option<&str>, ui_lang: &str) -> Option<usize> {
-    if langs.is_empty() || pref == Some(PREF_OFF) {
+/// the first one. `None` also when the user saved "off". Within a language a
+/// full track beats a forced one (forced tracks only translate foreign
+/// speech), then one flagged default beats the rest.
+pub fn pick(
+    tracks: &[(Option<&str>, SubFlags)],
+    pref: Option<&str>,
+    ui_lang: &str,
+) -> Option<usize> {
+    if tracks.is_empty() || pref == Some(PREF_OFF) {
         return None;
     }
+    let best = |hit: &dyn Fn(Option<&str>) -> bool| {
+        (0..tracks.len())
+            .filter(|&i| hit(tracks[i].0))
+            .min_by_key(|&i| (tracks[i].1.forced, !tracks[i].1.default))
+    };
     if let Some(p) = pref {
-        let hit = langs.iter().position(|l| match l {
+        let hit = best(&|l| match l {
             Some(l) => l.eq_ignore_ascii_case(p),
             None => p == PREF_UNTAGGED,
         });
@@ -46,11 +57,13 @@ pub fn pick(langs: &[Option<&str>], pref: Option<&str>, ui_lang: &str) -> Option
             return hit;
         }
     }
-    let same = |l: &str| {
-        let head = l.split(['-', '_']).next().unwrap_or(l);
-        head.eq_ignore_ascii_case(ui_lang)
+    let same = |l: Option<&str>| {
+        l.is_some_and(|l| {
+            let head = l.split(['-', '_']).next().unwrap_or(l);
+            head.eq_ignore_ascii_case(ui_lang)
+        })
     };
-    langs.iter().position(|l| l.is_some_and(same)).or(Some(0))
+    best(&same).or_else(|| best(&|_| true))
 }
 
 /// Point size of the text. Points, so the interface zoom scales it; the cap
@@ -105,8 +118,11 @@ impl Subs {
 
     fn install(&mut self, tracks: Vec<Track>) {
         if !self.chosen {
-            let langs: Vec<Option<&str>> = tracks.iter().map(|t| t.lang.as_deref()).collect();
-            self.active = pick(&langs, self.pref.as_deref(), &self.ui_lang);
+            let info: Vec<(Option<&str>, SubFlags)> = tracks
+                .iter()
+                .map(|t| (t.lang.as_deref(), t.flags))
+                .collect();
+            self.active = pick(&info, self.pref.as_deref(), &self.ui_lang);
         }
         self.tracks = tracks;
     }
@@ -138,17 +154,27 @@ impl Subs {
         self.delay_ms
     }
 
-    /// Menu labels: the language tag, else the format; repeats get a number.
+    /// Menu labels: the language tag, else the format, then `Forced` / `SDH`;
+    /// repeats get a number.
     pub fn labels(&self) -> Vec<String> {
         let base: Vec<String> = self
             .tracks
             .iter()
-            .map(|t| match &t.lang {
-                Some(l) => l.to_uppercase(),
-                None => match t.format {
-                    Format::Srt => "SRT".to_owned(),
-                    Format::Vtt => "VTT".to_owned(),
-                },
+            .map(|t| {
+                let mut b = match &t.lang {
+                    Some(l) => l.to_uppercase(),
+                    None => match t.format {
+                        Format::Srt => "SRT".to_owned(),
+                        Format::Vtt => "VTT".to_owned(),
+                    },
+                };
+                if t.flags.forced {
+                    b.push_str(&format!(" · {}", crate::i18n::tr("Forced")));
+                }
+                if t.flags.hearing_impaired {
+                    b.push_str(&format!(" · {}", crate::i18n::tr("SDH")));
+                }
+                b
             })
             .collect();
         base.iter()
@@ -329,6 +355,7 @@ mod tests {
     fn track(lang: Option<&str>, fmt: Format, at_ms: u64) -> Track {
         Track {
             lang: lang.map(str::to_owned),
+            flags: SubFlags::default(),
             format: fmt,
             cues: vec![Cue {
                 start_ms: at_ms,
@@ -340,13 +367,47 @@ mod tests {
 
     #[test]
     fn pick_prefers_saved_choice_then_ui_language_then_first() {
-        let l = [None, Some("en"), Some("pt-br")];
+        let f = SubFlags::default();
+        let l = [(None, f), (Some("en"), f), (Some("pt-br"), f)];
         assert_eq!(pick(&l, Some("off"), "en"), None);
         assert_eq!(pick(&l, Some("en"), "fr"), Some(1));
         assert_eq!(pick(&l, Some("-"), "fr"), Some(0));
         assert_eq!(pick(&l, None, "pt"), Some(2));
         assert_eq!(pick(&l, Some("de"), "fr"), Some(0));
         assert_eq!(pick(&[], None, "en"), None);
+    }
+
+    #[test]
+    fn forced_track_is_not_auto_picked_over_a_full_one() {
+        let plain = SubFlags::default();
+        let forced = SubFlags {
+            forced: true,
+            ..plain
+        };
+        let default = SubFlags {
+            default: true,
+            ..plain
+        };
+        // Sorted order puts the plain track first, but even reversed it wins.
+        let l = [
+            (Some("en"), forced),
+            (Some("en"), plain),
+            (Some("fr"), plain),
+        ];
+        assert_eq!(pick(&l, None, "en"), Some(1));
+        assert_eq!(pick(&l, Some("en"), "fr"), Some(1));
+        let l = [(Some("en"), plain), (Some("en"), default)];
+        assert_eq!(pick(&l, None, "en"), Some(1), "default flag breaks the tie");
+        // Nothing else in the language: the forced one is still better than none.
+        let l = [(Some("fr"), plain), (Some("en"), forced)];
+        assert_eq!(pick(&l, None, "en"), Some(1));
+        // Labels carry the flags.
+        let mut t = track(Some("en"), Format::Srt, 0);
+        t.flags = forced;
+        let mut u = track(Some("en"), Format::Vtt, 0);
+        u.flags.hearing_impaired = true;
+        let s = Subs::with_tracks(vec![t, u], None, "fr");
+        assert_eq!(s.labels(), ["EN · Forced", "EN · SDH"]);
     }
 
     #[test]
