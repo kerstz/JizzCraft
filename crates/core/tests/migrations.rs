@@ -15,6 +15,7 @@ const FROZEN: &[&str] = &[
     "b30677822357af450b9d88b6a0313d6f2282549cd9d057247b40ba1c7b9bd2ec",
     "cec220328cb5229a32bb1ea3e5b6c85cc200cba56268b33483f4d7dde8cb8643",
     "fa66d056777d8b74f854330b8ccd846b8c042e6faf85990f0ff2bdbf9f299572",
+    "bc222b05f18f728a2cb21afead2fbec60cdf54ef04a86c2757c662a68429fc72",
 ];
 
 fn hash(s: &str) -> String {
@@ -111,6 +112,13 @@ fn fixture_keyed(path: &Path, version: usize, key: Option<&DbKey>) {
         )
         .unwrap();
     }
+    if version >= 7 {
+        c.execute_batch(
+            "UPDATE media SET phash = -5, phash_algo = 1 WHERE id = 2;
+             UPDATE media SET phash_algo = 1 WHERE id = 3;",
+        )
+        .unwrap();
+    }
     c.pragma_update(None, "user_version", version as i64)
         .unwrap();
 }
@@ -171,6 +179,27 @@ fn check_survivors(db: &Db, version: usize) {
         assert_eq!(info.external_ids.len(), 1);
     } else {
         assert!(db.search("sunset", 10, 0).unwrap().is_empty());
+    }
+    let ph: Vec<(i64, Option<i64>, Option<i64>)> = db
+        .conn_for_tests()
+        .prepare("SELECT id, phash, phash_algo FROM media ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    if version >= 7 {
+        assert_eq!(
+            ph,
+            vec![(1, None, None), (2, Some(-5), Some(1)), (3, None, Some(1))],
+            "v{version}"
+        );
+        assert_eq!(db.phash_of(2).unwrap(), Some(-5i64 as u64));
+    } else {
+        assert!(
+            ph.iter().all(|(_, h, a)| h.is_none() && a.is_none()),
+            "v{version}"
+        );
     }
     // Organisation tables: empty when upgrading from before v3, intact after.
     let count = |t: &str| -> i64 {

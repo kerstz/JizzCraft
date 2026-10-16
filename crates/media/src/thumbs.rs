@@ -245,6 +245,29 @@ pub(crate) struct Paused {
 
 pub(crate) fn open_paused(src: &Path, max_side: u32) -> Result<Paused, String> {
     crate::init()?;
+    let caps = gst::Caps::builder("video/x-raw")
+        .field("format", "RGB")
+        .field("width", gst::IntRange::new(1, max_side as i32))
+        .field("height", gst::IntRange::new(1, max_side as i32))
+        .build();
+    open_paused_caps(src, &caps)
+}
+
+/// Like [`open_paused`] but the picture is exactly `width` pixels wide with
+/// square pixels; the height follows the aspect ratio.
+pub(crate) fn open_paused_width(src: &Path, width: u32) -> Result<Paused, String> {
+    crate::init()?;
+    let caps = gst::Caps::builder("video/x-raw")
+        .field("format", "RGB")
+        .field("width", width as i32)
+        .field("height", gst::IntRange::new(1, 8192))
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+        .build();
+    open_paused_caps(src, &caps)
+}
+
+fn open_paused_caps(src: &Path, caps: &gst::Caps) -> Result<Paused, String> {
+    crate::init()?;
     let uri = crate::file_uri(src)?;
     let mk = |name: &str| {
         gst::ElementFactory::make(name)
@@ -261,13 +284,8 @@ pub(crate) fn open_paused(src: &Path, max_side: u32) -> Result<Paused, String> {
         .map_err(|_| "missing GStreamer element `uridecodebin` (gst-plugins-base)".to_string())?;
     let conv = mk("videoconvert")?;
     let scale = mk("videoscale")?;
-    let caps = gst::Caps::builder("video/x-raw")
-        .field("format", "RGB")
-        .field("width", gst::IntRange::new(1, max_side as i32))
-        .field("height", gst::IntRange::new(1, max_side as i32))
-        .build();
     let sink = gst_app::AppSink::builder()
-        .caps(&caps)
+        .caps(caps)
         .max_buffers(1)
         .sync(false)
         .build();
@@ -314,6 +332,23 @@ pub(crate) fn frame_at(p: &Paused, ns: u64, timeout_s: u64) -> Result<RgbImage, 
         .seek_simple(
             gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT | gst::SeekFlags::SNAP_NEAREST,
             target,
+        )
+        .map_err(|_| "seek failed".to_string())?;
+    wait_async_done(&p.bus, timeout_s)?;
+    let sample = p
+        .sink
+        .try_pull_preroll(gst::ClockTime::from_seconds(timeout_s))
+        .ok_or("no video frame available")?;
+    sample_to_rgb(&sample)
+}
+
+/// Seek a paused pipeline to exactly `ns` (decoding up to it) and pull the
+/// frame there. Slower than [`frame_at`], which snaps to a key frame.
+pub(crate) fn frame_at_accurate(p: &Paused, ns: u64, timeout_s: u64) -> Result<RgbImage, String> {
+    p.pipeline
+        .seek_simple(
+            gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+            gst::ClockTime::from_nseconds(ns),
         )
         .map_err(|_| "seek failed".to_string())?;
     wait_async_done(&p.bus, timeout_s)?;

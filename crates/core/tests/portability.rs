@@ -261,6 +261,8 @@ fn engine_never_touches_media() {
     run(&mut db, "library.checksum", json!({ "scope": "all" }));
     let oh = run(&mut db, "media.get", json!({ "id": v }))["oshash"].clone();
     run(&mut db, "media.by_hash", json!({ "oshash": oh }));
+    run(&mut db, "media.duplicates", json!({ "distance": 16 }));
+    run(&mut db, "media.phash.distance", json!({ "a": a, "b": b }));
     let fs_out = run(
         &mut db,
         "media.funscript",

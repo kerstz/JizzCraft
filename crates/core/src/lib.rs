@@ -18,6 +18,7 @@ pub mod model;
 pub mod organize;
 pub mod pathbytes;
 pub mod paths;
+pub mod phash;
 pub mod portability;
 pub mod privacy;
 pub mod report;

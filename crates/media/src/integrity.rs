@@ -322,7 +322,7 @@ fn dir_size(p: &Path) -> u64 {
         .sum()
 }
 
-/// Commands that need GStreamer: `library.integrity`, `cache.clear`.
+/// Commands that need GStreamer: `library.integrity`, `cache.clear`, `library.phash`.
 pub fn register_media<C: HasLibrary>(reg: &mut Registry<C>) {
     reg.register(
         "library.integrity",
@@ -374,4 +374,5 @@ pub fn register_media<C: HasLibrary>(reg: &mut Registry<C>) {
         },
     );
     crate::thumbs::register_cache_prune(reg);
+    crate::phash::register_media(reg);
 }

@@ -16,6 +16,7 @@ Filled in as each piece lands.
 | Kodi-style `.nfo` files (Kodi, Jellyfin, Emby, Plex) | read only, never written; applied to the library database | `meta.import_nfo`, CLI `import-nfo`, Tools menu "Import from other apps…" |
 | Stash JSON export folders | read only, never written; applied to the library database | `meta.import_stash`, CLI `import-stash`, same Tools window |
 | Funscript sidecars (`<name>.funscript` next to a video) | read only, on a worker thread; shown as a decorative heatmap band above the timeline and as "Script: N actions" in the inspector; never stored, never sent anywhere | `media.funscript`, CLI `funscript`, Settings toggle, command `player.heatmap.toggle` |
+| Visual fingerprint (perceptual hash, 64 bits) of videos | computed by `library.phash` from 25 frames decoded in memory (never written to disk); stored in the library database (schema v7); compared only by Hamming distance | `library.phash`, `media.duplicates`, `media.phash.distance`, CLI `phash` and `duplicates`, Tools menu "Find possible duplicates…" |
 | Metadata import | reads versions 1 to 3; matches by `fp`, then by `oshash` and size | `meta.import` |
 
 ### The oshash
@@ -135,6 +136,27 @@ The timeline band shows the mean stroke speed per cell (position units per
 second, 400 and above reads as full intensity) in a single hue. It is hidden
 in discreet mode and can be turned off in Settings. Nothing is ever sent to a
 device and nothing is written next to the video.
+
+## Duplicates
+
+`library.phash` decodes 25 frames of each video (from 5 % to 95 % of its
+length, 160 px wide), pastes them into a 5 x 5 sprite and computes a DCT
+perceptual hash of it: the layout is the one Stash uses, so values imported
+from a Stash export (`phash.stash`, see above) are compared with yours. The
+bits are not guaranteed to be identical to Stash's (a different decoder gives
+slightly different pixels), so two hashes are only ever compared by Hamming
+distance, never by equality. Static test patterns hash poorly (a 5 x 5 tiling
+of one picture has almost no low-frequency detail); real footage is fine.
+
+A video that cannot be decoded is remembered as "tried" and not retried until
+you ask for everything again (`--all`) or the recipe changes. A changed file
+loses its hash on the next scan. Frames never touch the disk.
+
+`media.duplicates` links videos whose hashes are within the chosen distance
+(exact 0, high 4, medium 8, low 10; at most 16), transitively, optionally
+refusing pairs whose durations differ by more than `duration_diff_ms`. Groups
+hold at most 50 items. The window only reviews: it can open an item or put a
+group in a new playlist. There is no delete action anywhere.
 
 ## Refused, and why
 

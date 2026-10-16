@@ -271,6 +271,12 @@ const MIGRATIONS: &[&str] = &[
         DELETE FROM media_fts WHERE rowid IN (SELECT media_id FROM media_labels WHERE label_id = OLD.label_id);
         INSERT INTO media_fts(rowid, name, title, people, studio, tags, cats, notes) SELECT id, name, title, people, studio, tags, cats, notes FROM media_fts_src WHERE id IN (SELECT media_id FROM media_labels WHERE label_id = OLD.label_id);
     END;",
+    // v7: perceptual hash of videos (a bit-cast u64) and the version of the
+    // recipe that made it. `phash_algo` set with `phash` NULL means hashing
+    // failed and is not retried until the recipe changes.
+    "ALTER TABLE media ADD COLUMN phash INTEGER;
+    ALTER TABLE media ADD COLUMN phash_algo INTEGER CHECK (phash_algo IS NULL OR phash_algo BETWEEN 1 AND 255);
+    CREATE INDEX media_phash ON media(phash) WHERE phash IS NOT NULL;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

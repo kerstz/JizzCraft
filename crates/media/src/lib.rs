@@ -5,6 +5,7 @@
 pub mod doctor;
 pub mod guard;
 pub mod integrity;
+pub mod phash;
 pub mod player;
 pub mod preview;
 pub mod probe;

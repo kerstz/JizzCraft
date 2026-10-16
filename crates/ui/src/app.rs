@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 mod browser;
 #[cfg(feature = "network")]
 mod downloads;
+mod duplicates;
 mod interop;
 mod meta_ui;
 mod onboarding;
@@ -310,6 +311,7 @@ pub struct JizzApp {
     /// Settings window (General page only in the offline edition).
     settings: settings::Settings,
     interop: interop::InteropUi,
+    dup: duplicates::DupUi,
     #[cfg(feature = "network")]
     web_pages: web_pages::WebPages,
     #[cfg(feature = "network")]
@@ -634,6 +636,7 @@ impl JizzApp {
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
         interop::register(&mut registry);
+        duplicates::register(&mut registry);
         settings::register(&mut registry);
         vault_ui::register(&mut registry);
         #[cfg(feature = "network")]
@@ -716,6 +719,7 @@ impl JizzApp {
             downloads: downloads::Downloads::new(opts.disguised),
             settings: settings::Settings::default(),
             interop: interop::InteropUi::default(),
+            dup: duplicates::DupUi::default(),
             #[cfg(feature = "network")]
             web_pages: web_pages::WebPages::default(),
             #[cfg(feature = "network")]
@@ -1119,6 +1123,22 @@ impl JizzApp {
                 let name = m.name.clone();
                 self.open_player(Some(index), name, &m.path, Some(&m));
             }
+        }
+    }
+
+    /// Open an item outside the current list (a duplicate group, say).
+    fn open_by_id(&mut self, id: i64) {
+        let Ok(Some(m)) = self.db.get(id) else {
+            return;
+        };
+        self.selected = Some(m.id);
+        if m.missing {
+            self.toast(ToastKind::Error, crate::i18n::tr("File is missing on disk"));
+            return;
+        }
+        if m.kind == MediaKind::Video {
+            let name = m.name.clone();
+            self.open_player(None, name, &m.path, Some(&m));
         }
     }
 
@@ -2983,6 +3003,7 @@ impl eframe::App for JizzApp {
         }
         self.settings_window(&ctx);
         self.interop_window(&ctx);
+        self.duplicates_window(&ctx);
         self.vault_windows(&ctx);
 
         self.drain_queue();

@@ -632,6 +632,26 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Compute visual fingerprints of videos (decodes 25 frames each, in
+    /// memory only) so that `duplicates` can compare them.
+    Phash {
+        /// Also retry videos that failed before.
+        #[arg(long)]
+        all: bool,
+        /// Stop after this many videos.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// List groups of videos that look alike (run `phash` first). Nothing is
+    /// ever deleted.
+    Duplicates {
+        /// Largest Hamming distance, 0 to 16 (exact 0, high 4, medium 8, low 10).
+        #[arg(long, default_value_t = 8)]
+        distance: u32,
+        /// Do not group videos whose durations differ by more than this.
+        #[arg(long)]
+        duration_diff: Option<u64>,
+    },
     /// Read Kodi-style .nfo files onto matching items. A dry run unless --apply.
     ImportNfo {
         /// Folder to read (default: every library folder).
@@ -1043,6 +1063,17 @@ fn run(cli: &Cli) -> Result<(), Fail> {
         Cmd::Tree => ("library.tree".to_owned(), json!({})),
         Cmd::Random => ("media.random".to_owned(), json!({})),
         Cmd::Fingerprint { all } => ("library.fingerprint".to_owned(), json!({ "all": all })),
+        Cmd::Phash { all, limit } => (
+            "library.phash".to_owned(),
+            json!({ "all": all, "limit": limit }),
+        ),
+        Cmd::Duplicates {
+            distance,
+            duration_diff,
+        } => (
+            "media.duplicates".to_owned(),
+            json!({ "distance": distance, "duration_diff_ms": duration_diff }),
+        ),
         Cmd::ImportNfo {
             dir,
             apply,
@@ -1490,6 +1521,40 @@ fn print_human(cmd: &str, v: &Value) {
                 r["errors"]
             );
         }
+        "media.duplicates" => {
+            for (n, g) in v["groups"].as_array().into_iter().flatten().enumerate() {
+                println!(
+                    "group {} · {} items · distance {}",
+                    n + 1,
+                    g["items"].as_array().map_or(0, Vec::len),
+                    g["distance"]
+                );
+                for it in g["items"].as_array().into_iter().flatten() {
+                    println!(
+                        "  {:>6} {:>10} B {}",
+                        it["id"],
+                        it["size"],
+                        it["name"].as_str().unwrap_or("?")
+                    );
+                }
+            }
+            println!(
+                "{} group(s) · {} item(s) hashed",
+                v["groups"].as_array().map_or(0, Vec::len),
+                v["hashed"]
+            );
+        }
+        "library.phash" => println!(
+            "{} hashed · {} failed · {} left{}",
+            v["hashed"],
+            v["failed"],
+            v["remaining"],
+            if v["cancelled"] == true {
+                " · cancelled"
+            } else {
+                ""
+            }
+        ),
         "meta.import_nfo" | "meta.import_stash" => {
             println!(
                 "{}: {} files · {} read · {} rejected · {} matched · {} changed · {} unmatched · {} ambiguous",

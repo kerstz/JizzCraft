@@ -67,6 +67,18 @@ impl JizzApp {
         );
         item(
             ui,
+            crate::i18n::tr("Compute visual fingerprints (for duplicates)"),
+            "library.phash",
+            json!({}),
+        );
+        item(
+            ui,
+            crate::i18n::tr("Find possible duplicates…"),
+            "duplicates.open",
+            json!({}),
+        );
+        item(
+            ui,
             crate::i18n::tr("Check integrity (quick)"),
             "library.integrity",
             json!({ "mode": "quick" }),
@@ -251,6 +263,25 @@ pub(super) fn register_tool_commands(reg: &mut Registry<JizzApp>) {
                     &mut |_, _| {},
                 )
                 .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "{} fingerprinted · {} failed · {} left",
+                    r.hashed, r.failed, r.remaining
+                ))
+            });
+            Ok(json!({ "started": true }))
+        },
+    );
+    reg.register(
+        "library.phash",
+        "Compute visual fingerprints of videos for duplicate review: {all?, limit?}",
+        |app, args| {
+            let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let limit = args.get("limit").and_then(Value::as_u64);
+            let cancel = app.lock_cancel.clone();
+            app.spawn_job("Visual fingerprints", move |db| {
+                let r =
+                    jizzcraft_media::phash::phash_pending(db, all, limit, &cancel, &mut |_, _| {})
+                        .map_err(|e| e.to_string())?;
                 Ok(format!(
                     "{} fingerprinted · {} failed · {} left",
                     r.hashed, r.failed, r.remaining
