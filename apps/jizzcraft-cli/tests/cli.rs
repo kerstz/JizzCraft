@@ -538,6 +538,30 @@ fn import_nfo_is_a_dry_run_unless_applied() {
 }
 
 #[test]
+fn import_edl_is_a_dry_run_unless_applied() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    std::fs::write(lib.path().join("a.mp4"), b"not a real video, only a name").unwrap();
+    std::fs::write(lib.path().join("a.edl"), "10 20 0\n30 31 2\n").unwrap();
+    let before = tree_bytes(lib.path());
+    json(&cli(
+        home.path(),
+        &["--json", "scan", lib.path().to_str().unwrap()],
+    ));
+    let dry = json(&cli(home.path(), &["--json", "import-edl"]));
+    assert_eq!(
+        (dry["dry_run"].clone(), dry["markers_added"].clone()),
+        (true.into(), 2.into()),
+        "{dry}"
+    );
+    let done = json(&cli(home.path(), &["--json", "import-edl", "--apply"]));
+    assert_eq!(done["markers_added"], 2, "{done}");
+    let again = json(&cli(home.path(), &["--json", "import-edl", "--apply"]));
+    assert_eq!(again["markers_added"], 0, "{again}");
+    assert_eq!(tree_bytes(lib.path()), before, "files untouched");
+}
+
+#[test]
 fn export_nfo_lock_flag() {
     let home = tempfile::tempdir().unwrap();
     let lib = tempfile::tempdir().unwrap();

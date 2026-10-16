@@ -58,6 +58,8 @@ pub struct NfoDoc {
     pub premiered: Option<String>,
     pub year: Option<i32>,
     pub studios: Vec<String>,
+    /// `<set>` (collection name), either as text or as `<set><name>`.
+    pub set: Option<String>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     /// Name and `order`.
@@ -82,6 +84,8 @@ enum Field {
     Premiered,
     Year,
     Studio,
+    Set,
+    SetName,
     Genre,
     Tag,
     UserRating,
@@ -107,6 +111,16 @@ fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
 
 /// Parse one `.nfo`. Pure: no file, no network.
 pub fn parse_nfo(bytes: &[u8]) -> std::result::Result<NfoDoc, NfoReject> {
+    parse_root(bytes, &[b"movie", b"musicvideo", b"episodedetails"])
+}
+
+/// The title of a `tvshow.nfo` (root `tvshow`). Pure, same limits as
+/// [`parse_nfo`].
+pub fn parse_tvshow(bytes: &[u8]) -> std::result::Result<Option<String>, NfoReject> {
+    parse_root(bytes, &[b"tvshow"]).map(|d| d.title)
+}
+
+fn parse_root(bytes: &[u8], roots: &[&[u8]]) -> std::result::Result<NfoDoc, NfoReject> {
     use NfoReject::*;
     if bytes.len() as u64 > MAX_BYTES {
         return Err(TooBig);
@@ -160,10 +174,7 @@ pub fn parse_nfo(bytes: &[u8]) -> std::result::Result<NfoDoc, NfoReject> {
             }
             let depth = stack.len() + 1;
             if depth == 1 {
-                if !matches!(
-                    name.as_slice(),
-                    b"movie" | b"musicvideo" | b"episodedetails"
-                ) {
+                if !roots.contains(&name.as_slice()) {
                     return Err(NotNfo);
                 }
                 saw_root = true;
@@ -176,6 +187,7 @@ pub fn parse_nfo(bytes: &[u8]) -> std::result::Result<NfoDoc, NfoReject> {
                     b"premiered" => Some(Field::Premiered),
                     b"year" => Some(Field::Year),
                     b"studio" => Some(Field::Studio),
+                    b"set" => Some(Field::Set),
                     b"genre" => Some(Field::Genre),
                     b"tag" => Some(Field::Tag),
                     b"userrating" => Some(Field::UserRating),
@@ -219,6 +231,7 @@ pub fn parse_nfo(bytes: &[u8]) -> std::result::Result<NfoDoc, NfoReject> {
                     (Some(b"actor"), b"name") => Some(Field::ActorName),
                     (Some(b"actor"), b"order") => Some(Field::ActorOrder),
                     (Some(b"resume"), b"position") => Some(Field::ResumePos),
+                    (Some(b"set"), b"name") => Some(Field::SetName),
                     _ => None,
                 };
                 if let Some(f) = f {
@@ -344,6 +357,12 @@ fn finish_field(
                 doc.studios.push(t);
             }
         }
+        Field::Set | Field::SetName => {
+            let t = clean_text(raw, 60);
+            if doc.set.is_none() && !t.is_empty() {
+                doc.set = Some(t);
+            }
+        }
         Field::Genre => {
             let t = clean_text(raw, 60);
             if !t.is_empty() {
@@ -407,12 +426,12 @@ fn finish_field(
 // ---- matching and applying ---------------------------------------------------
 
 /// A present video in a folder, for sidecar matching.
-struct DirRow {
+pub(super) struct DirRow {
     id: i64,
     stem_lc: String,
 }
 
-enum Found {
+pub(super) enum Found {
     One(i64),
     Many,
     None,
@@ -481,6 +500,30 @@ fn find_item(
             _ => {}
         }
     }
+    match sidecar_owner(c, path, dirs)? {
+        Found::None => {}
+        other => return Ok(other),
+    }
+    if path
+        .file_stem()
+        .is_some_and(|s| s.to_string_lossy().to_lowercase() == "movie")
+    {
+        let dir = parent_blob(path);
+        if !dir.is_empty()
+            && let Some(rows) = dirs.get(&dir)
+        {
+            return Ok(pick(rows.iter().map(|r| r.id).collect()));
+        }
+    }
+    Ok(Found::None)
+}
+
+/// The video of the same folder with the same file name (extension aside).
+pub(super) fn sidecar_owner(
+    c: &Connection,
+    path: &Path,
+    dirs: &mut HashMap<Vec<u8>, Vec<DirRow>>,
+) -> Result<Found> {
     let dir = parent_blob(path);
     if dir.is_empty() {
         return Ok(Found::None);
@@ -504,19 +547,60 @@ fn find_item(
         .file_stem()
         .map(|s| s.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    match pick(
+    Ok(pick(
         rows.iter()
             .filter(|r| r.stem_lc == stem)
             .map(|r| r.id)
             .collect(),
-    ) {
-        Found::None => {}
-        other => return Ok(other),
+    ))
+}
+
+/// Title of the nearest `tvshow.nfo` above `path`, walking up to `ceiling`
+/// (included) and at most `MAX_DEPTH` levels. Only a regular file (not a
+/// link) within the size cap is read. Results are cached per folder.
+fn show_studio(
+    path: &Path,
+    ceiling: &Path,
+    cache: &mut HashMap<PathBuf, Option<String>>,
+) -> Option<String> {
+    let mut dir = path.parent()?;
+    let mut visited: Vec<PathBuf> = Vec::new();
+    let mut found = None;
+    for _ in 0..MAX_DEPTH {
+        if !dir.starts_with(ceiling) {
+            break;
+        }
+        if let Some(hit) = cache.get(dir) {
+            found = hit.clone();
+            break;
+        }
+        visited.push(dir.to_path_buf());
+        let f = dir.join("tvshow.nfo");
+        if let Ok(md) = std::fs::symlink_metadata(&f)
+            && md.is_file()
+            && !md.file_type().is_symlink()
+            && md.len() <= MAX_BYTES
+            && let Ok(bytes) = read_capped(&f, MAX_BYTES)
+            && let Ok(Some(t)) = parse_tvshow(&bytes)
+        {
+            let t = clean_text(&t, 60);
+            if !t.is_empty() {
+                found = Some(t);
+                break;
+            }
+        }
+        if dir == ceiling {
+            break;
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => break,
+        }
     }
-    if stem == "movie" {
-        return Ok(pick(rows.iter().map(|r| r.id).collect()));
+    for v in visited {
+        cache.insert(v, found.clone());
     }
-    Ok(Found::None)
+    found
 }
 
 /// What an NFO says, in the importer's common shape.
@@ -564,6 +648,7 @@ fn record_of(doc: &NfoDoc) -> Record {
         last_played: doc.lastplayed,
         resume_ms: doc.resume_s.map(|s| (s * 1000.0).round() as i64),
         markers: Vec::new(),
+        playlists: doc.set.iter().cloned().collect(),
         ignored: u64::from(doc.ignored),
     }
 }
@@ -586,13 +671,18 @@ pub fn import_nfo(
         }
         None => db.folders()?.into_iter().map(|(_, p)| p).collect(),
     };
-    let mut files: Vec<PathBuf> = Vec::new();
-    for root in &roots {
+    // Each file with the walk root that produced it (the ceiling for tvshow.nfo).
+    let mut files: Vec<(PathBuf, usize)> = Vec::new();
+    for (ri, root) in roots.iter().enumerate() {
         let room = MAX_FILES.saturating_sub(files.len());
         if room == 0 {
             break;
         }
-        files.extend(walk_files(root, "nfo", room, MAX_DEPTH));
+        files.extend(
+            walk_files(root, "nfo", room, MAX_DEPTH)
+                .into_iter()
+                .map(|p| (p, ri)),
+        );
     }
     let mut rep = InteropReport {
         dry_run: o.dry_run,
@@ -601,7 +691,13 @@ pub fn import_nfo(
     };
     let tx = db.conn.transaction()?;
     let mut dirs: HashMap<Vec<u8>, Vec<DirRow>> = HashMap::new();
-    for path in &files {
+    let mut show_cache: HashMap<PathBuf, Option<String>> = HashMap::new();
+    let mut cache_root = usize::MAX;
+    for (path, ri) in &files {
+        if *ri != cache_root {
+            show_cache.clear();
+            cache_root = *ri;
+        }
         if cancel.load(Ordering::Relaxed) {
             rep.cancelled = true;
             break;
@@ -623,7 +719,14 @@ pub fn import_nfo(
             Found::Many => rep.ambiguous += 1,
             Found::One(id) => {
                 rep.matched += 1;
-                if apply_record(&tx, id, &record_of(&doc), o, &mut rep)? {
+                let mut rec = record_of(&doc);
+                if doc.studios.is_empty()
+                    && let Some(t) = show_studio(path, &roots[*ri], &mut show_cache)
+                {
+                    rec.studios = vec![t];
+                    rep.studios_from_show += 1;
+                }
+                if apply_record(&tx, id, &rec, o, &mut rep)? {
                     rep.applied += 1;
                 }
             }

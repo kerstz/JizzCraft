@@ -210,9 +210,15 @@ fn engine_never_touches_media() {
     let mut db = lib(t.path());
     std::fs::write(
         t.path().join("v.nfo"),
-        "<movie><title>T</title><genre>g</genre><actor><name>A</name></actor></movie>",
+        "<movie><title>T</title><genre>g</genre><set>S</set><actor><name>A</name></actor></movie>",
     )
     .unwrap();
+    std::fs::write(
+        t.path().join("tvshow.nfo"),
+        "<tvshow><title>Show</title></tvshow>",
+    )
+    .unwrap();
+    std::fs::write(t.path().join("v.edl"), "1 2 0\n3 4 2\n").unwrap();
     std::fs::write(
         t.path().join("v.funscript"),
         json!({ "actions": [{ "at": 0, "pos": 0 }, { "at": 500, "pos": 100 }] }).to_string(),
@@ -310,8 +316,11 @@ fn engine_never_touches_media() {
     run(
         &mut db,
         "meta.import_nfo",
-        json!({ "dry_run": false, "ratings": true, "history": true, "overwrite": true }),
+        json!({ "dry_run": false, "ratings": true, "history": true, "overwrite": true,
+                "playlists": true }),
     );
+    run(&mut db, "meta.import_edl", json!({}));
+    run(&mut db, "meta.import_edl", json!({ "dry_run": false }));
     // A Stash export, read from outside the tree.
     let ex = work.path().join("stash");
     std::fs::create_dir_all(ex.join("scenes")).unwrap();

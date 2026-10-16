@@ -688,6 +688,18 @@ enum Cmd {
         /// Import play counts, last played dates and resume points.
         #[arg(long)]
         history: bool,
+        /// Add items to playlists named after their NFO sets.
+        #[arg(long)]
+        playlists: bool,
+    },
+    /// Read Kodi .edl files as markers (cut, mute, scene) on the same-named
+    /// video. A dry run unless --apply.
+    ImportEdl {
+        /// Folder to read (default: every library folder).
+        dir: Option<PathBuf>,
+        /// Write the changes (without it, only count them).
+        #[arg(long)]
+        apply: bool,
     },
     /// Read a Stash JSON export folder onto matching items. A dry run unless --apply.
     ImportStash {
@@ -1115,14 +1127,23 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             overwrite,
             ratings,
             history,
+            playlists,
         } => {
             let mut a = json!({
-                "dry_run": !apply, "overwrite": overwrite, "ratings": ratings, "history": history,
+                "dry_run": !apply, "overwrite": overwrite, "ratings": ratings,
+                "history": history, "playlists": playlists,
             });
             if let Some(d) = dir {
                 a["dir"] = json!(d.to_string_lossy());
             }
             ("meta.import_nfo".to_owned(), a)
+        }
+        Cmd::ImportEdl { dir, apply } => {
+            let mut a = json!({ "dry_run": !apply });
+            if let Some(d) = dir {
+                a["dir"] = json!(d.to_string_lossy());
+            }
+            ("meta.import_edl".to_owned(), a)
         }
         Cmd::ImportStash {
             dir,
@@ -1594,9 +1615,16 @@ fn print_human(cmd: &str, v: &Value) {
                 ""
             }
         ),
-        "meta.import_nfo" | "meta.import_stash" => {
+        "meta.import_nfo" | "meta.import_stash" | "meta.import_edl" => {
+            let extra = if cmd == "meta.import_edl" {
+                format!(" · {} markers", v["markers_added"])
+            } else if cmd == "meta.import_nfo" {
+                format!(" · {} playlists created", v["playlists_created"])
+            } else {
+                String::new()
+            };
             println!(
-                "{}: {} files · {} read · {} rejected · {} matched · {} changed · {} unmatched · {} ambiguous",
+                "{}: {} files · {} read · {} rejected · {} matched · {} changed · {} unmatched · {} ambiguous{}",
                 if v["dry_run"] == true {
                     "dry run"
                 } else {
@@ -1608,7 +1636,8 @@ fn print_human(cmd: &str, v: &Value) {
                 v["matched"],
                 v["applied"],
                 v["unmatched"],
-                v["ambiguous"]
+                v["ambiguous"],
+                extra
             );
         }
         "media.by_hash" => {

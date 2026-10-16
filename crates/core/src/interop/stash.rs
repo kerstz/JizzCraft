@@ -619,6 +619,7 @@ fn record_of(
             .filter(|t| *t >= 0.0 && *t < 1.0e7)
             .map(|t| (t * 1000.0).round() as i64),
         markers,
+        playlists: Vec::new(),
         ignored: 0,
     }
 }

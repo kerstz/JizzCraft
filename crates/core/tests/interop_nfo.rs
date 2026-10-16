@@ -2,7 +2,7 @@
 //! an importer that is read-only, bounded, dry-run by default and exact.
 use jizzcraft_core::fingerprint::{fingerprint_pending, quick_hashes};
 use jizzcraft_core::interop::ImportOpts;
-use jizzcraft_core::interop::nfo::{NfoReject, import_nfo, parse_nfo};
+use jizzcraft_core::interop::nfo::{NfoReject, import_nfo, parse_nfo, parse_tvshow};
 use jizzcraft_core::organize::LabelKind;
 use jizzcraft_core::{Db, Filter, Media, scan};
 use rusqlite::types::ValueRef;
@@ -568,17 +568,19 @@ fn dry_run_changes_nothing_and_reports_exactly_what_apply_does() {
     nfo(
         &l.root,
         "b.nfo",
-        "<movie><title>B</title><genre>Drama</genre><actor><name>Bob</name></actor></movie>",
+        "<movie><title>B</title><genre>Drama</genre><set>Box</set><actor><name>Bob</name></actor></movie>",
     );
     let before = dump(&l.db);
     let all = ImportOpts {
         ratings: true,
         history: true,
+        playlists: true,
         ..Default::default()
     };
     assert!(all.dry_run, "dry run is the default");
     let dry = run(&mut l.db, None, &all);
     assert!(dry.dry_run && dry.applied == 2, "{dry:?}");
+    assert_eq!(dry.playlists_created, 1, "{dry:?}");
     assert_eq!(
         dump(&l.db),
         before,
@@ -676,4 +678,133 @@ fn interop_sources_never_print() {
         n += 1;
     }
     assert!(n >= 2);
+}
+
+#[test]
+fn set_parses_in_both_forms_and_first_wins() {
+    let d = parse_nfo(b"<movie><set>Old style</set><set>Later</set></movie>").unwrap();
+    assert_eq!((d.set.as_deref(), d.ignored), (Some("Old style"), 0));
+    let d = parse_nfo(b"<movie><set><name>New style</name><overview>x</overview></set></movie>")
+        .unwrap();
+    assert_eq!((d.set.as_deref(), d.ignored), (Some("New style"), 0));
+    assert_eq!(
+        parse_tvshow(b"<tvshow><title>Show</title></tvshow>").unwrap(),
+        Some("Show".to_string())
+    );
+    assert_eq!(
+        parse_nfo(b"<tvshow><title>Show</title></tvshow>"),
+        Err(NfoReject::NotNfo)
+    );
+    assert_eq!(
+        parse_tvshow(b"<movie><title>M</title></movie>"),
+        Err(NfoReject::NotNfo)
+    );
+}
+
+fn playlist_sizes(db: &Db) -> Vec<(String, u64)> {
+    db.playlists()
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.name, p.count))
+        .collect()
+}
+
+#[test]
+fn set_needs_switch() {
+    let mut l = lib(&["a.mp4"]);
+    nfo(
+        &l.root,
+        "a.nfo",
+        "<movie><title>A</title><set>Box</set></movie>",
+    );
+    let off = run(&mut l.db, None, &apply());
+    assert_eq!(
+        (off.playlists_created, off.ignored_fields),
+        (0, 1),
+        "{off:?}"
+    );
+    assert!(playlist_sizes(&l.db).is_empty());
+    let on_opts = ImportOpts {
+        playlists: true,
+        ..apply()
+    };
+    let on = run(&mut l.db, None, &on_opts);
+    assert_eq!((on.playlists_created, on.ignored_fields), (1, 0), "{on:?}");
+    assert_eq!(playlist_sizes(&l.db), vec![("Box".to_string(), 1)]);
+    let again = run(&mut l.db, None, &on_opts);
+    assert_eq!(
+        (again.playlists_created, again.applied),
+        (0, 0),
+        "{again:?}"
+    );
+    assert_eq!(playlist_sizes(&l.db), vec![("Box".to_string(), 1)]);
+}
+
+fn studio_of(db: &Db, name: &str) -> Option<String> {
+    db.media_info(find(db, name).id)
+        .unwrap()
+        .studio
+        .map(|s| s.name)
+}
+
+#[test]
+fn tvshow_title_fills_studio() {
+    let mut l = lib(&["Show/S1/a.mp4", "Show/S1/b.mp4", "Show/S2/c.mp4"]);
+    nfo(
+        &l.root.join("Show"),
+        "tvshow.nfo",
+        "<tvshow><title>The Show</title></tvshow>",
+    );
+    nfo(
+        &l.root.join("Show/S1"),
+        "a.nfo",
+        "<episodedetails><title>A</title></episodedetails>",
+    );
+    nfo(
+        &l.root.join("Show/S1"),
+        "b.nfo",
+        "<episodedetails><title>B</title><studio>Own</studio></episodedetails>",
+    );
+    // Outside the walk root: the show file is not looked at.
+    let s2 = l.root.join("Show/S2");
+    nfo(
+        &s2,
+        "c.nfo",
+        "<episodedetails><title>C</title></episodedetails>",
+    );
+    let rep = run(&mut l.db, Some(&s2), &apply());
+    assert_eq!((rep.matched, rep.studios_from_show), (1, 0), "{rep:?}");
+    assert_eq!(studio_of(&l.db, "c.mp4"), None);
+
+    let rep = run(&mut l.db, None, &apply());
+    assert_eq!(rep.studios_from_show, 2, "a and c: {rep:?}");
+    assert_eq!(rep.rejected, 1, "tvshow.nfo is not an item file: {rep:?}");
+    assert_eq!(studio_of(&l.db, "a.mp4").as_deref(), Some("The Show"));
+    assert_eq!(studio_of(&l.db, "b.mp4").as_deref(), Some("Own"));
+    assert_eq!(studio_of(&l.db, "c.mp4").as_deref(), Some("The Show"));
+}
+
+#[cfg(unix)]
+#[test]
+fn tvshow_symlink_is_ignored() {
+    let mut l = lib(&["Show/a.mp4"]);
+    let outside = tempfile::tempdir().unwrap();
+    nfo(
+        outside.path(),
+        "tvshow.nfo",
+        "<tvshow><title>Leak</title></tvshow>",
+    );
+    std::os::unix::fs::symlink(
+        outside.path().join("tvshow.nfo"),
+        l.root.join("Show/tvshow.nfo"),
+    )
+    .unwrap();
+    nfo(
+        &l.root.join("Show"),
+        "a.nfo",
+        "<movie><title>A</title></movie>",
+    );
+    let rep = run(&mut l.db, None, &apply());
+    assert_eq!((rep.matched, rep.studios_from_show), (1, 0), "{rep:?}");
+    assert_eq!(studio_of(&l.db, "a.mp4"), None);
 }

@@ -6,6 +6,7 @@
 //! A dry run is the same code path as an import, inside one transaction that
 //! is rolled back, so its counts are exact.
 
+pub mod edl;
 pub mod nfo;
 pub mod nfo_export;
 pub mod stash;
@@ -13,6 +14,7 @@ pub mod stash;
 use crate::commands::{HasLibrary, Registry};
 use crate::error::{Error, Result};
 use crate::meta::{self, Resolved};
+use crate::organize;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -36,6 +38,8 @@ pub struct ImportOpts {
     pub ratings: bool,
     /// Import play counts, last played dates and resume points.
     pub history: bool,
+    /// Put items into playlists named after their NFO `<set>`.
+    pub playlists: bool,
 }
 
 impl Default for ImportOpts {
@@ -45,6 +49,7 @@ impl Default for ImportOpts {
             overwrite: false,
             ratings: false,
             history: false,
+            playlists: false,
         }
     }
 }
@@ -62,6 +67,8 @@ pub struct InteropReport {
     pub ambiguous: u64,
     pub titles_set: u64,
     pub studios_created: u64,
+    pub studios_from_show: u64,
+    pub playlists_created: u64,
     pub people_created: u64,
     pub tags_created: u64,
     pub links_added: u64,
@@ -149,6 +156,7 @@ pub fn opts_from_args(a: &Value) -> Result<ImportOpts> {
         overwrite: opt_flag(a, "overwrite")?.unwrap_or(false),
         ratings: opt_flag(a, "ratings")?.unwrap_or(false),
         history: opt_flag(a, "history")?.unwrap_or(false),
+        playlists: opt_flag(a, "playlists")?.unwrap_or(false),
     })
 }
 
@@ -171,12 +179,26 @@ pub fn register<C: HasLibrary>(reg: &mut Registry<C>) {
     );
     reg.register(
         "meta.import_nfo",
-        "Read Kodi-style .nfo files onto matching items (dry run unless dry_run is false): {dir?, dry_run?=true, overwrite?, ratings?, history?}",
+        "Read Kodi-style .nfo files onto matching items (dry run unless dry_run is false): {dir?, dry_run?=true, overwrite?, ratings?, history?, playlists?}",
         |c, a| {
             let o = opts_from_args(&a)?;
             let dir = a.get("dir").and_then(Value::as_str).map(PathBuf::from);
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let rep = nfo::import_nfo(c.db(), dir.as_deref(), &o, &cancel)?;
+            Ok(json!(rep))
+        },
+    );
+    reg.register(
+        "meta.import_edl",
+        "Read Kodi .edl files as markers (cut, mute, scene) on the same-named video (dry run unless dry_run is false): {dir?, dry_run?=true}",
+        |c, a| {
+            let o = ImportOpts {
+                dry_run: opt_flag(&a, "dry_run")?.unwrap_or(true),
+                ..ImportOpts::default()
+            };
+            let dir = a.get("dir").and_then(Value::as_str).map(PathBuf::from);
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let rep = edl::import_edl(c.db(), dir.as_deref(), &o, &cancel)?;
             Ok(json!(rep))
         },
     );
@@ -238,6 +260,8 @@ pub(crate) struct Record {
     pub last_played: Option<i64>,
     pub resume_ms: Option<i64>,
     pub markers: Vec<(i64, String)>,
+    /// Playlist names (applied only with `ImportOpts::playlists`).
+    pub playlists: Vec<String>,
     pub ignored: u64,
 }
 
@@ -360,6 +384,26 @@ pub(crate) fn apply_record(
             rep.markers_added += 1;
             changed = true;
         }
+    }
+    if o.playlists {
+        for name in &r.playlists {
+            match organize::tx_resolve_playlist(c, name) {
+                Ok(Some((pl, created))) => {
+                    rep.playlists_created += created as u64;
+                    match organize::tx_playlist_add(c, pl, &[id]) {
+                        Ok(n) if n > 0 => {
+                            rep.links_added += 1;
+                            changed = true;
+                        }
+                        Ok(_) => {}
+                        Err(_) => rep.ignored_fields += 1,
+                    }
+                }
+                Ok(None) | Err(_) => rep.ignored_fields += 1,
+            }
+        }
+    } else {
+        rep.ignored_fields += r.playlists.len() as u64;
     }
     // Rating, 1 to 5 stars.
     if o.ratings

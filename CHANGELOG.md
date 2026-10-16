@@ -13,6 +13,11 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Interop: NFO `set` (text or `set/name`) can fill playlists (`--playlists`,
+  opt-in); a `tvshow.nfo` title above an item fills a missing studio; Kodi
+  `.edl` files import as markers (`import-edl`, Tools > "Import from other
+  apps…"). Offline, read-only, dry run first. See
+  [docs/interop.md](docs/interop.md).
 - NFO media-server fields: export can write `lockdata` (`--lock`, Tools >
   "Export NFO files for a media server…"), `dateadded` in UTC (`--date-added`)
   and `watched` next to the play count; import reads `watched` as one play with

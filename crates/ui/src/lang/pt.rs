@@ -1296,6 +1296,18 @@ pub const TABLE: &[(&str, &str)] = &[
     ),
     ("Stash preview", "Pré-visualização do Stash"),
     ("Stash import", "Importação do Stash"),
+    (
+        "Kodi EDL files (cut, mute, scene)",
+        "Ficheiros EDL do Kodi (corte, silêncio, cena)",
+    ),
+    (
+        "Add to playlists from NFO sets",
+        "Adicionar às listas de reprodução a partir das coleções NFO",
+    ),
+    ("EDL preview", "Pré-visualização EDL"),
+    ("EDL import", "Importação EDL"),
+    ("Markers added", "Marcadores adicionados"),
+    ("Playlists created", "Listas de reprodução criadas"),
     ("Script", "Script"),
     ("{} actions", "{} ações"),
     (

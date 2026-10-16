@@ -15,7 +15,8 @@ subtitles, tags and categories with full-text search (FTS5), multi-select and
 bulk actions, folder removal from the library UI, and keys for triage, random
 pick, slideshow, markers and frame step, the `oshash` content hash, titles,
 studios, performers and tag aliases, NFO import and export, Stash export
-import, the funscript heatmap, visual-fingerprint duplicates, and (Online)
+import, NFO sets to playlists, `tvshow.nfo` titles to studios, Kodi `.edl` to
+markers, the funscript heatmap, visual-fingerprint duplicates, and (Online)
 saving videos, the page reader and extractor rules.
 
 Not done yet: live DASH and low-latency HLS, audio in TS or WebM, subtitles
@@ -25,8 +26,7 @@ Windows and macOS machines (issues #14, #15).
 
 ## Next milestones (explicitly out of scope until the MVP is solid)
 
-- **Interop**: offline, later: NFO `set/name` to a playlist (opt-in),
-  `tvshow.nfo` title to studio, Kodi `.edl` to markers. Online, conditional:
+- **Interop**: online, conditional:
   a read-only Stash GraphQL import (fixed query text, no mutation) and a
   read-only Jellyfin/Emby pull; each needs an AGENTS.md amendment first (the
   user's own LAN server).

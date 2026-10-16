@@ -1771,6 +1771,34 @@ pub(crate) fn tx_label_assign(
     label_assign(c, kind, &[label], &[media], true).map(|_| ())
 }
 
+/// Playlist by name (case-insensitive), created when missing and the cap
+/// allows. `Ok(None)` when the name is invalid or the cap is reached;
+/// the flag tells whether it was just created.
+pub(crate) fn tx_resolve_playlist(c: &Connection, name: &str) -> Result<Option<(i64, bool)>> {
+    let Ok((name, lc)) = clean_name(name) else {
+        return Ok(None);
+    };
+    let existing: Option<i64> = c
+        .query_row("SELECT id FROM playlists WHERE name_lc = ?1", [&lc], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if let Some(id) = existing {
+        return Ok(Some((id, false)));
+    }
+    let n: i64 = c.query_row("SELECT COUNT(*) FROM playlists", [], |r| r.get(0))?;
+    if n >= MAX_PLAYLISTS {
+        return Ok(None);
+    }
+    let now = now_secs();
+    c.execute(
+        "INSERT INTO playlists(name, name_lc, color, private, created_at, updated_at)
+         VALUES (?1, ?2, NULL, 0, ?3, ?3)",
+        params![name, lc, now],
+    )?;
+    Ok(Some((c.last_insert_rowid(), true)))
+}
+
 pub(crate) fn tx_playlist_add(c: &Connection, pl: i64, media: &[i64]) -> Result<u64> {
     pl_add(c, pl, media, None).map(|(a, _)| a)
 }

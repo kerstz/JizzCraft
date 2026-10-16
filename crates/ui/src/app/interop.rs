@@ -20,6 +20,7 @@ pub(super) enum Source {
     #[default]
     Nfo,
     Stash,
+    Edl,
 }
 
 /// What a result was computed for.
@@ -30,6 +31,7 @@ struct Key {
     overwrite: bool,
     ratings: bool,
     history: bool,
+    playlists: bool,
 }
 
 type Slot = Arc<Mutex<Option<(Key, InteropReport)>>>;
@@ -42,6 +44,7 @@ pub(super) struct InteropUi {
     overwrite: bool,
     ratings: bool,
     history: bool,
+    playlists: bool,
     slot: Slot,
     running: Arc<AtomicBool>,
 }
@@ -54,6 +57,7 @@ impl InteropUi {
             overwrite: self.overwrite,
             ratings: self.ratings,
             history: self.history,
+            playlists: self.playlists,
         }
     }
 }
@@ -98,7 +102,9 @@ impl JizzApp {
         let folder_text = match (&self.interop.folder, discreet) {
             (_, true) => "—".to_owned(),
             (Some(p), false) => p.to_string_lossy().into_owned(),
-            (None, false) if self.interop.source == Source::Nfo => tr("Library folders").to_owned(),
+            (None, false) if self.interop.source != Source::Stash => {
+                tr("Library folders").to_owned()
+            }
             (None, false) => "—".to_owned(),
         };
         let mut ui_state = std::mem::take(&mut self.interop);
@@ -115,6 +121,11 @@ impl JizzApp {
                     tr("NFO files (Kodi, Jellyfin, Emby, Plex)"),
                 );
                 ui.add_enabled_ui(editable, |ui| {
+                    ui.radio_value(
+                        &mut ui_state.source,
+                        Source::Edl,
+                        tr("Kodi EDL files (cut, mute, scene)"),
+                    );
                     ui.radio_value(
                         &mut ui_state.source,
                         Source::Stash,
@@ -134,7 +145,7 @@ impl JizzApp {
                         if ui.button(tr("Choose…")).clicked() {
                             pick = true;
                         }
-                        if ui_state.source == Source::Nfo
+                        if ui_state.source != Source::Stash
                             && ui_state.folder.is_some()
                             && ui.button(tr("Library folders")).clicked()
                         {
@@ -144,9 +155,17 @@ impl JizzApp {
                 });
                 ui.add_space(S);
                 ui.add_enabled_ui(editable, |ui| {
-                    ui.checkbox(&mut ui_state.overwrite, tr("Replace existing titles"));
-                    ui.checkbox(&mut ui_state.ratings, tr("Import ratings"));
-                    ui.checkbox(&mut ui_state.history, tr("Import play history"));
+                    if ui_state.source != Source::Edl {
+                        ui.checkbox(&mut ui_state.overwrite, tr("Replace existing titles"));
+                        ui.checkbox(&mut ui_state.ratings, tr("Import ratings"));
+                        ui.checkbox(&mut ui_state.history, tr("Import play history"));
+                    }
+                    if ui_state.source == Source::Nfo {
+                        ui.checkbox(
+                            &mut ui_state.playlists,
+                            tr("Add to playlists from NFO sets"),
+                        );
+                    }
                 });
                 ui.add_space(S);
                 ui.add(
@@ -164,11 +183,13 @@ impl JizzApp {
                 let (cmd, ready) = match ui_state.source {
                     Source::Nfo => ("meta.import_nfo", true),
                     Source::Stash => ("meta.import_stash", ui_state.folder.is_some()),
+                    Source::Edl => ("meta.import_edl", true),
                 };
                 let args = |dry: bool| {
                     let mut a = json!({
                         "dry_run": dry, "overwrite": ui_state.overwrite,
                         "ratings": ui_state.ratings, "history": ui_state.history,
+                        "playlists": ui_state.playlists,
                     });
                     if let Some(f) = &ui_state.folder {
                         a["dir"] = json!(f.to_string_lossy());
@@ -202,6 +223,8 @@ impl JizzApp {
                         (tr("Ambiguous"), r.ambiguous),
                         (tr("Rejected"), r.rejected),
                         (tr("Created"), created),
+                        (tr("Playlists created"), r.playlists_created),
+                        (tr("Markers added"), r.markers_added),
                     ] {
                         widgets::kv(ui, label, &n.to_string());
                     }
@@ -234,8 +257,13 @@ pub(super) fn register(reg: &mut Registry<JizzApp>) {
     // Same names as the core commands: in the UI the work runs as a job.
     reg.register(
         "meta.import_nfo",
-        "Read Kodi-style .nfo files onto matching items (preview unless dry_run is false): {dir?, dry_run?=true, overwrite?, ratings?, history?}",
+        "Read Kodi-style .nfo files onto matching items (preview unless dry_run is false): {dir?, dry_run?=true, overwrite?, ratings?, history?, playlists?}",
         |app, args| start(app, Source::Nfo, &args),
+    );
+    reg.register(
+        "meta.import_edl",
+        "Read Kodi .edl files as markers on the same-named video (preview unless dry_run is false): {dir?, dry_run?=true}",
+        |app, args| start(app, Source::Edl, &args),
     );
     reg.register(
         "meta.import_stash",
@@ -259,6 +287,7 @@ fn start(app: &mut JizzApp, source: Source, args: &Value) -> jizzcraft_core::Res
         overwrite: o.overwrite,
         ratings: o.ratings,
         history: o.history,
+        playlists: o.playlists,
     };
     let (slot, running, cancel) = (
         app.interop.slot.clone(),
@@ -269,12 +298,15 @@ fn start(app: &mut JizzApp, source: Source, args: &Value) -> jizzcraft_core::Res
     let label = match (source, o.dry_run) {
         (Source::Nfo, true) => "NFO preview",
         (Source::Nfo, false) => "NFO import",
+        (Source::Edl, true) => "EDL preview",
+        (Source::Edl, false) => "EDL import",
         (Source::Stash, true) => "Stash preview",
         (Source::Stash, false) => "Stash import",
     };
     app.spawn_job(label, move |db| {
         let res = match (source, dir.as_deref()) {
             (Source::Nfo, d) => jizzcraft_core::interop::nfo::import_nfo(db, d, &o, &cancel),
+            (Source::Edl, d) => jizzcraft_core::interop::edl::import_edl(db, d, &o, &cancel),
             (Source::Stash, Some(d)) => {
                 jizzcraft_core::interop::stash::import_stash(db, d, &o, &cancel)
             }

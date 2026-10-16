@@ -34,7 +34,7 @@ loses both hashes at the next scan.
 
 ## NFO files
 
-`jizzcraft-cli import-nfo [DIR] [--apply] [--overwrite] [--ratings] [--history]`
+`jizzcraft-cli import-nfo [DIR] [--apply] [--overwrite] [--ratings] [--history] [--playlists]`
 reads Kodi-style `.nfo` files (root `movie`, `musicvideo` or `episodedetails`)
 below DIR, or below every library folder when DIR is omitted, and applies them
 to the matching library items. Without `--apply` it only counts: a preview is
@@ -59,17 +59,26 @@ What is read and where it goes:
 | `title` | the title |
 | `premiered`, else `year` (as `YYYY-01-01`) | the release date |
 | first `studio` | the studio (others are ignored) |
+| no `studio`, but a `tvshow.nfo` above the file | the show's `title` becomes the studio (see below) |
+| `set` (text) or `set/name` | a playlist of that name, created if missing, with the item added; only with `--playlists` (without it the field is counted as ignored) |
 | `actor/name`, `actor/order` | performers, in that order |
 | `genre`, `tag` | tags; a name matching a tag alias reuses that tag |
 | `uniqueid type=...` | external ids (our own `jizzcraft-fp1` is not stored) |
 | `userrating` (0 to 10) | stars, `round(v / 2)` clamped to 0 to 5; only with `--ratings` and only onto unrated items unless `--overwrite` |
 | `playcount`, `lastplayed`, `resume/position` | play count (larger wins), last played (later wins, midnight UTC of that day), resume point (only if empty); only with `--history` |
 
-Everything else (`plot`, `outline`, `set`, `thumb`, `fanart`, `trailer`,
+Everything else (`plot`, `outline`, `thumb`, `fanart`, `trailer`,
 `fileinfo`, `ratings`, `runtime`, `dateadded`...) is counted as ignored. The
 policy is "fill": a title, date or studio you already have is kept unless you
 pass `--overwrite`; performers and tags are added; favorite and hidden are
 never changed.
+
+A `tvshow.nfo` is not an item file (it is counted as rejected). When an item's
+own NFO has no `studio`, the nearest file named exactly `tvshow.nfo` in its
+folder or above it, up to the folder the walk started from (never beyond, at
+most 32 levels), supplies its `title` as the studio, subject to the same
+fill/overwrite policy. Only a regular file within the size cap is read; a
+symbolic link is ignored.
 
 The reader is deliberately narrow. A file with a DOCTYPE is refused (so no
 entity can expand and no external entity is read); only the five predefined
@@ -79,6 +88,31 @@ refused. A file that holds only a web address is counted and the address is
 never fetched. Symbolic links are not followed, hidden folders are skipped,
 and at most 100 000 files are read. The report holds counts only. Stopping an
 import from the app rolls everything back.
+
+## Kodi EDL
+
+`jizzcraft-cli import-edl [DIR] [--apply]` reads Kodi edit decision lists
+(`.edl`) and adds markers to the video with the same name in the same folder
+(`a.edl` for `a.mp4`; two videos with that name are ambiguous and skipped).
+It is a dry run unless `--apply`; the app has it under Tools, "Import from
+other apps…", "Kodi EDL files (cut, mute, scene)".
+
+Each line is `start end action`, times in seconds or `HH:MM:SS(.sss)`:
+
+| Action | Marker at `start` |
+| --- | --- |
+| 0 | `Cut` |
+| 1 | `Mute` |
+| 2 | `Scene` |
+| 3 and others | ignored |
+
+Lines with frame positions (`#123`), unreadable or out-of-range times (over
+10 000 000 s), or an end before the start are ignored. Markers have a position
+and a label only, so the action becomes the label and nothing is skipped or
+muted during playback. A marker already at the same millisecond is kept, which
+makes a second import add nothing. Files over 64 KiB or with more than 2000
+lines are refused; the same read-only, counts-only rules as the NFO import
+apply.
 
 ## Stash exports
 
