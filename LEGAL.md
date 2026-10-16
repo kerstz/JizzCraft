@@ -20,4 +20,5 @@
 - **Sites and their rules.** JizzCraft does not bypass age verification,
   sign-in, regional restrictions or DRM, and does not read browser cookies.
   Sites' terms of use apply to you. Streaming only is a product choice, not a
-  legal guarantee.
+  legal guarantee. Saving a video to your disk is your decision and your
+  responsibility, as is the right to keep what you save.

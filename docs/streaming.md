@@ -10,6 +10,8 @@ below is something you configure yourself, in the network build
 | --- | --- | --- |
 | a direct `http(s)` video address | `stream.open {url}` | seekable playback through `Range` requests, nothing written to disk. A server that ignores `Range` falls back to save-while-playing. |
 | a page address and a resolver you installed | `stream.resolve {url, resolver}` | the resolver prints file addresses, the app streams the best one |
+| any other page address | `extract.page {url}`, or paste it in the Downloads box | the built-in page reader looks for standard video markup (see below); the app streams the best address it finds |
+| a page address and `Download` | `download.start {url}` | the video is saved to your save folder; nothing is written to disk unless you press Download |
 | a result of a source you defined | `fetch.play {result}` | same as `stream.open` on the result's media address |
 | a magnet or torrent | `fetch.play` | unchanged |
 
@@ -208,6 +210,113 @@ then age confirmation, sign-in, region, rate limit, unsupported page, gone).
 A link that expires during playback is renewed by asking the same resolver
 again; if that fails, you see "The link expired."
 
+## The built-in page reader
+
+When an address is a page and not a video, JizzCraft reads the page itself
+before (setting `extractor`: `fallback`, the default, asks your resolvers
+first) or after your own tools. The reader is generic code. It knows no site.
+It looks only at markup any page may carry:
+
+- HTML5 `<video>` and `<source>` elements;
+- Open Graph and Twitter player tags (`og:video`, `twitter:player:stream`);
+- schema.org `VideoObject` in JSON-LD (a page with several of them lists
+  several videos);
+- plain media addresses (`.mp4`, `.webm`, `.m3u8`, `.mpd`) written in the page
+  text or in the JSON of its scripts. Scripts are read, never run.
+
+If the page shows nothing playable, the reader looks inside at most three
+embedded players (`<iframe>`, one level deep, `Referer` set to the page).
+Preview clips rank last. Every address it finds must pass the same check as
+every other address in the app (`inward_ok`: a public page cannot point the
+app at your local network) and the kill switch.
+
+What it does not do, on purpose: it only sends GET requests, keeps no cookie,
+submits no form, does not follow a meta refresh, runs no script, and does not
+get past age confirmation, sign-in, paywalls or regional blocks. A page that
+needs one of those ends in a fixed sentence ("Sign-in needed", "Age
+confirmation needed", ...). Limits: 30 seconds per page, 2 MiB read, at most
+two page fetches at once. The `User-Agent` is generic and can be changed
+(`page_user_agent`); media requests carry only that, `Referer` and `Origin`.
+
+`extract.page {url}` lists what a page holds and returns a token for
+`download.start`; it prints no address unless you pass `show_urls`.
+
+## Your own extractor rules
+
+For a page the generic reader does not understand, you can write rules. A rule
+is a small JSON file you write yourself; JizzCraft ships none. A rule never
+makes a request: it is matched against the page text that was already fetched
+and what it finds goes through the same checks as any other address.
+
+```json
+{
+  "name": "my rule",
+  "hosts": ["videos.example.invalid", "*.cdn.example.invalid"],
+  "media": [
+    {"regex": "player\\.load\\('(?P<url>[^']+)'\\)", "height": 720}
+  ],
+  "json": [
+    {"regex": "var cfg = (?P<json>\\{.*?\\});", "items": "/sources", "url": "/file", "height": "/label"}
+  ],
+  "title": "<h1>(?P<title>[^<]+)</h1>",
+  "unescape": "js"
+}
+```
+
+- `hosts`: exact names or `*.suffix`; at most 16. The rule runs only on a page
+  from one of them, before the generic scan.
+- `media`: patterns with a named group `url`; optional `height` and
+  `protocol` (`hls`, `dash`, `http`). `json`: a pattern with a named group
+  `json`, then RFC 6901 pointers (`items`, `url`, `height`).
+- `unescape`: `none`, `js`, `html` or `url`, applied to what a pattern finds.
+- Limits: a file of 64 KiB, 32 rules, 8 `media` and 4 `json` patterns per
+  rule, patterns of 1024 characters, 64 matches per pattern, 2 MiB of page
+  text. Patterns use a regular-expression engine without backtracking, so no
+  pattern can stall the reader. Patterns are never printed or logged.
+
+Commands: `extract.rules.import {path}`, `extract.rules.list`,
+`extract.rules.enable {id, on}`, `extract.rules.remove {id}`. Rules are kept
+in `fetch.json`.
+
+## Saving videos
+
+Streaming writes nothing to disk. Saving is a separate act, and yours:
+paste an address (a file, a page, a `.m3u8` or a `.mpd`) and press Download,
+or run `download.start {url}`. The same address can be watched and saved at
+the same time; they are two separate downloads.
+
+- **Where.** The save folder (`save_dir`, default the download folder), or
+  `dir` in the command. Saved videos are added to the library once per
+  finished batch (`import_after_save`).
+- **Never overwrites.** Each save reserves a free name, writes a `.part` file
+  created with `create_new` (mode 0600) and gives it its final name only if
+  nothing has appeared under that name meanwhile. A cancelled or failed save
+  removes its own `.part` file, checked by inode, and nothing else.
+  `crates/fetch/tests/security.rs::downloads_never_overwrite` keeps it so.
+- **Names and formats.** The file is named after the page's title, cleaned up;
+  with no title (or in discreet or disguised mode) it is called `video`. The
+  extension comes from the content. HLS in TS becomes one `.ts` file; fMP4 and
+  DASH become one fragmented `.mp4` (separate audio is merged in `fetch`).
+  Nothing is remuxed. Live streams are refused.
+- **Checks.** The start of the file is sniffed, the length must match what
+  the server said, a changed `ETag` or `Last-Modified` stops the resume,
+  HLS segments are all required, and the size is checked again after the
+  rename. A failure leaves nothing behind.
+- **Queue.** Up to `save_concurrency` saves at once (1 to 4, default 2), a
+  speed cap shared with torrents, pause, resume and cancel. The queue lives in
+  memory: a save resumes after a dropped connection or a pause, but not after
+  the app restarts. A signed link that expires is renewed from the page.
+- **Disk.** Free space is checked before and every second. When it runs low
+  the save pauses with "Disk full. Downloads paused." and keeps what it has;
+  it resumes once there is room.
+- **Kill switch.** `require_proxy` applies to every request of the page
+  reader and of every save. The panic switch pauses saves; changing the proxy
+  or the switch ends the session, removes its own `.part` files and reports a
+  count.
+
+Saving a video is your decision and your responsibility; see
+[LEGAL.md](../LEGAL.md).
+
 ## Privacy
 
 - *Block the network without a proxy* (`fetch.settings {require_proxy}`):
@@ -225,12 +334,16 @@ again; if that fails, you see "The link expired."
 ## Not done yet
 
 Separate audio that is not fragmented MP4, separate audio on a live stream,
-subtitles for streams, saving a stream while
-watching it, quality switching and seeking inside a live window, and a
-proxy-aware key fetch UI. Anything not listed above is refused with "This
-stream format is not supported."
+subtitles for streams, resuming a download after the app restarts, quality
+switching and seeking inside a live window, and a proxy-aware key fetch UI.
+Anything not listed above is refused with "This stream format is not
+supported."
 
 ## Will not be done
 
-DRM, live DASH and low-latency HLS (`#EXT-X-PART`), and bundled sources of
-any kind.
+DRM; live DASH and low-latency HLS (`#EXT-X-PART`); recording live streams;
+getting past age confirmation, sign-in, paywalls or regional blocks; reading
+another browser's cookies; running a page's scripts; per-site code; and
+anything bundled: no source, site, host, rule, preset or catalog ships with
+JizzCraft. The built-in page reader is generic code that reads standard markup
+any page may carry (HTML5 video, Open Graph, schema.org) and knows no site.

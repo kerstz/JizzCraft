@@ -29,6 +29,17 @@ anything may change between minor versions.
   `save_dir`, `save_concurrency`, `import_after_save`, `extractor`,
   `follow_embeds`, `page_user_agent`. Saved videos join the library once per
   batch.
+- Online edition: a generic page reader. A page address is read for standard
+  video markup (HTML5 video, Open Graph, schema.org, media addresses in its
+  scripts, at most three embedded players) when none of your resolvers
+  answers, or before them (`extractor`). GET only, no cookies, no forms, no
+  scripts run, no meta refresh followed; no site is bundled. Your own
+  extractor rules (JSON you write, `extract.rules.import|list|enable|remove`)
+  cover pages it does not understand.
+- Security scans in `crates/fetch/tests/security.rs` for downloads (no
+  overwrite, own parts only, kill switch) and the page reader (no bypass, no
+  bundled site, `inward_ok`); end-to-end scenarios s16 to s19 and a longer
+  s14.
 - Funscript sidecars: a `.funscript` next to a video draws a one-hue intensity
   band above the timeline (decorative, off in discreet mode, switch in
   Settings) and "Script: N actions" in the inspector. Display only: nothing is
@@ -104,6 +115,8 @@ anything may change between minor versions.
 ### Changed
 - Online edition: the "cannot be streamed without saving" sentence now points
   to Download.
+- Online edition: the Downloads box takes a page or video address and offers
+  Download next to Play; pages go through the built-in page reader.
 - Dependencies: `clap_mangen` 0.3 and `windows-sys` 0.61 (one fewer duplicate
   `windows-sys` in the tree). `gen man` is now covered by a test.
 

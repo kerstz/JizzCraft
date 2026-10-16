@@ -46,8 +46,8 @@ Windows and macOS machines (issues #14, #15).
   that road goes.)
 - **Website**: project site and docs. Until then the README is doing its best.
 
-Not planned, ever: accounts, cloud sync, telemetry, bundled indexers or site
-scrapers, remote URLs in the player, media generation. The default build stays
+Not planned, ever: accounts, cloud sync, telemetry, bundled indexers, per-site
+scrapers or site rules, remote URLs in the player, media generation. The default build stays
 offline and is tested to link no network crate; networking exists only in the
 opt-in `network` build, with no bundled sites.
 

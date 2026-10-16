@@ -110,6 +110,9 @@ One code base, one `main` branch, two builds. The editions are two release tarba
 | Build | `cargo build --release -p jizzcraft` | `cargo build --release -p jizzcraft --features online` |
 | Release file | `jizzcraft-<version>-<arch>-linux.tar.xz` | `jizzcraft-online-<version>-<arch>-linux.tar.xz` |
 | Install | `install.sh` (or `--edition offline`) | `install.sh --edition online` |
+| Streaming | n/a | Direct, HLS and DASH playback from addresses you give; nothing written to disk unless you press Download. |
+| Web pages | n/a | A generic page reader for standard video markup, plus your own resolver tools and your own extractor rules (JSON you write). It knows no site and ships no rule. |
+| Saving | n/a | Download a file, page, HLS or DASH video to a folder you choose: never overwrites, resumes within a session, pauses on a full disk. Live streams are refused. |
 | Proxy / VPN kill switch | n/a | yes: with it on, nothing connects unless your proxy or VPN interface is set |
 
 Library, settings and thumbnails are shared, so switching editions loses nothing. JizzCraft ships **no site, indexer, tracker, source or catalog** in either edition. Details: [docs/editions.md](docs/editions.md).
@@ -120,11 +123,11 @@ Library, settings and thumbnails are shared, so switching editions loses nothing
 > JizzCraft is **alpha software**, held together by clippy and optimism. It works, it is tested, and it will still have rough edges and change between versions. Keep a backup of anything you cannot replace (`jizzcraft-cli` has a backup command).
 
 - **Platforms.** Linux is the only tested platform (one main machine: H.264, VA-API, AMD GPU, Wayland). Windows and macOS compile and are built by CI, but have never run on real hardware; the Windows files may be missing from a release when that job fails.
-- **Verified by automated tests**: scan, search, favorites, ratings, hide/inbox, history, markers, filters, saved views, folder tree, stable shuffle, fingerprint relink, backup and metadata export/import, bit-rot detection, schema migration; thumbnails, scrub previews, integrity checks; the player state machine on a real GStreamer pipeline; the network guard; keymap invariants (no duplicate chords, physical keys on AZERTY); 18 end-to-end scenarios (`cargo xtask e2e`, a required CI check) and performance budgets (`cargo xtask perf`).
+- **Verified by automated tests**: scan, search, favorites, ratings, hide/inbox, history, markers, filters, saved views, folder tree, stable shuffle, fingerprint relink, backup and metadata export/import, bit-rot detection, schema migration; thumbnails, scrub previews, integrity checks; the player state machine on a real GStreamer pipeline; the network guard; keymap invariants (no duplicate chords, physical keys on AZERTY); 22 end-to-end scenarios (`cargo xtask e2e`, a required CI check) and performance budgets (`cargo xtask perf`).
 - **Only checked through commands and screenshots, not by hand**: mouse wheel zoom, drag-panning, timeline dragging, fullscreen, boss-key minimize under different compositors, the native folder dialog, triage, the player bar chips, autoplay, slideshow, and the unlocked vault's Settings flow (covered by tests, never seen on screen by the maintainers; the lock screen and the Privacy page are rendered by `cargo xtask screenshots` and were checked).
 - **Upgrading from 0.1.0**: the library migrates in place on first start, after writing a backup next to it; 0.1.0 cannot open it again afterwards (restore the backup to go back). Checked with a library created by the 0.1.0 binary.
 - **Known gaps**: CPU use on high-resolution video is 3 to 6 times `gst-play-1.0` (colour conversion runs on the CPU; a shader is on the [roadmap](ROADMAP.md)); subtitles are local `.srt` / `.vtt` sidecars only; no file watching (rescan is manual); AVIF is not decoded; GStreamer parses imported videos without a sandbox.
-- **Streaming (Online edition, experimental)**: direct video addresses, HLS (on demand and live) and DASH on demand. Not supported: live DASH, low-latency HLS, TS or WebM separate audio, DRM, subtitles for streams.
+- **Streaming (Online edition, experimental)**: direct video addresses, HLS (on demand and live) and DASH on demand, pages through a generic reader, and saving to a folder. Not supported: live DASH, low-latency HLS, recording live streams, TS or WebM separate audio, DRM, subtitles for streams, resuming a save after a restart.
 
 What changed in this version: [CHANGELOG.md](CHANGELOG.md).
 
@@ -244,6 +247,7 @@ Promises are cheap, so here is where each one is enforced. If one of these tests
 | Paths are turned into stable opaque tags before they reach logs (full paths only with `JIZZCRAFT_DEBUG=1`) | `redacted_paths_are_stable_opaque_tags` in [`crates/core/src/privacy.rs`](crates/core/src/privacy.rs) |
 | Online edition: the kill switch means zero connections | e2e scenario `s14_kill_switch_means_zero_connections` in [`tests/e2e/tests/scenarios.rs`](tests/e2e/tests/scenarios.rs) |
 | Online edition: indexer and source keys never reach errors, debug output or listings | [`crates/fetch/tests/security.rs`](crates/fetch/tests/security.rs) |
+| Online edition: a save never overwrites a file and removes only its own `.part`; every page and save re-checks the kill switch; the page reader never posts, sends cookies or bundles a site | `downloads_never_overwrite`, `downloads_and_pages_recheck_the_kill_switch`, `page_reader_has_no_bypass`, `page_reader_bundles_no_site`, `extracted_urls_pass_inward_ok` in [`crates/fetch/tests/security.rs`](crates/fetch/tests/security.rs) |
 
 And the rules that are design, not tests:
 

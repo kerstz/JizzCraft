@@ -107,6 +107,11 @@ Reading other apps' data is welcome; talking to other apps is not. Details in
   remote file goes through `fetch::stream` into `Player::open_stream`; the
   player still never takes a URL. `require_proxy` is the kill switch: every
   request path must honour it (see `service::proxy_blocked`).
+- **Downloads and pages.** Downloads: `.part` via `create_part`, finish via
+  `rename_noclobber`, inode-checked deletes of own parts only; extracted URLs
+  pass `resolve_candidate`/`inward_ok`; the page reader never posts, sends
+  cookies or follows meta refresh. Downloads and the page reader re-check
+  `proxy_blocked()`. `tests/security.rs` scans for all of it.
 - **Manifests are parsed in `crates/fetch` only.** HLS and DASH playlists, keys
   and segments are fetched there (`segmented.rs`) and reach the player as bytes
   through `jizzcraft_core::timed::TimedSource` / `Player::open_timed`. The
