@@ -867,10 +867,13 @@ impl JizzApp {
                     }
                 }
                 if finished > 0 {
-                    toasts.push((
-                        ToastKind::Info,
-                        format!("Download complete · {finished} torrent(s)"),
-                    ));
+                    let mut text =
+                        crate::i18n::tr_dyn(&format!("Download complete · {finished} torrent(s)"))
+                            .into_owned();
+                    if let Some(q) = crate::fun::quip(crate::fun::Quip::Downloaded) {
+                        text = format!("{text} · {q}");
+                    }
+                    toasts.push((ToastKind::Info, text));
                     import = Some(
                         d.host
                             .config()
