@@ -13,6 +13,12 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Online edition, groundwork for saving videos: shared format ranking (height,
+  then bitrate) and multi-video answers for the resolver parser, a file-name
+  and no-overwrite toolkit (sanitized names, extension from the content,
+  `.part` reservation, a rename that never replaces, inode-checked deletes),
+  and five new plain-language sentences (page needs scripts, live streams
+  cannot be saved, not a video, incomplete download, folder changed).
 - Arch recipes: the release PKGBUILDs carry the real checksum of the v0.2.0
   source tarball, all three recipes ship a `.SRCINFO`, and
   `cargo xtask check-packaging` fails on a `SKIP` checksum in a release recipe,
@@ -28,10 +34,14 @@ anything may change between minor versions.
   `ttff_ms`.
 
 ### Changed
+- Online edition: the "cannot be streamed without saving" sentence now points
+  to Download.
 - Dependencies: `clap_mangen` 0.3 and `windows-sys` 0.61 (one fewer duplicate
   `windows-sys` in the tree). `gen man` is now covered by a test.
 
 ### Fixed
+- Online edition: finishing a plain-HTTP `.part` download could replace a file
+  that appeared at the last moment; the finish now refuses to replace anything.
 - Online edition: the "disk full" status of a torrent paused for lack of room
   could be lost when a list refresh ran between the watchdog's label and the
   actual pause; the label is now set once the pause has landed. This also

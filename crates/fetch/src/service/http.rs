@@ -583,11 +583,11 @@ pub(super) async fn http_stream_with(
         let complete = ok && w2.load(Ordering::SeqCst) >= len && file.sync_all().is_ok();
         drop(file);
         if complete {
-            // Never replace a file that appeared meanwhile.
-            if final2.exists() {
+            // Never replace a file that appeared meanwhile, even at the very
+            // last moment: the rename itself refuses.
+            if crate::savename::rename_noclobber(&part2, &final2).is_err() {
                 f2.store(true, Ordering::SeqCst);
-            } else {
-                let _ = jizzcraft_core::fsutil::replace(&part2, &final2);
+                let _ = std::fs::remove_file(&part2);
             }
         } else {
             // A server without Range cannot resume: a partial file is junk.

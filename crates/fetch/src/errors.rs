@@ -43,7 +43,12 @@ pub const LOGIN_REQUIRED: &str = "This video requires an account on the site.";
 pub const GEO_BLOCKED: &str = "This video is not available in your region.";
 pub const RATE_LIMITED: &str = "The site is limiting requests. Wait a few minutes.";
 pub const NEEDS_SAVING: &str =
-    "This video cannot be streamed without saving it, which JizzCraft does not do for web pages.";
+    "This video cannot be streamed without saving it. Use Download to save it first.";
+pub const NEEDS_JS: &str = "This page builds its video with scripts, which JizzCraft does not run. A resolver tool you installed may read it.";
+pub const LIVE_NOT_SAVED: &str = "Live streams cannot be saved.";
+pub const NOT_A_VIDEO: &str = "The address did not send a video file.";
+pub const INCOMPLETE: &str = "The download ended before the whole file arrived.";
+pub const FOLDER_CHANGED: &str = "The save folder changed during the download. Nothing was saved.";
 
 /// Every sentence `classify` can return (for tests and for the CLI).
 pub const ALL: &[&str] = &[
@@ -83,6 +88,11 @@ pub const ALL: &[&str] = &[
     GEO_BLOCKED,
     RATE_LIMITED,
     NEEDS_SAVING,
+    NEEDS_JS,
+    LIVE_NOT_SAVED,
+    NOT_A_VIDEO,
+    INCOMPLETE,
+    FOLDER_CHANGED,
 ];
 
 /// `word` appears in `r` as a whole word (so "alive" is not "live").
@@ -107,6 +117,8 @@ pub fn classify(raw: &str) -> &'static str {
         CLOCK_SKEW
     } else if r.contains("cannot stream without saving") {
         NEEDS_SAVING
+    } else if r.contains("page needs scripts") {
+        NEEDS_JS
     } else if r.contains("resolver missing") {
         RESOLVER_MISSING
     } else if r.contains("resolver unsupported") {
@@ -125,6 +137,14 @@ pub fn classify(raw: &str) -> &'static str {
         NOT_FOUND
     } else if r.contains("resolver") {
         RESOLVER_FAILED
+    } else if r.contains("cannot save live") {
+        LIVE_NOT_SAVED
+    } else if r.contains("not a video") {
+        NOT_A_VIDEO
+    } else if r.contains("incomplete download") {
+        INCOMPLETE
+    } else if r.contains("folder changed") {
+        FOLDER_CHANGED
     } else if r.contains("source changed") {
         SOURCE_CHANGED
     } else if r.contains("expired") {
@@ -269,9 +289,17 @@ mod tests {
             ("resolver gone", NOT_FOUND),
             ("resolver failed", RESOLVER_FAILED),
             ("cannot stream without saving", NEEDS_SAVING),
+            ("page needs scripts", NEEDS_JS),
+            ("cannot save live", LIVE_NOT_SAVED),
+            ("cannot save live stream http://x.invalid/t", LIVE_NOT_SAVED),
+            ("not a video", NOT_A_VIDEO),
+            ("incomplete download", INCOMPLETE),
+            ("folder changed", FOLDER_CHANGED),
         ];
         for (raw, want) in resolver {
             assert_eq!(classify(raw), want, "{raw}");
+            assert!(ALL.contains(&want));
+            assert!(!want.contains("x.invalid"));
         }
     }
 }

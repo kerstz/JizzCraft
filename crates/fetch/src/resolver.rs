@@ -7,8 +7,9 @@
 //! fetched by this crate, with the proxy and limits that apply to any
 //! request.
 
+use crate::formats::is_http;
+pub use crate::formats::{Fault, Format, Meta, muxed, parse, parse_formats, sanitize_title};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -25,70 +26,6 @@ pub const URL_ARG: &str = "{url}";
 pub const PROXY_ARG: &str = "{proxy}";
 /// Internal error keyword: the source cannot be played without saving it.
 pub const NEEDS_SAVING: &str = "cannot stream without saving";
-
-/// Why a resolver gave nothing. Decided from generic phrases in its stderr
-/// (or its exit status); the text itself is dropped right after.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fault {
-    Missing,
-    Unsupported,
-    AgeWall,
-    Login,
-    Geo,
-    Drm,
-    RateLimit,
-    Gone,
-    Other,
-}
-
-impl Fault {
-    /// The only text that travels in an error string.
-    pub fn keyword(self) -> &'static str {
-        match self {
-            Self::Missing => "resolver missing",
-            Self::Unsupported => "resolver unsupported",
-            Self::AgeWall => "resolver age wall",
-            Self::Login => "resolver login",
-            Self::Geo => "resolver geo",
-            Self::Drm => "resolver drm",
-            Self::RateLimit => "resolver rate limit",
-            Self::Gone => "resolver gone",
-            Self::Other => "resolver failed",
-        }
-    }
-
-    pub fn from_keyword(s: &str) -> Option<Self> {
-        [
-            Self::Missing,
-            Self::Unsupported,
-            Self::AgeWall,
-            Self::Login,
-            Self::Geo,
-            Self::Drm,
-            Self::RateLimit,
-            Self::Gone,
-            Self::Other,
-        ]
-        .into_iter()
-        .find(|f| f.keyword() == s)
-    }
-
-    /// Specificity when several resolvers fail: DRM > age wall > login > geo
-    /// > rate limit > unsupported > gone > missing > other.
-    pub fn rank(self) -> u8 {
-        match self {
-            Self::Drm => 9,
-            Self::AgeWall => 8,
-            Self::Login => 7,
-            Self::Geo => 6,
-            Self::RateLimit => 5,
-            Self::Unsupported => 3,
-            Self::Gone => 2,
-            Self::Missing => 1,
-            Self::Other => 0,
-        }
-    }
-}
 
 /// Match generic lowercase phrases. The caller drops `stderr` afterwards.
 pub fn classify_stderr(stderr: &[u8]) -> Fault {
@@ -133,39 +70,6 @@ pub fn classify_stderr(stderr: &[u8]) -> Fault {
     }
 }
 
-/// What the resolver said about the page. Memory only: never written to disk,
-/// never logged (the `Debug` form shows nothing of it).
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct Meta {
-    /// Control characters stripped, at most 120 characters.
-    pub title: Option<String>,
-    pub duration_secs: Option<u64>,
-    pub thumbnail: Option<String>,
-}
-
-impl std::fmt::Debug for Meta {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Meta")
-            .field("title", &self.title.is_some())
-            .field("duration", &self.duration_secs.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-/// A title safe to show: no control or bidi-override characters, 120 chars.
-pub fn sanitize_title(raw: &str) -> Option<String> {
-    let s: String = raw
-        .chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(*c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
-        })
-        .take(120)
-        .collect();
-    let s = s.trim().to_owned();
-    (!s.is_empty()).then_some(s)
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ResolverDef {
     #[serde(default)]
@@ -208,18 +112,6 @@ fn default_timeout() -> u32 {
 }
 fn yes() -> bool {
     true
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Format {
-    pub url: String,
-    pub height: Option<u32>,
-    /// `http`, `https`, `hls` or `dash`.
-    pub protocol: String,
-    /// Only `User-Agent`, `Referer` and `Origin` are kept.
-    pub headers: Vec<(String, String)>,
-    pub audio_only: bool,
-    pub video_only: bool,
 }
 
 pub fn validate(d: &ResolverDef) -> Result<(), &'static str> {
@@ -297,10 +189,6 @@ pub(crate) fn program_not_writable_by_others(prog: &std::path::Path) -> Result<(
 #[cfg(not(unix))]
 pub(crate) fn program_not_writable_by_others(_: &std::path::Path) -> Result<(), &'static str> {
     Ok(())
-}
-
-fn is_http(u: &str) -> bool {
-    u.starts_with("https://") || u.starts_with("http://")
 }
 
 /// Run the resolver on `page_url`. Blocking: call it from a worker thread.
@@ -467,104 +355,6 @@ pub fn run_meta(d: &ResolverDef, page_url: &str) -> Result<(Vec<Format>, Meta), 
     }
     drop(erx);
     parse(&buf)
-}
-
-/// `{formats:[{url, protocol?, height?}]}` or a single top-level `{url}`.
-pub fn parse_formats(json: &[u8]) -> Result<Vec<Format>, String> {
-    parse(json).map(|(f, _)| f)
-}
-
-/// Formats plus the page's title, duration and thumbnail address.
-pub fn parse(json: &[u8]) -> Result<(Vec<Format>, Meta), String> {
-    let v: Value = serde_json::from_slice(json).map_err(|_| "resolver did not answer JSON")?;
-    let mut list: Vec<&Value> = Vec::new();
-    if let Some(a) = v.get("formats").and_then(Value::as_array) {
-        list.extend(a.iter());
-    } else if v.get("url").is_some() {
-        list.push(&v);
-    }
-    let mut out: Vec<Format> = list
-        .into_iter()
-        .filter_map(|f| {
-            let url = f.get("url")?.as_str()?.to_owned();
-            if !is_http(&url) {
-                return None;
-            }
-            let codec = |k: &str| {
-                f.get(k)
-                    .and_then(Value::as_str)
-                    .map(|c| c.eq_ignore_ascii_case("none"))
-            };
-            let (v_none, a_none) = (codec("vcodec") == Some(true), codec("acodec") == Some(true));
-            // Neither picture nor sound: storyboards and the like.
-            if v_none && a_none {
-                return None;
-            }
-            let raw = f.get("protocol").and_then(Value::as_str).unwrap_or("http");
-            let protocol = if raw.starts_with("m3u8") {
-                "hls"
-            } else if raw == "http_dash_segments" || raw == "dash" {
-                "dash"
-            } else {
-                raw
-            }
-            .to_owned();
-            let headers = f
-                .get("http_headers")
-                .and_then(Value::as_object)
-                .map(|o| {
-                    crate::segmented::allowed_headers(
-                        o.iter()
-                            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
-                            .collect(),
-                    )
-                })
-                .unwrap_or_default();
-            Some(Format {
-                url,
-                height: f.get("height").and_then(Value::as_u64).map(|h| h as u32),
-                protocol,
-                headers,
-                audio_only: v_none,
-                video_only: a_none,
-            })
-        })
-        .collect();
-    if out.is_empty() {
-        return Err("resolver returned no address".into());
-    }
-    // Best first: highest picture within what the app can stream today.
-    out.sort_by_key(|f| std::cmp::Reverse(f.height.unwrap_or(0)));
-    let meta = Meta {
-        title: v
-            .get("title")
-            .and_then(Value::as_str)
-            .and_then(sanitize_title),
-        duration_secs: v
-            .get("duration")
-            .and_then(Value::as_f64)
-            .filter(|d| d.is_finite() && *d >= 0.0 && *d < 1e7)
-            .map(|d| d as u64),
-        thumbnail: v
-            .get("thumbnail")
-            .and_then(Value::as_str)
-            .filter(|t| is_http(t) && t.len() <= 2048 && !t.chars().any(char::is_control))
-            .map(str::to_owned),
-    };
-    Ok((out, meta))
-}
-
-/// Muxed formats only, best first. Separate audio and video tracks are not
-/// joined here: with nothing muxed the answer is `unsupported stream`.
-pub fn muxed(formats: Vec<Format>) -> Result<Vec<Format>, String> {
-    let m: Vec<Format> = formats
-        .into_iter()
-        .filter(|f| !f.audio_only && !f.video_only)
-        .collect();
-    if m.is_empty() {
-        return Err("unsupported stream".into());
-    }
-    Ok(m)
 }
 
 #[cfg(test)]

@@ -711,14 +711,7 @@ impl SegmentedReader {
 
 // ---- requests ---------------------------------------------------------------
 
-pub(crate) fn allowed_headers(h: Vec<(String, String)>) -> Vec<(String, String)> {
-    h.into_iter()
-        .filter(|(k, v)| {
-            ["user-agent", "referer", "origin"].contains(&k.to_ascii_lowercase().as_str())
-                && v.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
-        })
-        .collect()
-}
+pub(crate) use crate::formats::allowed_headers;
 
 fn resolve(base: &str, rel: &str, origin: &str) -> Result<String, String> {
     let u = Url::parse(base)

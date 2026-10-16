@@ -156,7 +156,7 @@ fn dom(bytes: &[u8]) -> Result<Node, &'static str> {
 // ---- helpers --------------------------------------------------------------
 
 /// `PT1H2M3.5S`, `P1DT2S` -> seconds.
-fn iso_duration(s: &str) -> Option<Duration> {
+pub(crate) fn iso_duration(s: &str) -> Option<Duration> {
     let s = s.trim().strip_prefix('P')?;
     let (date, time) = s.split_once('T').unwrap_or((s, ""));
     let mut secs = 0f64;
