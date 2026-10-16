@@ -119,6 +119,43 @@ impl FetchHost {
         self.save()
     }
 
+    /// Add extractor rules from a file the user wrote (one rule or a list).
+    /// Returns the new ids. Nothing is added when any rule is refused.
+    pub fn import_rules(&mut self, bytes: &[u8]) -> Result<Vec<u32>> {
+        use crate::extract::rules;
+        let mut new = rules::parse_import(bytes).map_err(|e| Error::Invalid(e.into()))?;
+        if self.cfg.extract_rules.len() + new.len() > rules::MAX_RULES {
+            return Err(Error::Invalid("there are too many rules".into()));
+        }
+        let first = self
+            .cfg
+            .extract_rules
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .map_or(1, |m| m + 1);
+        let mut ids = Vec::with_capacity(new.len());
+        for (r, id) in new.iter_mut().zip(first..) {
+            r.id = id;
+            ids.push(id);
+        }
+        self.cfg.extract_rules.extend(new);
+        self.save()?;
+        Ok(ids)
+    }
+
+    pub fn remove_rule(&mut self, id: u32) -> Result<()> {
+        self.cfg.extract_rules.retain(|r| r.id != id);
+        self.save()
+    }
+
+    pub fn set_rule_enabled(&mut self, id: u32, on: bool) -> Result<()> {
+        if let Some(r) = self.cfg.extract_rules.iter_mut().find(|r| r.id == id) {
+            r.enabled = on;
+        }
+        self.save()
+    }
+
     pub fn remove_source(&mut self, id: u32) -> Result<()> {
         self.cfg.sources.retain(|s| s.id != id);
         self.save()

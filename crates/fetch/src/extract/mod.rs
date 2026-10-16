@@ -11,6 +11,8 @@
 pub mod html;
 #[cfg(feature = "network")]
 pub mod resolve;
+#[cfg(feature = "network")]
+pub mod rules;
 pub mod scripts;
 pub mod signals;
 

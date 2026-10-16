@@ -185,3 +185,34 @@ fn a_corrupt_config_makes_the_host_start_with_the_kill_switch_on() {
     let host = FetchHost::new(p);
     assert!(host.config().require_proxy && host.config().load_error);
 }
+
+#[test]
+fn rules_import_enable_remove_round_trip_and_persist() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("fetch.json");
+    let mut h = FetchHost::new(path.clone());
+    let one = br#"{"name":"a","hosts":["a.example.invalid"],"media":[{"regex":"(?P<url>x)"}]}"#;
+    let two = br#"[{"name":"b","hosts":["b.example.invalid"],"media":[{"regex":"(?P<url>y)"}]},
+                   {"name":"c","hosts":["c.example.invalid"],"media":[{"regex":"(?P<url>z)"}]}]"#;
+    assert_eq!(h.import_rules(one).unwrap(), vec![1]);
+    assert_eq!(h.import_rules(two).unwrap(), vec![2, 3]);
+    // A bad file adds nothing and does not say what was wrong with the pattern.
+    let e = h
+        .import_rules(
+            br#"{"name":"d","hosts":["d.example.invalid"],"media":[{"regex":"(?P<url>("}]}"#,
+        )
+        .unwrap_err();
+    assert!(!e.to_string().contains("(?P<url>"));
+    assert_eq!(h.config().extract_rules.len(), 3);
+    h.set_rule_enabled(2, false).unwrap();
+    h.remove_rule(1).unwrap();
+    let again = FetchHost::new(path);
+    let rules = &again.config().extract_rules;
+    assert_eq!(
+        rules.iter().map(|r| (r.id, r.enabled)).collect::<Vec<_>>(),
+        [(2, false), (3, true)]
+    );
+    // Ids are not reused while a higher one exists.
+    let mut h = again;
+    assert_eq!(h.import_rules(one).unwrap(), vec![4]);
+}

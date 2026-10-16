@@ -626,6 +626,64 @@ fn hostile_pages_never_panic_and_stay_bounded() {
     }
 }
 
+/// Rule files are hostile input too: nothing panics, nothing stalls, and
+/// what is refused is refused for a fixed reason.
+#[cfg(feature = "network")]
+#[test]
+fn hostile_rule_files_never_panic() {
+    use jizzcraft_fetch::extract::rules;
+    use std::time::{Duration, Instant};
+    // A pattern that makes a backtracking engine hang finishes at once here.
+    let r = rules::parse_import(
+        br#"{"name":"t","hosts":["a.example.invalid"],"media":[{"regex":"(?P<url>(a*)*b)"}]}"#,
+    )
+    .unwrap()
+    .remove(0);
+    let page = "a".repeat(2 << 20);
+    let t = Instant::now();
+    let (c, _) = rules::apply(&r, &page);
+    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    assert!(c.is_empty());
+    // A match over a huge JSON capture, deeply nested.
+    let deep = format!("{}{}", "[".repeat(10_000), "]".repeat(10_000));
+    let j = rules::parse_import(
+        br#"{"name":"t","hosts":["a.example.invalid"],"json":[{"regex":"(?s)J=(?P<json>.*)","url":"/u"}]}"#,
+    )
+    .unwrap()
+    .remove(0);
+    let t = Instant::now();
+    let (c, _) = rules::apply(&j, &format!("J={deep}"));
+    assert!(t.elapsed() < Duration::from_secs(2));
+    assert!(c.is_empty());
+    // Refused: oversized patterns, too much of everything, junk.
+    let huge = format!(
+        r#"{{"name":"t","hosts":["a.example.invalid"],"media":[{{"regex":"(?P<url>{})"}}]}}"#,
+        "a".repeat(2000)
+    );
+    let blowup = r#"{"name":"t","hosts":["a.example.invalid"],"media":[{"regex":"(?P<url>(((a{100}){100}){100}))"}]}"#;
+    let mut files: Vec<Vec<u8>> = vec![huge.into_bytes(), blowup.as_bytes().to_vec()];
+    files.extend(payloads().into_iter().map(String::into_bytes));
+    files.push(vec![b'['; 100_000]);
+    files.push(vec![0xff; 1000]);
+    files.push(b"{".repeat(70_000));
+    for f in &files {
+        let t = Instant::now();
+        let r = rules::parse_import(f);
+        assert!(t.elapsed() < Duration::from_secs(2));
+        if let Err(e) = r {
+            assert!(e.len() < 60 && !e.contains("aaa"), "{e}");
+        }
+    }
+    // Hostile names and hosts, one by one.
+    for p in payloads() {
+        let doc = serde_json::json!({
+            "name": p, "hosts": [p.clone(), "*.x.invalid"],
+            "media": [{"regex": "(?P<url>x)"}], "title": p
+        });
+        let _ = rules::parse_import(&serde_json::to_vec(&doc).unwrap());
+    }
+}
+
 #[cfg(feature = "network")]
 mod net {
     use super::*;

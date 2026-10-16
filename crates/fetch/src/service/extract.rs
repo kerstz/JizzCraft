@@ -16,7 +16,9 @@ use super::{
 };
 use crate::config::{ExtractorMode, FetchConfig};
 use crate::extract::resolve::resolve_candidate;
-use crate::extract::{self, MAX_IFRAMES, MAX_PAGE, PageScan, Proto, Signals};
+use crate::extract::{
+    self, MAX_CANDIDATES, MAX_IFRAMES, MAX_PAGE, PageScan, Proto, RawItem, Signals, rules,
+};
 use crate::formats::{Entry, Fault, Format, Meta, muxed, rank};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -273,6 +275,53 @@ fn entries_from(scan: &PageScan, doc: &reqwest::Url, ua: &str) -> Vec<Entry> {
     out
 }
 
+/// Run the user's rules that name this document's host. Their addresses join
+/// the scan (ranked first, they are the user's own knowledge of the page);
+/// they cause no request, and are resolved and checked like any other.
+fn apply_rules(cfg: &FetchConfig, doc: &reqwest::Url, body: &[u8], scan: &mut PageScan) {
+    let Some(host) = doc.host_str() else { return };
+    let active: Vec<&rules::ExtractRule> = cfg
+        .extract_rules
+        .iter()
+        .filter(|r| rules::applies(r, host))
+        .collect();
+    if active.is_empty() {
+        return;
+    }
+    let text = String::from_utf8_lossy(body);
+    let (mut cands, mut title) = (Vec::new(), None);
+    for r in active {
+        let (c, t) = rules::apply(r, &text);
+        cands.extend(c);
+        title = title.or(t);
+    }
+    cands.truncate(MAX_CANDIDATES);
+    if cands.is_empty() {
+        return;
+    }
+    if scan.items.len() == 1 {
+        let it = &mut scan.items[0];
+        it.candidates.extend(cands);
+        it.candidates.sort_by_key(|c| c.origin);
+        it.candidates.truncate(MAX_CANDIDATES);
+        if title.is_some() {
+            it.meta.title = title;
+        }
+    } else {
+        let meta = Meta {
+            title,
+            ..Meta::default()
+        };
+        scan.items.insert(
+            0,
+            RawItem {
+                meta,
+                candidates: cands,
+            },
+        );
+    }
+}
+
 /// Why a page gave nothing, most specific first.
 fn decline(s: &Signals) -> String {
     if s.drm {
@@ -332,7 +381,8 @@ pub(super) async fn builtin(cfg: &FetchConfig, page_url: &str) -> Result<Extract
         }
         Fetched::Page(u, b) => (u, b),
     };
-    let scan = extract::scan(&body);
+    let mut scan = extract::scan(&body);
+    apply_rules(cfg, &final_url, &body, &mut scan);
     drop(body);
     let entries = entries_from(&scan, &final_url, ua);
     if !entries.is_empty() {

@@ -13,6 +13,14 @@ anything may change between minor versions.
   `Ctrl+Shift+` binding documented.
 
 ### Added
+- Online edition: your own extractor rules for pages the built-in reader does
+  not understand (`extract_rules` in `fetch.json`, JSON, up to 32 rules of 64
+  KiB). A rule names the hosts it applies to and gives patterns that capture a
+  media address, or a JSON blob read with JSON pointers, plus an optional
+  title pattern. Rules never cause a request, run on a non-backtracking engine
+  with small limits (the `regex` crate, compiled only in the online edition),
+  and what they find passes the same loopback/LAN and kill-switch checks as
+  any address. No rule or site ships with JizzCraft.
 - Import Kodi-style `.nfo` files (Kodi, Jellyfin, Emby, Plex) onto matching
   items: title, date, studio, performers, tags (through aliases), foreign ids,
   and with switches ratings and play history. Read-only, bounded, refuses

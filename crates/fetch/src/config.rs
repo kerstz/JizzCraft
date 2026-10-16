@@ -191,6 +191,11 @@ pub struct FetchConfig {
     #[cfg(feature = "network")]
     #[serde(default)]
     pub resolvers: Vec<crate::resolver::ResolverDef>,
+    /// Patterns the user wrote for pages the generic reader does not
+    /// understand. The app ships none.
+    #[cfg(feature = "network")]
+    #[serde(default)]
+    pub extract_rules: Vec<crate::extract::rules::ExtractRule>,
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
     #[serde(default = "yes")]
@@ -253,6 +258,8 @@ impl Default for FetchConfig {
             sources: Vec::new(),
             #[cfg(feature = "network")]
             resolvers: Vec::new(),
+            #[cfg(feature = "network")]
+            extract_rules: Vec::new(),
             download_dir: None,
             dht: true,
             listen_incoming: false,

@@ -746,3 +746,42 @@ fn require_proxy_without_proxy_extraction_connects_to_nothing() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(hits.load(Ordering::SeqCst), 0, "something connected");
 }
+
+#[test]
+fn a_rule_pointing_inward_is_filtered_on_a_public_page() {
+    use jizzcraft_fetch::extract::rules;
+    use jizzcraft_fetch::service::ExtractMode;
+    let _g = serial();
+    let (p1, t1) = trap_on("127.0.0.1");
+    let html = format!(r#"<p data-file="http://127.0.0.1:{p1}/a.mp4">x</p>"#);
+    let mock = mock(
+        Mode::Serve,
+        None,
+        Arc::new(move |host, path| {
+            if host == PAGE_HOST && path == "/" {
+                html.clone().into_bytes()
+            } else {
+                Vec::new()
+            }
+        }),
+    );
+    let rule = rules::parse_import(
+        format!(
+            r#"{{"name":"t","hosts":["{PAGE_HOST}"],"media":[{{"regex":"data-file=\"(?P<url>[^\"]+)\""}}]}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let e = env(FetchConfig {
+        proxy: Some(Secret::new(mock.url())),
+        extract_rules: rule,
+        ..Default::default()
+    });
+    let r = wait(
+        e.svc
+            .extract(format!("http://{PAGE_HOST}/"), ExtractMode::Builtin),
+    );
+    assert_eq!(r.unwrap_err(), "no media");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(t1.load(Ordering::SeqCst), 0, "loopback was contacted");
+}

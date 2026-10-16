@@ -570,3 +570,50 @@ mod modes {
         assert_eq!(name_of(open(&s, site.url("/page"))).unwrap(), "From tool");
     }
 }
+
+#[test]
+fn rule_candidates_rank_first() {
+    use jizzcraft_fetch::extract::rules;
+    let _g = serial();
+    let site = start(vec![
+        page(
+            "/page",
+            r#"<meta property="og:video" content="/og.mp4">
+               <p data-file="/rule.mp4">x</p><h2>Rule title</h2>"#,
+        ),
+        route("/og.mp4", "video/mp4", media()),
+        route("/rule.mp4", "video/mp4", media()),
+    ]);
+    let rule = rules::parse_import(
+        br#"{"name":"t","hosts":["127.0.0.1"],
+            "title":"<h2>(?P<title>[^<]+)</h2>",
+            "media":[{"regex":"data-file=\"(?P<url>[^\"]+)\""}]}"#,
+    )
+    .unwrap();
+    let (s, _a, _b) = svc(FetchConfig {
+        extract_rules: rule,
+        ..Default::default()
+    });
+    let ex = extract(&s, site.url("/page")).expect("an extraction");
+    let urls: Vec<_> = ex.entries[0]
+        .formats
+        .iter()
+        .map(|f| f.url.clone())
+        .collect();
+    assert_eq!(urls, [site.url("/rule.mp4"), site.url("/og.mp4")]);
+    assert_eq!(ex.entries[0].meta.title.as_deref(), Some("Rule title"));
+    // Rules only ever read; they cause no request of their own.
+    assert_eq!(site.count("/rule.mp4"), 0);
+    // A rule for another host does nothing here.
+    let other = rules::parse_import(
+        br#"{"name":"t","hosts":["other.example.invalid"],
+            "media":[{"regex":"data-file=\"(?P<url>[^\"]+)\""}]}"#,
+    )
+    .unwrap();
+    let (s2, _c, _d) = svc(FetchConfig {
+        extract_rules: other,
+        ..Default::default()
+    });
+    let ex = extract(&s2, site.url("/page")).unwrap();
+    assert_eq!(ex.entries[0].formats.len(), 1);
+}
