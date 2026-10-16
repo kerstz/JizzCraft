@@ -1607,3 +1607,176 @@ fn hls_audio_group_is_combined_and_language_is_chosen() {
     assert_eq!(tags(open_lang(Some("pt"))), want(b"P0", b"P1"));
     assert_eq!(tags(open_lang(Some("xx"))), want(b"E0", b"E1"));
 }
+
+// ---- strict mode for saving ---------------------------------------------------
+
+#[test]
+fn download_mode_fails_on_a_lost_segment_where_playback_skips() {
+    let _g = serial();
+    reset_policy();
+    let n = 50;
+    let inner = by_path(playlist(n, "2"), n, 6);
+    let h: Handler = Arc::new(
+        move |p: &str| {
+            if p == "/s7.ts" { status(404) } else { inner(p) }
+        },
+    );
+    let port = serve(h, hits());
+    let rt = rt();
+    let mut r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/m.m3u8"),
+        Quality::default(),
+    )
+    .unwrap()
+    .for_download();
+    let (chunks, err) = drain(&mut r);
+    assert_eq!(chunks.len(), 7);
+    assert_eq!(err.as_deref(), Some("http 404"));
+    assert!(chunks.iter().all(|c| !c.discont));
+}
+
+#[test]
+fn download_mode_keeps_its_variant_under_throttle() {
+    let _g = serial();
+    reset_policy();
+    let n = 12;
+    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=640x360,CODECS=\"avc1.42e01e,mp4a.40.2\"\nlow.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS=\"avc1.64001f,mp4a.40.2\"\nhigh.m3u8\n";
+    let media = |tag: &str| {
+        let mut p = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:2\n");
+        for i in 0..n {
+            p.push_str(&format!("#EXTINF:2,\n{tag}{i}.ts\n"));
+        }
+        p.push_str("#EXT-X-ENDLIST\n");
+        p
+    };
+    let (low, high) = (media("low"), media("high"));
+    let h: Handler = Arc::new(move |p: &str| match p {
+        "/master.m3u8" => ok(master),
+        "/low.m3u8" => ok(low.clone()),
+        "/high.m3u8" => ok(high.clone()),
+        p if p.starts_with("/low") => ok(vec![1u8; 20_000]),
+        _ => {
+            std::thread::sleep(Duration::from_millis(150));
+            ok(vec![2u8; 40_000])
+        }
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let cfg = AbrConfig {
+        down_gap: Duration::from_millis(200),
+        ..AbrConfig::default()
+    };
+    let mut r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/master.m3u8"),
+        Quality::default(),
+    )
+    .unwrap()
+    .with_abr(cfg)
+    .for_download();
+    assert_eq!(r.current_variant(), Some(1));
+    r.select_variant(Some(0)); // ignored while saving
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(chunks.len(), n);
+    assert!(chunks.iter().all(|c| c.bytes[0] == 2));
+    assert_eq!(r.current_variant(), Some(1));
+    assert!(!r.wants_downgrade());
+}
+
+#[test]
+fn download_mode_aes128_yields_plaintext() {
+    let _g = serial();
+    reset_policy();
+    let key = [9u8; 16];
+    let iv: [u8; 16] = std::array::from_fn(|i| i as u8);
+    let plain = seg_bytes(33, 0);
+    let enc = encrypt(&key, &iv, &plain);
+    let pl = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n\
+#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x000102030405060708090a0b0c0d0e0f\n#EXTINF:2,\ns0.ts\n#EXT-X-ENDLIST\n";
+    let h: Handler = Arc::new(move |p: &str| match p {
+        "/m.m3u8" => ok(pl),
+        "/key.bin" => ok(key.to_vec()),
+        _ => ok(enc.clone()),
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let mut r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/m.m3u8"),
+        Quality::default(),
+    )
+    .unwrap()
+    .for_download();
+    let (chunks, err) = drain(&mut r);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].bytes, plain);
+}
+
+#[test]
+fn live_has_no_duration_or_estimate() {
+    let _g = serial();
+    reset_policy();
+    let o = Origin::new(6, 6);
+    let port = serve(o.handler(), hits());
+    let rt = rt();
+    let r = open_live(&rt, port, "/live.m3u8", fast_live())
+        .unwrap()
+        .for_download();
+    assert_eq!(r.duration(), None);
+    assert_eq!(r.estimated_bytes(), None);
+}
+
+#[test]
+fn estimated_bytes_from_bandwidth() {
+    let _g = serial();
+    reset_policy();
+    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\nlow.m3u8\n";
+    let media =
+        "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\na.ts\n#EXTINF:10,\nb.ts\n#EXT-X-ENDLIST\n";
+    let h: Handler = Arc::new(move |p: &str| match p {
+        "/master.m3u8" => ok(master),
+        "/plain.m3u8" => ok(media),
+        "/low.m3u8" => ok(media),
+        _ => ok(vec![0x47u8; 100]),
+    });
+    let port = serve(h, hits());
+    let rt = rt();
+    let r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/master.m3u8"),
+        Quality::default(),
+    )
+    .unwrap();
+    // 800 kbit/s for 20 s = 2 MB.
+    assert_eq!(r.estimated_bytes(), Some(2_000_000));
+    // A bare media playlist declares no bandwidth.
+    let r = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/plain.m3u8"),
+        Quality::default(),
+    )
+    .unwrap();
+    assert_eq!(r.estimated_bytes(), None);
+}
+
+#[test]
+fn sample_aes_is_refused_in_download_mode() {
+    let _g = serial();
+    reset_policy();
+    let sample = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k\"\n#EXTINF:2,\ns0.ts\n#EXT-X-ENDLIST\n";
+    let h: Handler = Arc::new(move |_| ok(sample));
+    let port = serve(h, hits());
+    let rt = rt();
+    let err = open(
+        &rt,
+        format!("http://127.0.0.1:{port}/m.m3u8"),
+        Quality::default(),
+    )
+    .err()
+    .expect("refused");
+    assert_eq!(errors::classify(&err), errors::PROTECTED);
+}

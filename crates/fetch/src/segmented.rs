@@ -477,6 +477,8 @@ struct State {
     skipped: Duration,
     inits: HashMap<(String, Option<Range>), Arc<Vec<u8>>>,
     auto: bool,
+    /// Saving to disk: a lost segment ends the stream, quality never moves.
+    strict: bool,
     variant: usize,
     switching: Option<usize>,
     switched: Option<(usize, Track)>,
@@ -706,6 +708,55 @@ impl SegmentedReader {
     pub fn with_abr(self, cfg: AbrConfig) -> Self {
         self.sh.lock().abr = AbrPolicy::new(cfg);
         self
+    }
+
+    /// Strict mode for saving a stream to disk: no segment is ever skipped
+    /// (a lost one ends the stream with its error), the variant stays the
+    /// one chosen at open, automatic quality is off. The audio track of a
+    /// pair follows. Playback never calls this.
+    #[must_use]
+    pub fn for_download(mut self) -> Self {
+        {
+            let mut st = self.sh.lock();
+            st.strict = true;
+            st.auto = false;
+            st.rebuild = false;
+            st.switching = None;
+        }
+        if let Some(p) = self.pair.take() {
+            let mut p = p;
+            p.audio = p.audio.for_download();
+            self.pair = Some(p);
+        }
+        self
+    }
+
+    /// Size of the whole file from the declared bandwidth of the chosen
+    /// variant (and of the audio track, when it has one) times the
+    /// duration. `None` for a live stream or when no bandwidth is declared.
+    pub fn estimated_bytes(&self) -> Option<u64> {
+        let (secs, bw) = {
+            let st = self.sh.lock();
+            if st.live.is_some() {
+                return None;
+            }
+            let bw = self.sh.variants.get(st.variant).map(|v| v.bandwidth)?;
+            (st.track.total.as_secs_f64(), bw)
+        };
+        let audio = match &self.pair {
+            Some(p) => p
+                .audio
+                .sh
+                .variants
+                .get(p.audio.sh.lock().variant)
+                .map_or(0, |v| v.bandwidth),
+            None => 0,
+        };
+        let total = bw.saturating_add(audio);
+        if total == 0 || secs <= 0.0 {
+            return None;
+        }
+        Some((total as f64 * secs / 8.0) as u64)
     }
 }
 
@@ -1159,6 +1210,7 @@ fn new_state(track: Track, variant: usize, auto: bool) -> State {
         skipped: Duration::ZERO,
         inits: HashMap::new(),
         auto,
+        strict: false,
         variant,
         switching: None,
         switched: None,
@@ -2090,6 +2142,8 @@ impl TimedSource for SegmentedReader {
                     let total = st.track.total;
                     let live_run = st.live.as_ref().map(|l| l.fail_run);
                     let affordable = match live_run {
+                        // Saving: a hole in the file is never acceptable.
+                        _ if st.strict => false,
                         // Live: a few in a row, then the stream is gone.
                         Some(run) => run < LIVE_MAX_SKIPS,
                         None => (st.skipped + dur) * SKIP_SHARE < total,
@@ -2148,6 +2202,9 @@ impl TimedSource for SegmentedReader {
 
     fn wants_downgrade(&mut self) -> bool {
         let mut st = self.sh.lock();
+        if st.strict {
+            return false;
+        }
         std::mem::take(&mut st.rebuild)
     }
 
@@ -2178,6 +2235,9 @@ impl SegmentedReader {
 
     fn select_plain(&mut self, v: Option<usize>) {
         let mut st = self.sh.lock();
+        if st.strict {
+            return;
+        }
         let Some(i) = v else {
             st.auto = true;
             return;
