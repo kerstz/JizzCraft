@@ -4,7 +4,7 @@
 # encrypted vault on and off on the installed binary, then uninstall and make
 # sure nothing is left behind.
 #
-#   sh packaging/smoke-install.sh dist/jizzcraft-0.2.0-x86_64-linux.tar.xz [ONLINE_TARBALL]
+#   sh packaging/smoke-install.sh dist/jizzcraft-0.3.0-x86_64-linux.tar.xz [ONLINE_TARBALL]
 #
 # Cases: offline -> online -> offline. Without ONLINE_TARBALL, an online tree
 # is synthesised from the offline one (adds the magnet handler and the

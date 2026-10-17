@@ -5,7 +5,7 @@
 
 pkgname=jizzcraft-online
 _pkgbase=jizzcraft
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc='Private media library and player with indexers, torrents and streaming (Online edition)'
 arch=(x86_64 aarch64)

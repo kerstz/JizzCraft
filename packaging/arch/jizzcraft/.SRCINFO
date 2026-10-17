@@ -1,6 +1,6 @@
 pkgbase = jizzcraft
 	pkgdesc = Private, offline media viewer and library (images and videos)
-	pkgver = 0.2.0
+	pkgver = 0.3.0
 	pkgrel = 1
 	url = https://github.com/kerstz/JizzCraft
 	arch = x86_64
@@ -14,7 +14,7 @@ pkgbase = jizzcraft
 	makedepends = gstreamer
 	makedepends = gst-plugins-base-libs
 	options = !lto
-	source = jizzcraft-0.2.0.tar.gz::https://github.com/kerstz/JizzCraft/archive/v0.2.0.tar.gz
+	source = jizzcraft-0.3.0.tar.gz::https://github.com/kerstz/JizzCraft/archive/v0.3.0.tar.gz
 	sha256sums = ebf9f3dc7a314284bc11c20e1917e880df1c3c26be854308cb89a2c2f7e5b9e9
 
 pkgname = jizzcraft

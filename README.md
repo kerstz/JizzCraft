@@ -10,7 +10,7 @@ Your files stay where they are. Your history stays on your disk. Your browser hi
   <img alt="Linux" src="https://img.shields.io/badge/tested%20on-Linux-2f7bf5?style=flat-square">
   <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-3a3a3a?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Alpha" src="https://img.shields.io/badge/status-alpha%200.2.0-d69e2e?style=flat-square">
+  <img alt="Alpha" src="https://img.shields.io/badge/status-alpha%200.3.0-d69e2e?style=flat-square">
 </p>
 
 <p align="center"><img src="docs/media/demo.gif" width="900" alt="Demo in seven captioned steps: library grid with the inspector, filter by name and by tab, star rating and favorite, image viewer, video player with markers, A-B loop and a timeline preview, inbox triage, and discreet mode behind the boss key. Every frame is rendered by the app from synthetic test media."></p>
@@ -117,7 +117,7 @@ One code base, one `main` branch, two builds. The editions are two release tarba
 
 Library, settings and thumbnails are shared, so switching editions loses nothing. JizzCraft ships **no site, indexer, tracker, source or catalog** in either edition. Details: [docs/editions.md](docs/editions.md).
 
-### Status: 0.2.0, alpha
+### Status: 0.3.0, alpha
 
 > [!IMPORTANT]
 > JizzCraft is **alpha software**, held together by clippy and optimism. It works, it is tested, and it will still have rough edges and change between versions. Keep a backup of anything you cannot replace (`jizzcraft-cli` has a backup command).

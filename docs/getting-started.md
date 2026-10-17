@@ -26,7 +26,7 @@ changes them. Everything it remembers (ratings, what you watched, where you
 stopped) is kept in one file on your own disk. There is no account, no
 advertising, and the default version contains no internet code at all.
 
-It is **alpha** software (version 0.2.0): it works and is tested, but it will
+It is **alpha** software (version 0.3.0): it works and is tested, but it will
 still have rough edges. Linux is the only system it has really been used on.
 
 ## Install
@@ -43,14 +43,14 @@ What you should see, in order:
 1. **`Edition [1/2]:`** Press Enter to keep **Offline** (the default: your
    own files only, no internet code). The other choice, *Online*, is
    explained in [the FAQ](#offline-or-online).
-2. **`Downloading jizzcraft-0.2.0-…-linux.tar.xz`.** Its checksum is verified;
+2. **`Downloading jizzcraft-0.3.0-…-linux.tar.xz`.** Its checksum is verified;
    if it does not match, the script stops and installs nothing.
 3. **`GStreamer packages needed:`** followed by the exact command (GStreamer is
    the part of Linux that decodes video), then **`Run it now? [y/N]`**. Type
    `y` and Enter to let it install them; your distribution will ask for your
    password (`sudo`). Plain Enter means no: the command is skipped and you can
    run it yourself later. The script never runs `sudo` without this question.
-4. **`Installed JizzCraft 0.2.0 to /home/you/.local`.** Possibly followed by a
+4. **`Installed JizzCraft 0.3.0 to /home/you/.local`.** Possibly followed by a
    line saying that `~/.local/bin` is not on your PATH, with the exact command
    to fix it for your shell. Copy and run it once.
 5. **A health check** (`jizzcraft-cli doctor`): one line per piece of video

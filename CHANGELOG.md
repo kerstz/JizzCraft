@@ -7,6 +7,27 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
+Third alpha, Linux first. Highlights:
+
+- **Interop (read-only, offline, dry run first)**: NFO import and export
+  (Kodi style, with media-server fields), Stash export import, Kodi `.edl`
+  files as markers. See [docs/interop.md](docs/interop.md).
+- **Player**: subtitle flags (forced, SDH) in sidecar names; funscript files
+  shown on the timeline (display only, no device output).
+- **Library**: duplicate review from visual fingerprints (schema v7); nothing
+  is deleted.
+- **Online edition**: save videos to a folder and a generic page reader.
+- **Windows**: an experimental build is attached to the release. It is built
+  by CI only and has never run on real hardware; it may be absent from a
+  release when that job fails.
+
+### Upgrading from 0.2.0
+- The first start migrates a 0.2.0 library (schema v4) to schema v7. 0.2.0
+  cannot open a migrated library again, so keep a copy of the library file if
+  you may want to go back.
+
 ### Documentation
 - README and the getting-started guide now document the panic switch
   (`Ctrl+Shift+M`) and the vault lock key (`Ctrl+Shift+L`); a test keeps every

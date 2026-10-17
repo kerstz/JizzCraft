@@ -1,6 +1,6 @@
 pkgbase = jizzcraft-git
 	pkgdesc = Private, offline media viewer and library (git version)
-	pkgver = 0.2.0.r0.g0000000
+	pkgver = 0.3.0.r0.g0000000
 	pkgrel = 1
 	url = https://github.com/kerstz/JizzCraft
 	arch = x86_64

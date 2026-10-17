@@ -14,7 +14,7 @@ body:
     attributes:
       label: Version and edition
       description: Output of `jizzcraft-cli --version`.
-      placeholder: "jizzcraft-cli 0.2.0 (online edition)"
+      placeholder: "jizzcraft-cli 0.3.0 (online edition)"
     validations: {required: true}
   - type: textarea
     id: report

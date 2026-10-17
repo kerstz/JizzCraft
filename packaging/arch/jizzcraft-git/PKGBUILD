@@ -2,7 +2,7 @@
 # Latest commit of the default branch, offline build.
 
 pkgname=jizzcraft-git
-pkgver=0.2.0.r0.g0000000
+pkgver=0.3.0.r0.g0000000
 pkgrel=1
 pkgdesc='Private, offline media viewer and library (git version)'
 arch=(x86_64 aarch64)
@@ -23,7 +23,7 @@ options=(!lto)
 pkgver() {
   cd jizzcraft
   git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
-    || printf '0.2.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+    || printf '0.3.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
 prepare() {
