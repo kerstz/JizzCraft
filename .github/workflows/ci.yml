@@ -28,7 +28,7 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Headers to build, plus the plugins the media tests use. Tests whose
       # GStreamer elements are missing print "skipped: …" instead of failing.
@@ -68,7 +68,7 @@ jobs:
     name: cargo-deny · cargo-audit
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: cargo-deny (advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -84,7 +84,7 @@ jobs:
     name: msrv (rust 1.95)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer headers
         run: |
           sudo apt-get update
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer
         run: |
           sudo apt-get update
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Budgets
@@ -149,7 +149,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -176,7 +176,7 @@ jobs:
     name: packaging · shellcheck · desktop · appstream
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Tools
         run: |
           sudo apt-get update
@@ -198,9 +198,9 @@ jobs:
     env:
       JIZZCRAFT_REQUIRE_PLUGINS: "0"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Cache GStreamer MSIs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: gst-msi
           key: gstreamer-msvc-1.26.11
@@ -265,7 +265,7 @@ jobs:
     name: install · tarball → install.sh → doctor → vault → uninstall
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer
         run: |
           sudo apt-get update

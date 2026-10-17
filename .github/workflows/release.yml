@@ -32,7 +32,7 @@ jobs:
     # Oldest supported host, so the binaries run on Debian 12 and newer.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install GStreamer headers
         run: |
           sudo apt-get update
@@ -68,7 +68,7 @@ jobs:
         run: |
           cp packaging/install.sh dist/install.sh
           (cd dist && sha256sum * > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/*
@@ -80,9 +80,9 @@ jobs:
     # release; the Windows files are simply absent from it.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Cache GStreamer MSIs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: gst-msi
           key: gstreamer-msvc-1.26.11
@@ -146,7 +146,7 @@ jobs:
           $exe = @(Get-ChildItem dist -Filter 'JizzCraft-*-windows-x86_64-setup.exe')
           if ($zip.Count -ne 1 -or $exe.Count -ne 1) { throw "expected one zip and one installer in dist" }
           Get-ChildItem dist | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           if-no-files-found: error
@@ -161,7 +161,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: brew install gstreamer pkgconf
       # The cached *-sys build outputs hold the Cellar path of the GStreamer
       # that was installed when they were built; key the cache on it so a
@@ -172,7 +172,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { key: "${{ steps.gst.outputs.ver }}" }
       - run: ./packaging/macos/build-app.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: macos, path: "dist/*.zip" }
 
   publish:
@@ -181,7 +181,7 @@ jobs:
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: artifacts }
       - name: Merge checksums
         run: |
@@ -189,11 +189,11 @@ jobs:
           mkdir -p artifacts/checksums && mv SHA256SUMS.all artifacts/checksums/SHA256SUMS
           rm -f artifacts/linux/SHA256SUMS
       # Attestations are unavailable on a private repository (user-owned).
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: 'artifacts/**/*'
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: JizzCraft ${{ github.ref_name }} (alpha)
           files: artifacts/**/*
