@@ -188,7 +188,9 @@ jobs:
           (cd artifacts && find . -type f ! -name SHA256SUMS -exec sha256sum {} + | sed 's|\./[^/]*/||' | sort -k2 > ../SHA256SUMS.all)
           mkdir -p artifacts/checksums && mv SHA256SUMS.all artifacts/checksums/SHA256SUMS
           rm -f artifacts/linux/SHA256SUMS
+      # Attestations are unavailable on a private repository (user-owned).
       - uses: actions/attest-build-provenance@v2
+        if: ${{ !github.event.repository.private }}
         with:
           subject-path: 'artifacts/**/*'
       - uses: softprops/action-gh-release@v2
@@ -210,6 +212,8 @@ jobs:
             curl --proto '=https' --tlsv1.2 -fsSL https://github.com/kerstz/JizzCraft/releases/latest/download/install.sh | sh
             ```
 
-            Verify with `SHA256SUMS`, or `gh attestation verify <file> --repo kerstz/JizzCraft`.
+            Verify with `SHA256SUMS`. When the repository is public, releases also carry a
+            GitHub attestation: `gh attestation verify <file> --repo kerstz/JizzCraft`
+            (none is produced while the repository is private).
             The `jizzcraft-online-*` tarball adds indexers, torrents and streaming from your own
             sources; the default build makes no network connection at all.
