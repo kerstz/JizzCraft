@@ -1,0 +1,2 @@
+# Synthetic canary in a leak test (KEY-0123456789-APIKEY), not a credential.
+2ae86e93a402289a975a5df977359b5040013da6:apps/jizzcraft-cli/tests/cli.rs:generic-api-key:173
