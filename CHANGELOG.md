@@ -7,6 +7,20 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Security
+- Dependencies: `rusqlite` 0.42 brings SQLCipher 4.20 on SQLite 3.54.1, which
+  fixes RUSTSEC-2026-0459 (CVE-2026-119375: a database opened next to a `-wal`
+  file with another page size could return uninitialised memory). Also
+  `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.12 (RUSTSEC-2026-0381,
+  -0382, -0383, network build) and `ctutils` 0.4.8 (RUSTSEC-2026-0385). The
+  yanked `clipboard-win` and `async-executor` are replaced.
+- RUSTSEC-2026-0293 (`ringbuf` 0.4.8 via `librqbit-utp`, network build) stays
+  ignored: librqbit 9.1.0 and librqbit-utp 0.7.0 still depend on it.
+
+### Documentation
+- ROADMAP no longer says nothing calls the vault engine: the vault has shipped
+  as an alpha since 0.2.0. SECURITY.md lists the open advisories.
+
 ## [0.3.0] - 2026-10-16
 
 Third alpha, Linux first. Highlights:

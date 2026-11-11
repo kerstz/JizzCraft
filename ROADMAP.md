@@ -19,10 +19,14 @@ import, NFO sets to playlists, `tvshow.nfo` titles to studios, Kodi `.edl` to
 markers, the funscript heatmap, visual-fingerprint duplicates, and (Online)
 saving videos, the page reader and extractor rules.
 
+The encrypted vault (issue #13) is delivered as an alpha, off by default:
+SQLCipher database, encrypted thumbnails, lock screen and inactivity lock in
+Settings > Privacy, and the `vault` CLI. See [docs/vault.md](docs/vault.md).
+
 Not done yet: live DASH and low-latency HLS, audio in TS or WebM, subtitles
-for streams and embedded subtitles, the encrypted vault (issue #13: format, key wrap, database opening and conversion
-engine are written, nothing in the app calls them yet), and validation on real
-Windows and macOS machines (issues #14, #15).
+for streams and embedded subtitles, validation of the vault flow by hand on a
+real screen, and validation on real Windows and macOS machines (issues #14,
+#15).
 
 ## Next milestones (explicitly out of scope until the MVP is solid)
 
@@ -39,8 +43,10 @@ Windows and macOS machines (issues #14, #15).
 - **Library**: file watching instead
   of manual rescan, a relink picker for moved library roots, a
   restore-from-backup flow.
-- **Privacy**: encrypted vault for the library database and thumbnail cache
-  (issue #13, in progress, not delivered).
+- **Privacy**: vault follow-ups (issue #13): hand validation of the unlocked
+  Settings flow, encrypting `config.json` and the online state, and a
+  passphrase change that does not rewrite the database. The vault itself ships
+  as an alpha.
 - **Hardening**: thumbnail, preview and probe decoding in a sandboxed worker
   process (GStreamer parses every imported video today).
 - **Distribution**: published AUR packages (#16), Flatpak, AppImage; Windows installer and macOS bundle that embeds GStreamer (#15); real-hardware validation on Windows (#14).

@@ -45,6 +45,15 @@ decoders themselves should be reported upstream.
 
 ## Things to know
 
+- Dependency advisories are checked in CI (`cargo deny`, `cargo audit`) and
+  every exception is written down with its reason in `deny.toml`. Open at the
+  time of writing: RUSTSEC-2026-0293 (`ringbuf` 0.4.8 through `librqbit-utp`,
+  `network` build only, reachable only with an element whose `Drop` panics;
+  JizzCraft stores plain bytes there) until `librqbit-utp` moves to
+  `ringbuf` 0.5.2 or later, and three unmaintained notices (`zbus_names`,
+  `zvariant`, `zvariant_derive`, Linux accessibility, no known vulnerability).
+  The embedded SQLite is 3.54.1 (RUSTSEC-2026-0459 fixed).
+
 - The opt-in `network` build reveals your IP address to the indexers you
   configure and to BitTorrent peers, trackers and DHT nodes. Use the `proxy`
   setting (SOCKS5) or a VPN if that matters. Files it downloads are parsed by
