@@ -15,6 +15,8 @@ accepted = [
   "MPL-2.0",
   "CC0-1.0",
   "BSL-1.0",
+  "blessing",
+  "WTFPL",
 ]
 workarounds = []
 ignore-build-dependencies = true

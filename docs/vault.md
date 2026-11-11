@@ -181,7 +181,7 @@ thumbnails the CLI wrote to the global cache before the conversion stay there
 ## Step 1: SQLCipher, and what changed
 
 `rusqlite` now uses the feature `bundled-sqlcipher-vendored-openssl`:
-SQLCipher 4.14 (community, SQLite 3.51.3 inside) is compiled in, with a
+SQLCipher 4.20 (community, SQLite 3.54.1 inside) is compiled in, with a
 vendored OpenSSL (`openssl-src`, statically linked) as its crypto provider.
 Behaviour is unchanged: databases are still plain files, and nothing calls
 `PRAGMA key` yet.
@@ -192,9 +192,9 @@ Consequences worth knowing:
   Windows/MSVC). They are present on the GitHub Linux and macOS runners and
   Windows has Strawberry Perl; CI installs NASM. Distribution recipes list
   them.
-- **SQLite is older.** SQLCipher 4.14 embeds SQLite 3.51.3, older than the
+- **SQLite is older.** SQLCipher 4.20 embeds SQLite 3.54.1, older than the
   3.53.x that plain `bundled` shipped. Future migrations must not use SQL
-  features newer than 3.51.
+  features newer than 3.54.
 - **`openssl-sys` is now in the default tree**, only as a dependency of
   `libsqlite3-sys`. `crates/core/tests/offline_deps.rs` fails if anything
   else depends on it, and `openssl`, `native-tls` and every HTTP/TLS crate
