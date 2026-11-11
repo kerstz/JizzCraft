@@ -45,13 +45,17 @@ decoders themselves should be reported upstream.
 
 ## Things to know
 
-- Dependency advisories are checked in CI (`cargo deny`, `cargo audit`) and
-  every exception is written down with its reason in `deny.toml`. Open at the
-  time of writing: RUSTSEC-2026-0293 (`ringbuf` 0.4.8 through `librqbit-utp`,
-  `network` build only, reachable only with an element whose `Drop` panics;
-  JizzCraft stores plain bytes there) until `librqbit-utp` moves to
-  `ringbuf` 0.5.2 or later, and three unmaintained notices (`zbus_names`,
-  `zvariant`, `zvariant_derive`, Linux accessibility, no known vulnerability).
+- Dependency advisories are checked in CI (`cargo deny`, `cargo audit`). Every
+  exception is written down with its reason in `deny.toml`; the same list for
+  `cargo audit` is in `.cargo/audit.toml`. Open at the time of writing:
+  RUSTSEC-2026-0293, a **memory-corruption** advisory (double free and use
+  after free in `ringbuf` 0.4.8 `Consumer::skip`/`clear`, reached through
+  `librqbit-utp`, so only in the opt-in `network` build). It needs an element
+  whose `Drop` panics and JizzCraft stores plain bytes there, so it is not
+  reachable today; the exception is to be re-examined by 2027-05-11 or when
+  `librqbit-utp` moves to `ringbuf` 0.5.2 or later. Also three unmaintained
+  notices (`zbus_names`, `zvariant`, `zvariant_derive`, Linux accessibility, no
+  known vulnerability).
   The embedded SQLite is 3.54.1 (RUSTSEC-2026-0459 fixed).
 
 - The opt-in `network` build reveals your IP address to the indexers you

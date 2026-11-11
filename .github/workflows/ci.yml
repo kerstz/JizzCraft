@@ -2,7 +2,7 @@ name: CI
 
 # Required status checks (branch protection): check, network, packaging,
 # install-e2e, deny, msrv, e2e (e2e scenarios).
-# Not required: windows (experimental, continue-on-error), perf.
+# Not required: windows (experimental, continue-on-error), perf, secrets.
 
 on:
   push:
@@ -76,9 +76,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo-audit
+        # Exceptions live in .cargo/audit.toml (reasons in deny.toml).
         run: |
           cargo install cargo-audit --locked
-          cargo audit --ignore RUSTSEC-2026-0293
+          cargo audit
+
+  # Secret scan over the full history. Allowed false positives are listed in
+  # .gitleaksignore. Not a required check.
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # gitleaks-action v2.3.9, pinned by commit.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   msrv:
     name: msrv (rust 1.95)

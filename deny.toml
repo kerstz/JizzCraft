@@ -9,8 +9,12 @@ ignore = [
   # whose Drop panics inside Consumer::skip/clear; librqbit stores plain
   # bytes. Not fixable here until librqbit moves to ringbuf >= 0.5.2.
   # Revisit on every librqbit bump.
-  # Checked 2026-11-11: librqbit 9.1.0 and librqbit-utp 0.7.0 (latest) still
-  # depend on ringbuf 0.4.8, so no fixed version can be resolved yet.
+  # Memory corruption advisory (double free / use after free), shipped in the
+  # `network` build. Checked 2026-11-11 with `cargo tree -i ringbuf
+  # --all-features`: librqbit 9.1.0 (locked) and librqbit-utp 0.7.0 (latest)
+  # still depend on ringbuf 0.4.8, so no fixed version can be resolved yet.
+  # Re-examine by 2027-05-11 (cargo-deny has no `expires` key; the date is
+  # enforced by a note in SECURITY.md and .cargo/audit.toml).
   { id = "RUSTSEC-2026-0293", reason = "ringbuf pinned by librqbit-utp; only reachable with a panicking Drop, elements are plain bytes" },
   # zbus_names / zvariant / zvariant_derive: unmaintained notices (no CVE), pulled
   # by accesskit_unix (egui accessibility on Linux). No fixed release exists;
@@ -40,8 +44,11 @@ allow = [
   "MPL-2.0",
   "CC0-1.0",
   "BSL-1.0",
-  # sqlcipher-src (SQLite + SQLCipher + libtomcrypt sources): SQLite's
-  # public-domain "blessing" and libtomcrypt's WTFPL. Both permissive.
+  # sqlcipher-src's licence expression is "MIT AND BSD-3-Clause AND blessing
+  # AND WTFPL" for the whole package: SQLite's public-domain "blessing" and
+  # libtomcrypt's WTFPL. libtomcrypt is NOT compiled here (the build uses
+  # OpenSSL as crypto provider, see libsqlite3-sys build.rs), so it needs no
+  # attribution; the allows exist because deny checks the package expression.
   "blessing",
   "WTFPL",
 ]

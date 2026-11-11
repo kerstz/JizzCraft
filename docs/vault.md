@@ -183,8 +183,11 @@ thumbnails the CLI wrote to the global cache before the conversion stay there
 `rusqlite` now uses the feature `bundled-sqlcipher-vendored-openssl`:
 SQLCipher 4.20 (community, SQLite 3.54.1 inside) is compiled in, with a
 vendored OpenSSL (`openssl-src`, statically linked) as its crypto provider.
-Behaviour is unchanged: databases are still plain files, and nothing calls
-`PRAGMA key` yet.
+This step only swapped the engine. Since the vault shipped, the engine is
+used: `PRAGMA key` is issued when an encrypted library is opened
+(`crates/core/src/db.rs`) and during conversion
+(`crates/core/src/vault_convert.rs`), while a library that was never converted
+stays a plain, unencrypted file.
 
 Consequences worth knowing:
 
