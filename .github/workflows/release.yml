@@ -18,10 +18,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Read-only by default: the build jobs run every dependency's build script,
+# so they get no token that can write. Only `publish` may write.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,7 +32,9 @@ jobs:
     # Oldest supported host, so the binaries run on Debian 12 and newer.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install GStreamer headers
         run: |
           sudo apt-get update
@@ -43,10 +45,13 @@ jobs:
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-libav
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-deb --locked
-      - run: cargo install cargo-about --locked --features cli
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      # No Rust cache: published binaries are built from a clean slate, never
+      # from a cache that another workflow run could have written.
+      - run: cargo install cargo-deb --locked --version 3.8.0
+      - run: cargo install cargo-about --locked --version 0.9.3 --features cli
       - name: Tag matches the workspace version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -68,7 +73,7 @@ jobs:
         run: |
           cp packaging/install.sh dist/install.sh
           (cd dist && sha256sum * > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux
           path: dist/*
@@ -80,9 +85,13 @@ jobs:
     # release; the Windows files are simply absent from it.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # install-gstreamer.ps1 checks every cached MSI against its SHA-256
+      # before use and fetches it again on a mismatch.
       - name: Cache GStreamer MSIs
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 # zizmor: ignore[cache-poisoning]
         with:
           path: gst-msi
           key: gstreamer-msvc-1.26.11
@@ -116,10 +125,13 @@ jobs:
           pkg-config --list-all | Select-String glib
       # SQLCipher: the vendored OpenSSL needs Perl (preinstalled) and NASM.
       - name: NASM
-        uses: ilammy/setup-nasm@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-about --locked --features cli
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      # No Rust cache: published binaries are built from a clean slate, never
+      # from a cache that another workflow run could have written.
+      - run: cargo install cargo-about --locked --version 0.9.3 --features cli
       # The runner image normally ships Inno Setup; install it if it does not.
       - name: Inno Setup
         shell: pwsh
@@ -146,7 +158,7 @@ jobs:
           $exe = @(Get-ChildItem dist -Filter 'JizzCraft-*-windows-x86_64-setup.exe')
           if ($zip.Count -ne 1 -or $exe.Count -ne 1) { throw "expected one zip and one installer in dist" }
           Get-ChildItem dist | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows
           if-no-files-found: error
@@ -161,18 +173,23 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - run: brew install gstreamer pkgconf
       # The cached *-sys build outputs hold the Cellar path of the GStreamer
       # that was installed when they were built; key the cache on it so a
       # Homebrew bump does not link against a path that no longer exists.
       - id: gst
         run: echo "ver=$(brew list --versions gstreamer | tr ' ' '-')" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      # Never published (manual runs only), so a restored cache is acceptable.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3 # zizmor: ignore[cache-poisoning]
         with: { key: "${{ steps.gst.outputs.ver }}" }
       - run: ./packaging/macos/build-app.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: macos, path: "dist/*.zip" }
 
   publish:
@@ -180,8 +197,12 @@ jobs:
     if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.linux.result == 'success'
     needs: [linux, windows]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { path: artifacts }
       - name: Merge checksums
         run: |
@@ -189,11 +210,11 @@ jobs:
           mkdir -p artifacts/checksums && mv SHA256SUMS.all artifacts/checksums/SHA256SUMS
           rm -f artifacts/linux/SHA256SUMS
       # Attestations are unavailable on a private repository (user-owned).
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: 'artifacts/**/*'
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: JizzCraft ${{ github.ref_name }} (alpha)
           files: artifacts/**/*
