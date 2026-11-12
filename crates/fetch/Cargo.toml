@@ -23,7 +23,10 @@ directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 quick-xml.workspace = true
-librqbit = { version = "9", default-features = false, features = ["rust-tls"], optional = true }
+# Held at 9.0: with 9.1.0 the first frame of a torrent played while it
+# downloads came about twice as late (9 s instead of 4.5 s in e2e s11, which
+# then failed). Lift the cap only with `cargo xtask e2e s11` green.
+librqbit = { version = "~9.0.1", default-features = false, features = ["rust-tls"], optional = true }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros", "io-util"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"], optional = true }
 aes = { version = "0.8", optional = true }

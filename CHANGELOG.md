@@ -60,6 +60,10 @@ anything may change between minor versions.
   in `.cargo/audit.toml`; CI also runs gitleaks. Its reachability is now
   written down: the only ring buffer `librqbit-utp` creates holds `u8`, which
   has no `Drop`, so the panic the bug needs cannot happen.
+- Online edition: `librqbit` is back at 9.0.1 and held below 9.1. With 9.1.0
+  (bumped in this cycle, before any release) a torrent played while it
+  downloads showed its first frame about twice as late, and the e2e
+  scenario s11 failed. No advisory concerns either version.
 - Dependencies: `rustix` 1.1.6 (RUSTSEC-2026-0486, unsound `xattr` functions)
   and the other patch releases of the lockfile (`tokio` 1.54.1,
   `rustls-webpki` 0.103.17, `aws-lc-rs` 1.19.0, `libc` 0.2.191, …).

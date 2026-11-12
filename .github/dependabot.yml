@@ -20,6 +20,10 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: cbc
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Held at 9.0 (see crates/fetch/Cargo.toml): 9.1.0 doubled the time to
+      # the first frame of a torrent being streamed (e2e s11).
+      - dependency-name: "librqbit*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
