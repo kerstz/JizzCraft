@@ -99,6 +99,7 @@ fn service_and_preview_write_only_vault_thumbs() {
             size: 7,
             mtime: 0,
             need_meta: false,
+            thumb_ms: None,
         }]
     };
     svc.set_wanted(mk());

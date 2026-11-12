@@ -93,6 +93,10 @@ pub struct Media {
     pub oshash: Option<String>,
     /// User-set title; the file name is shown when absent.
     pub title: Option<String>,
+    /// Videos: the frame the thumbnail is made from, chosen by the user, in
+    /// milliseconds from the start. `None`: automatic.
+    #[serde(default)]
+    pub thumb_ms: Option<u64>,
 }
 
 /// Metadata discovered after indexing (by core for images, by `media` for videos).

@@ -83,7 +83,10 @@ from source. The full table is in the [README](../README.md#install).
      inside the app.
 3. **Your library fills up.** The app lists the files and makes small preview
    pictures (thumbnails) in the background. Nothing is copied next to your
-   files: thumbnails go to a separate cache folder.
+   files: thumbnails go to a separate cache folder. A video's thumbnail is
+   taken a tenth of the way in; to pick a better one, play the video, pause
+   on the frame you like and click *Use this frame* in the inspector
+   (*Automatic* goes back).
 4. **Look around.** Use the arrow keys to move, `Enter` to open, `Esc` to go
    back. Type `/` to search by name, tag or category. The tabs at the top
    (keys `1` to `4`) switch between everything, images, videos and favorites.

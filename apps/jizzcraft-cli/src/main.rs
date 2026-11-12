@@ -791,6 +791,17 @@ enum Cmd {
     },
     /// Build the thumbnail cache for every image (encrypted in vault mode).
     Thumbs,
+    /// Make a video's thumbnail from the frame at a given time, or
+    /// automatically again (database only; the file is not touched).
+    ThumbFrame {
+        id: i64,
+        /// Seconds from the start, e.g. 83.5.
+        #[arg(long, conflicts_with = "auto", required_unless_present = "auto")]
+        at: Option<f64>,
+        /// Back to the automatic thumbnail.
+        #[arg(long)]
+        auto: bool,
+    },
     /// List registered commands.
     Commands,
 }
@@ -1185,6 +1196,21 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             json!({ "id": id, "buckets": buckets }),
         ),
         Cmd::Relink { from, to } => ("media.relink".to_owned(), json!({ "from": from, "to": to })),
+        Cmd::ThumbFrame { id, at, auto } => {
+            let at_ms = match (at, auto) {
+                (Some(s), false) if s.is_finite() && *s >= 0.0 && *s < 1.0e9 => {
+                    json!((s * 1000.0).round() as u64)
+                }
+                (Some(_), false) => {
+                    return Err("--at must be a number of seconds, 0 or more".into());
+                }
+                _ => Value::Null,
+            };
+            (
+                "media.thumb".to_owned(),
+                json!({ "id": id, "at_ms": at_ms }),
+            )
+        }
         Cmd::MoveFolder { from, to, apply } => (
             "library.move_root".to_owned(),
             json!({
@@ -1302,6 +1328,7 @@ fn build_thumbs(ctx: &mut CliCtx) -> Result<Value, Fail> {
             size: m.size,
             mtime: m.mtime,
             need_meta: false,
+            thumb_ms: None,
         })
         .collect();
     let n = wanted.len();
@@ -1660,6 +1687,14 @@ fn print_human(cmd: &str, v: &Value) {
                 extra
             );
         }
+        "media.thumb" => match v["thumb_ms"].as_u64() {
+            Some(ms) => println!(
+                "#{} thumbnail from the frame at {:.3} s",
+                v["id"],
+                ms as f64 / 1000.0
+            ),
+            None => println!("#{} thumbnail: automatic", v["id"]),
+        },
         "library.move_root" => println!(
             "{}: {} items · {} found ({} checked by fingerprint) · {} different · {} not found{}",
             if v["dry_run"] == true {

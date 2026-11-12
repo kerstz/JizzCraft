@@ -315,6 +315,21 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
         },
     );
     reg.register(
+        "media.thumb",
+        "Make a video's thumbnail from the frame at at_ms, or automatically again with null: {id, at_ms}",
+        |c, a| {
+            let id = id_arg(&a)?;
+            let at = match a.get("at_ms") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| {
+                    Error::Invalid("`at_ms` must be a whole number of milliseconds or null".into())
+                })?),
+            };
+            c.db().set_thumb_ms(id, at)?;
+            Ok(json!({ "id": id, "thumb_ms": at }))
+        },
+    );
+    reg.register(
         "library.move_root",
         "Point a library folder at the place its files moved to (dry run unless dry_run is false): {from, to, dry_run?=true}",
         |c, a| {

@@ -277,13 +277,17 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE media ADD COLUMN phash INTEGER;
     ALTER TABLE media ADD COLUMN phash_algo INTEGER CHECK (phash_algo IS NULL OR phash_algo BETWEEN 1 AND 255);
     CREATE INDEX media_phash ON media(phash) WHERE phash IS NOT NULL;",
+    // v8: the frame a video's thumbnail is made from, chosen by the user
+    // (milliseconds from the start). NULL: automatic, a tenth of the way in.
+    "ALTER TABLE media ADD COLUMN thumb_ms INTEGER CHECK (thumb_ms IS NULL OR thumb_ms >= 0);",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const COLS: &str = "id, path, name, kind, size, mtime, width, height, duration_ms, codec, \
                     added_at, missing, favorite, rating, resume_ms, play_count, \
-                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp, oshash, title";
+                    last_played_at, hidden, inbox, damaged, check_note, checked_at, fp, oshash, title, \
+                    thumb_ms";
 
 /// `COLS` with each column prefixed (for joins).
 pub(crate) fn row_to_media_cols(prefix: &str) -> String {
@@ -1313,6 +1317,43 @@ impl Db {
         Ok(())
     }
 
+    /// Make the thumbnail of video `id` from the frame at `at_ms`, or again
+    /// automatically with `None`. Only the database changes; the thumbnail
+    /// is made the next time it is shown. Refused for images, and past the
+    /// end of a video whose duration is known.
+    pub fn set_thumb_ms(&self, id: i64, at_ms: Option<u64>) -> Result<()> {
+        let row: Option<(i64, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT kind, duration_ms FROM media WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((kind, duration)) = row else {
+            return Err(Error::NotFound(format!("media id {id}")));
+        };
+        if MediaKind::from_i64(kind) != MediaKind::Video {
+            return Err(Error::Invalid("only a video has a frame to choose".into()));
+        }
+        let at = match at_ms {
+            None => None,
+            Some(ms) => {
+                let ms = i64::try_from(ms)
+                    .map_err(|_| Error::Invalid("the position is past the end".into()))?;
+                if duration.is_some_and(|d| ms > d) {
+                    return Err(Error::Invalid("the position is past the end".into()));
+                }
+                Some(ms)
+            }
+        };
+        self.conn.execute(
+            "UPDATE media SET thumb_ms = ?2 WHERE id = ?1",
+            params![id, at],
+        )?;
+        Ok(())
+    }
+
     pub fn stats(&self) -> Result<Stats> {
         let (total, images, videos, favorites, missing, bytes): (i64, i64, i64, i64, i64, i64) =
             self.conn.query_row(
@@ -1391,5 +1432,6 @@ pub(crate) fn row_to_media(r: &Row<'_>) -> rusqlite::Result<Media> {
             .get::<_, Option<i64>>(23)?
             .map(|h| crate::fingerprint::oshash_hex(h as u64)),
         title: r.get(24)?,
+        thumb_ms: r.get::<_, Option<i64>>(25)?.map(|v| v.max(0) as u64),
     })
 }

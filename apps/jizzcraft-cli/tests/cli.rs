@@ -740,3 +740,35 @@ fn move_folder_is_a_dry_run_unless_applied() {
         "a destination above the folder is refused"
     );
 }
+
+#[test]
+fn thumb_frame_sets_and_clears_the_chosen_frame() {
+    let home = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    std::fs::write(lib.path().join("v.webm"), b"not a real video, only a name").unwrap();
+    let before = tree_bytes(lib.path());
+    json(&cli(
+        home.path(),
+        &["--json", "scan", lib.path().to_str().unwrap()],
+    ));
+    let id = json(&cli(home.path(), &["--json", "query"]))["items"][0]["id"].to_string();
+    let set = json(&cli(
+        home.path(),
+        &["--json", "thumb-frame", &id, "--at", "83.5"],
+    ));
+    assert_eq!(set["thumb_ms"], 83_500, "{set}");
+    let o = cli(home.path(), &["thumb-frame", &id, "--auto"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("automatic"));
+    for bad in [
+        vec!["thumb-frame", id.as_str()],
+        vec!["thumb-frame", id.as_str(), "--at", "-1"],
+        vec!["thumb-frame", id.as_str(), "--at", "3", "--auto"],
+    ] {
+        assert!(
+            !cli(home.path(), &bad).status.success(),
+            "{bad:?} was accepted"
+        );
+    }
+    assert_eq!(tree_bytes(lib.path()), before, "files untouched");
+}

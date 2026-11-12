@@ -1434,4 +1434,30 @@ pub const TABLE: &[(&str, &str)] = &[
         "this folder is no longer in the library",
         "questa cartella non è più nella libreria",
     ),
+    // Choosing a video's thumbnail frame.
+    ("Thumbnail", "Miniatura"),
+    ("From the frame at {}", "Dal fotogramma a {}"),
+    ("Automatic", "Automatica"),
+    ("Use this frame", "Usa questo fotogramma"),
+    (
+        "Make the thumbnail from the picture on screen now",
+        "Crea la miniatura dall'immagine mostrata ora",
+    ),
+    (
+        "The thumbnail now shows this frame",
+        "La miniatura ora mostra questo fotogramma",
+    ),
+    (
+        "play a video of the library first",
+        "riproduci prima un video della libreria",
+    ),
+    ("select a video first", "seleziona prima un video"),
+    (
+        "only a video has a frame to choose",
+        "solo un video ha un fotogramma da scegliere",
+    ),
+    (
+        "the position is past the end",
+        "la posizione è oltre la fine",
+    ),
 ];

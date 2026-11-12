@@ -69,7 +69,7 @@ pub type Decoder = Arc<dyn Fn(&Request) -> Result<RgbImage, String> + Send + Syn
 fn default_decoder() -> Decoder {
     Arc::new(|req| match req.kind {
         MediaKind::Image => thumbs::image_thumb(&req.path),
-        MediaKind::Video => thumbs::video_thumb(&req.path),
+        MediaKind::Video => thumbs::video_thumb_at(&req.path, req.thumb_ms),
     })
 }
 
@@ -82,6 +82,9 @@ pub struct Request {
     pub mtime: i64,
     /// Probe duration/resolution/codec too (videos missing metadata).
     pub need_meta: bool,
+    /// Videos: the frame the user chose for the thumbnail (milliseconds),
+    /// `None` for the automatic one. Part of the cache name.
+    pub thumb_ms: Option<u64>,
 }
 
 pub struct Rgba {
@@ -313,7 +316,7 @@ fn to_rgba(img: &image::RgbImage) -> Rgba {
 }
 
 fn process(store: &ThumbStore, decoder: &Decoder, stop: &AtomicBool, req: &Request) -> Done {
-    let id = store.thumb_id(&req.path, req.size, req.mtime);
+    let id = store.thumb_id_at(&req.path, req.size, req.mtime, req.thumb_ms);
     let file = store.thumb_path(&id);
     let meta = if req.kind == MediaKind::Video && req.need_meta {
         crate::probe::probe(&req.path).ok()

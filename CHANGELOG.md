@@ -21,6 +21,17 @@ anything may change between minor versions.
   the same file is there (size, and fingerprint when it has one). Sidebar
   menu "This folder's files moved…", CLI `move-folder FROM TO [--apply]`,
   command `library.move_root`. See [docs/organise.md](docs/organise.md#a-whole-folder-moved).
+- Choose the frame of a video's thumbnail: play it, pause on a frame and
+  click "Use this frame" in the inspector; "Automatic" goes back to the
+  frame a tenth of the way in. The position is stored in the library
+  (schema v8), the file is never touched, the cache prune keeps the chosen
+  thumbnail and automatic thumbnails keep their cache names. CLI
+  `thumb-frame ID --at SECONDS | --auto`, command `media.thumb`.
+
+### Upgrading from 0.3.0
+- The first start migrates the library to schema v8 (one new column); 0.3.0
+  cannot open it again, so keep a copy of the library file if you may want
+  to go back.
 
 ### Changed
 - French: "Triage" reads "Triage" instead of "Tri", which also meant "Sort"

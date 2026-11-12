@@ -16,6 +16,7 @@ const FROZEN: &[&str] = &[
     "cec220328cb5229a32bb1ea3e5b6c85cc200cba56268b33483f4d7dde8cb8643",
     "fa66d056777d8b74f854330b8ccd846b8c042e6faf85990f0ff2bdbf9f299572",
     "bc222b05f18f728a2cb21afead2fbec60cdf54ef04a86c2757c662a68429fc72",
+    "2d19de8db3fb64a6f20b767beb13dabf26ed502396cdf3e3df384ff89302b6b9",
 ];
 
 fn hash(s: &str) -> String {
@@ -119,6 +120,10 @@ fn fixture_keyed(path: &Path, version: usize, key: Option<&DbKey>) {
         )
         .unwrap();
     }
+    if version >= 8 {
+        c.execute_batch("UPDATE media SET thumb_ms = 2500 WHERE id = 3;")
+            .unwrap();
+    }
     c.pragma_update(None, "user_version", version as i64)
         .unwrap();
 }
@@ -201,6 +206,13 @@ fn check_survivors(db: &Db, version: usize) {
             "v{version}"
         );
     }
+    // Chosen thumbnail frames: none before v8, kept after.
+    let frames: Vec<Option<u64>> = all.iter().map(|m| m.thumb_ms).collect();
+    let want = |i: i64| (version >= 8 && i == 3).then_some(2500u64);
+    for m in &all {
+        assert_eq!(m.thumb_ms, want(m.id), "v{version} id {}", m.id);
+    }
+    assert_eq!(frames.len(), 3);
     // Organisation tables: empty when upgrading from before v3, intact after.
     let count = |t: &str| -> i64 {
         db.conn_for_tests()

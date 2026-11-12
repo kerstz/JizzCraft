@@ -23,6 +23,7 @@ fn req(id: i64, path: std::path::PathBuf) -> Request {
         size: meta.as_ref().map_or(0, |m| m.len()),
         mtime: 0,
         need_meta: false,
+        thumb_ms: None,
     }
 }
 

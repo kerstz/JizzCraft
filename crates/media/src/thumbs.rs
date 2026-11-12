@@ -17,12 +17,34 @@ const BLUR_W: u32 = 10;
 const SCHEMA: &str = "thumb-v1";
 
 pub fn cache_key(path: &Path, size: u64, mtime: i64) -> String {
+    cache_key_at(path, size, mtime, None)
+}
+
+/// Like [`cache_key`], for a thumbnail made from the frame at `at_ms` (a
+/// frame the user chose). `None` gives the automatic thumbnail's key, the
+/// same as before frames could be chosen.
+pub fn cache_key_at(path: &Path, size: u64, mtime: i64, at_ms: Option<u64>) -> String {
     let mut h = blake3::Hasher::new();
     h.update(SCHEMA.as_bytes());
     h.update(&jizzcraft_core::pathbytes::path_to_bytes(path));
     h.update(&size.to_le_bytes());
     h.update(&mtime.to_le_bytes());
+    if let Some(ms) = at_ms {
+        h.update(b"at");
+        h.update(&ms.to_le_bytes());
+    }
     h.finalize().to_hex().as_str()[..32].to_owned()
+}
+
+/// What the vault's keyed name hashes for a chosen frame: the path, a NUL
+/// (never part of a path) and the position.
+fn keyed_path_at(path: &Path, at_ms: Option<u64>) -> Vec<u8> {
+    let mut b = jizzcraft_core::pathbytes::path_to_bytes(path);
+    if let Some(ms) = at_ms {
+        b.extend_from_slice(b"\0at");
+        b.extend_from_slice(&ms.to_le_bytes());
+    }
+    b
 }
 
 pub fn thumb_file(cache_root: &Path, key: &str) -> PathBuf {
@@ -84,11 +106,15 @@ impl ThumbStore {
 
     /// Cache name of a thumbnail: the clear hash, or the keyed vault name.
     pub fn thumb_id(&self, path: &Path, size: u64, mtime: i64) -> String {
+        self.thumb_id_at(path, size, mtime, None)
+    }
+
+    /// Like [`ThumbStore::thumb_id`], for the frame at `at_ms` when the user
+    /// chose one.
+    pub fn thumb_id_at(&self, path: &Path, size: u64, mtime: i64, at_ms: Option<u64>) -> String {
         match self {
-            ThumbStore::Plain(_) => cache_key(path, size, mtime),
-            ThumbStore::Vault(_, c) => {
-                c.file_name(&jizzcraft_core::pathbytes::path_to_bytes(path), size, mtime)
-            }
+            ThumbStore::Plain(_) => cache_key_at(path, size, mtime, at_ms),
+            ThumbStore::Vault(_, c) => c.file_name(&keyed_path_at(path, at_ms), size, mtime),
         }
     }
 
@@ -359,6 +385,25 @@ pub(crate) fn frame_at_accurate(p: &Paused, ns: u64, timeout_s: u64) -> Result<R
     sample_to_rgb(&sample)
 }
 
+/// The thumbnail of a video: from the frame at `at_ms` when the user chose
+/// one (decoded up to exactly there; past the end, the last frame), else
+/// [`video_thumb`]. A chosen frame that cannot be read falls back to the
+/// automatic one.
+pub fn video_thumb_at(src: &Path, at_ms: Option<u64>) -> Result<RgbImage, String> {
+    let Some(ms) = at_ms else {
+        return video_thumb(src);
+    };
+    let chosen = (|| {
+        let p = open_paused(src, THUMB_MAX)?;
+        let mut ns = ms.saturating_mul(1_000_000);
+        if let Some(d) = p.pipeline.query_duration::<gst::ClockTime>() {
+            ns = ns.min(d.nseconds().saturating_sub(1));
+        }
+        frame_at_accurate(&p, ns, 10)
+    })();
+    chosen.or_else(|_| video_thumb(src))
+}
+
 /// Dedicated thumbnail pipeline: uridecodebin → videoconvert → videoscale → appsink.
 /// Paused, seeked to ~10 %, then the preroll sample is pulled.
 pub fn video_thumb(src: &Path) -> Result<RgbImage, String> {
@@ -484,8 +529,8 @@ pub fn live_keys_for(
     Ok(rows
         .iter()
         .map(|m| match store {
-            Some(st) => st.thumb_id(&m.path, m.size, m.mtime),
-            None => cache_key(&m.path, m.size, m.mtime),
+            Some(st) => st.thumb_id_at(&m.path, m.size, m.mtime, m.thumb_ms),
+            None => cache_key_at(&m.path, m.size, m.mtime, m.thumb_ms),
         })
         .collect())
 }

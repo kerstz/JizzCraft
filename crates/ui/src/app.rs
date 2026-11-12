@@ -39,6 +39,7 @@ mod sidebar;
 mod status_chip;
 #[cfg(feature = "network")]
 mod stream_open;
+mod thumb_frame;
 mod tools;
 mod vault_ui;
 pub(crate) use vault_ui::{DEFAULT_AUTOLOCK_MINUTES, MAX_AUTOLOCK_MINUTES};
@@ -693,6 +694,7 @@ impl JizzApp {
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
         move_folder::register(&mut registry);
+        thumb_frame::register(&mut registry);
         interop::register(&mut registry);
         duplicates::register(&mut registry);
         settings::register(&mut registry);
@@ -2326,6 +2328,7 @@ impl JizzApp {
                         });
                     }
                 }
+                self.thumb_section(ui, &m);
                 ui.add_space(S * 2.0);
                 ui.horizontal(|ui| {
                     let label = if m.favorite {
@@ -2475,6 +2478,7 @@ impl JizzApp {
                                     need_meta: m.kind == MediaKind::Video
                                         && m.duration_ms.is_none()
                                         && !self.meta_tried.contains(&m.id),
+                                    thumb_ms: m.thumb_ms,
                                 });
                                 ThumbState::Loading
                             }
@@ -4719,6 +4723,46 @@ mod tests {
         assert!(app.take_lock_request());
     }
 
+    /// "Use this frame" needs a playing library video; "Automatic" goes
+    /// back and asks the grid for the thumbnail again.
+    #[test]
+    fn the_thumbnail_frame_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let lib_dir = dir.path().join("lib");
+        std::fs::create_dir(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("v.webm"), b"a name is enough here").unwrap();
+        {
+            let mut db = Db::open(&db_path).unwrap();
+            jizzcraft_core::scan::import_folder(&mut db, &lib_dir).unwrap();
+            db.set_thumb_ms(1, Some(4200)).unwrap();
+        }
+        let lib = Library::open_plain(&db_path).unwrap();
+        let mut app = JizzApp::open(
+            &egui::Context::default(),
+            None,
+            scripted_opts(&db_path),
+            lib,
+        )
+        .unwrap();
+        let reg = Rc::clone(&app.registry);
+        assert!(
+            reg.run(&mut app, "media.thumb.here", json!({})).is_err(),
+            "nothing is playing"
+        );
+        assert!(
+            reg.run(&mut app, "media.thumb.auto", json!({})).is_err(),
+            "nothing selected"
+        );
+        app.selected = Some(1);
+        app.thumb_failed.insert(1);
+        let gen0 = app.generation;
+        reg.run(&mut app, "media.thumb.auto", json!({})).unwrap();
+        assert_eq!(app.db.get(1).unwrap().unwrap().thumb_ms, None);
+        assert!(!app.thumb_failed.contains(&1), "asked for again");
+        assert!(app.generation > gen0, "the grid reloads");
+    }
+
     /// The moved-folder flow without the folder dialog: count as a job, ask,
     /// then move as a job; the items keep their rating.
     #[test]
@@ -4919,6 +4963,7 @@ mod keymap_tests {
         register_ui_commands(&mut reg);
         tools::register_tool_commands(&mut reg);
         move_folder::register(&mut reg);
+        thumb_frame::register(&mut reg);
         settings::register(&mut reg);
         #[cfg(feature = "network")]
         {
