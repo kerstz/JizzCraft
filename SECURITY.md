@@ -51,12 +51,19 @@ decoders themselves should be reported upstream.
   RUSTSEC-2026-0293, a **memory-corruption** advisory (double free and use
   after free in `ringbuf` 0.4.8 `Consumer::skip`/`clear`, reached through
   `librqbit-utp`, so only in the opt-in `network` build). It needs an element
-  whose `Drop` panics and JizzCraft stores plain bytes there, so it is not
-  reachable today; the exception is to be re-examined by 2027-05-11 or when
-  `librqbit-utp` moves to `ringbuf` 0.5.2 or later. Also three unmaintained
-  notices (`zbus_names`, `zvariant`, `zvariant_derive`, Linux accessibility, no
-  known vulnerability).
+  whose `Drop` panics, and the only ring buffer `librqbit-utp` 0.7.0 creates
+  holds `u8` (no `Drop` at all), so it is not reachable; the exception is to
+  be re-examined by 2027-05-11 or when `librqbit-utp` moves to `ringbuf`
+  0.5.2 or later. Also three unmaintained notices (`zbus_names`, `zvariant`,
+  `zvariant_derive`, Linux accessibility, no known vulnerability). CI fails on
+  any other advisory, unsound and unmaintained notices included.
   The embedded SQLite is 3.54.1 (RUSTSEC-2026-0459 fixed).
+- The OpenSSL that SQLCipher is built against by default is the vendored
+  3.6.3 (`openssl-src` 300.6.1, the last of that line `openssl-sys` accepts).
+  OpenSSL 3.6.4 and 3.6.5 fix issues in TLS, DTLS, QUIC, CMS, CMP, X.509,
+  AEAD one-shot decryption and EC signing; SQLCipher only calls AES-256-CBC,
+  HMAC, PBKDF2 and the random generator, so none of them is reachable from
+  JizzCraft. Packagers can link the system OpenSSL with `OPENSSL_NO_VENDOR=1`.
 
 - The opt-in `network` build reveals your IP address to the indexers you
   configure and to BitTorrent peers, trackers and DHT nodes. Use the `proxy`

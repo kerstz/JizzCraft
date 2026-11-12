@@ -23,7 +23,25 @@ anything may change between minor versions.
 - RUSTSEC-2026-0293 (memory corruption in `ringbuf` 0.4.8 via `librqbit-utp`,
   network build) stays ignored with a review date of 2027-05-11: librqbit 9.1.0
   and librqbit-utp 0.7.0 still depend on it. `cargo audit` exceptions now live
-  in `.cargo/audit.toml`; CI also runs gitleaks.
+  in `.cargo/audit.toml`; CI also runs gitleaks. Its reachability is now
+  written down: the only ring buffer `librqbit-utp` creates holds `u8`, which
+  has no `Drop`, so the panic the bug needs cannot happen.
+- Dependencies: `rustix` 1.1.6 (RUSTSEC-2026-0486, unsound `xattr` functions)
+  and the other patch releases of the lockfile (`tokio` 1.54.1,
+  `rustls-webpki` 0.103.17, `aws-lc-rs` 1.19.0, `libc` 0.2.191, …).
+- `cargo deny` now counts unsound advisories in every crate of the graph,
+  not only in direct dependencies (it missed RUSTSEC-2026-0486), and
+  `cargo audit` in CI fails on unsound, unmaintained and yanked notices too.
+- Online edition: "Find on this computer" read the indexer list of whatever
+  answered on the local Prowlarr port without a size limit; it is now capped
+  at 1 MiB, and a scan in `crates/fetch/tests/security.rs` refuses any
+  uncapped response read.
+- CI and release workflows: every action is pinned to a commit, checkouts no
+  longer keep the job token on disk, release build jobs get a read-only token
+  (only the publish job may write) and published binaries are built without
+  a restored Rust cache. Build tools are installed at fixed versions.
+- SECURITY.md explains why the vendored OpenSSL 3.6.3 that SQLCipher uses is
+  not affected by the later 3.6.4 and 3.6.5 fixes.
 
 ### Documentation
 - ROADMAP no longer says nothing calls the vault engine: the vault has shipped

@@ -2,7 +2,7 @@
 # where each one has its reason.
 [advisories]
 ignore = [
-  "RUSTSEC-2026-0293", # ringbuf 0.4.8 via librqbit-utp (network build); revisit by 2027-05-11
+  "RUSTSEC-2026-0293", # ringbuf 0.4.8 via librqbit-utp (network build), u8 elements: not reachable; revisit by 2027-05-11
   "RUSTSEC-2026-0370", # zvariant unmaintained notice
   "RUSTSEC-2026-0371", # zbus_names unmaintained notice
   "RUSTSEC-2026-0372", # zvariant_derive unmaintained notice

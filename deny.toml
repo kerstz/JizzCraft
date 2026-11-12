@@ -4,21 +4,27 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Unsound advisories count in every crate of the graph, not only in the
+# workspace's direct dependencies (the default).
+unsound = "all"
 ignore = [
-  # ringbuf 0.4.8 via librqbit-utp (network feature only). Needs an element
-  # whose Drop panics inside Consumer::skip/clear; librqbit stores plain
-  # bytes. Not fixable here until librqbit moves to ringbuf >= 0.5.2.
-  # Revisit on every librqbit bump.
-  # Memory corruption advisory (double free / use after free), shipped in the
-  # `network` build. Checked 2026-11-11 with `cargo tree -i ringbuf
-  # --all-features`: librqbit 9.1.0 (locked) and librqbit-utp 0.7.0 (latest)
-  # still depend on ringbuf 0.4.8, so no fixed version can be resolved yet.
-  # Re-examine by 2027-05-11 (cargo-deny has no `expires` key; the date is
-  # enforced by a note in SECURITY.md and .cargo/audit.toml).
-  { id = "RUSTSEC-2026-0293", reason = "ringbuf pinned by librqbit-utp; only reachable with a panicking Drop, elements are plain bytes" },
+  # ringbuf 0.4.8 via librqbit-utp (network feature only; absent from the
+  # default graph). Memory corruption advisory (double free / use after free)
+  # in Consumer::skip/clear, triggered only when an element's Drop panics.
+  # Reachability, checked 2026-11-12 in librqbit-utp 0.7.0: its one ring
+  # buffer is `SharedRb<Heap<u8>>` (src/stream_tx.rs:129), reached through
+  # `truncate_front` -> `Consumer::skip`. `u8` has no Drop at all, so the
+  # panic that starts the bug cannot happen: not reachable.
+  # No fix can be resolved: librqbit 9.1.0 and librqbit-utp 0.7.0 are the
+  # latest releases and still require ringbuf 0.4. Revisit on every librqbit
+  # bump and by 2027-05-11 at the latest (cargo-deny has no `expires` key; the
+  # date also stands in SECURITY.md and .cargo/audit.toml).
+  { id = "RUSTSEC-2026-0293", reason = "ringbuf pinned by librqbit-utp; needs a panicking Drop, its only buffer holds u8" },
   # zbus_names / zvariant / zvariant_derive: unmaintained notices (no CVE), pulled
-  # by accesskit_unix (egui accessibility on Linux). No fixed release exists;
-  # revisit on every egui/accesskit bump.
+  # by accesskit_unix (egui accessibility on Linux, default build too). The
+  # crates moved into zbus 6, but every accesskit_unix release up to 0.24.1
+  # (2026-11-12) and atspi 0.30 still require zbus 5, so nothing can be
+  # resolved yet. Revisit on every egui/accesskit bump.
   { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained notice via accesskit_unix; no vulnerability, no replacement yet" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained notice via accesskit_unix; no vulnerability, no replacement yet" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained notice via accesskit_unix; no vulnerability, no replacement yet" },

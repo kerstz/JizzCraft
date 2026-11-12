@@ -83,10 +83,11 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo-audit
-        # Exceptions live in .cargo/audit.toml (reasons in deny.toml).
+        # Exceptions live in .cargo/audit.toml (reasons in deny.toml). Unsound,
+        # unmaintained and yanked notices fail the job like vulnerabilities.
         run: |
           cargo install cargo-audit --locked --version 0.23.0
-          cargo audit
+          cargo audit --deny warnings
 
   # Secret scan over the full history. Allowed false positives are listed in
   # .gitleaksignore. Not a required check.
