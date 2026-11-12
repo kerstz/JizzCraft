@@ -7,6 +7,18 @@ anything may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+- Buttons for what were keys only: Random, Slideshow and Triage above the
+  grid (in the Library menu when the window is too narrow), Pause or Resume
+  and a Slideshow stop button while a slideshow runs (also in the video
+  player, which has no key for it), and Keep, Hide, Favorite, Undo and Exit
+  in the triage strip. Each button shows the key of the active preset, read
+  from the same table as the shortcuts.
+
+### Changed
+- French: "Triage" reads "Triage" instead of "Tri", which also meant "Sort"
+  right next to it.
+
 ### Security
 - Dependencies: `rusqlite` 0.42 brings SQLCipher 4.20 on SQLite 3.54.1, which
   fixes RUSTSEC-2026-0459 (CVE-2026-119375: a database opened next to a `-wal`

@@ -44,6 +44,15 @@ impl JizzApp {
                 ui.close();
             }
         };
+        // The keys R, T and V, reachable without a keyboard in any window
+        // size (wide windows also show them as chips). Not while triaging.
+        if self.triage.is_none() {
+            for (_, cmd, args, doc) in super::LIBRARY_BUTTONS.iter().rev() {
+                let args = serde_json::from_str(args).unwrap_or_else(|_| json!({}));
+                item(ui, crate::i18n::tr(doc), cmd, args);
+            }
+            ui.separator();
+        }
         item(
             ui,
             crate::i18n::tr("Rescan folders"),

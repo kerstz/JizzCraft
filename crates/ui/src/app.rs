@@ -160,6 +160,47 @@ fn cache_prune_due(last: Option<u64>, now: u64) -> bool {
 /// Largest side uploaded to the GPU for the viewer (wgpu default limit is 8192+).
 const MAX_VIEW_SIDE: u32 = 8192;
 
+/// On-screen buttons for what used to be keys only: `(label, command,
+/// arguments, description)`. The key shown in each hint is looked up in
+/// `keys.rs`; the description is used where a context has no key for it.
+/// Library order is right to left, as the breadcrumb lays them out.
+const LIBRARY_BUTTONS: [(&str, &str, &str, &str); 3] = [
+    (
+        "Triage",
+        "triage.start",
+        "{}",
+        "Triage the inbox, one item at a time",
+    ),
+    (
+        "Slideshow",
+        "view.slideshow",
+        r#"{"action":"toggle"}"#,
+        "Start / stop the slideshow",
+    ),
+    ("Random", "view.random", "{}", "Open a random item"),
+];
+/// While a slideshow runs: stop it, pause or resume it.
+const SLIDESHOW_BUTTONS: [(&str, &str, &str); 2] = [
+    (
+        "view.slideshow",
+        r#"{"action":"stop"}"#,
+        "Stop the slideshow",
+    ),
+    (
+        "view.slideshow",
+        r#"{"action":"pause"}"#,
+        "Pause the slideshow",
+    ),
+];
+/// One button per triage decision, left to right.
+const TRIAGE_BUTTONS: [(&str, &str); 5] = [
+    ("Keep", "triage.keep"),
+    ("Hide", "triage.hide"),
+    ("Favorite", "triage.fav"),
+    ("Undo", "triage.undo"),
+    ("Exit", "triage.exit"),
+];
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Zoom {
     Fit,
@@ -853,23 +894,20 @@ impl JizzApp {
         self.db.get(id).ok().flatten()
     }
 
-    /// Slim status strip shown while triaging.
+    /// Slim strip shown while triaging: progress, then one button per
+    /// decision, each labelled with its key from `keys.rs`.
     fn triage_strip(&mut self, ctx: &egui::Context) {
         let Some(t) = &self.triage else { return };
         if matches!(self.view, View::Library) {
             return;
         }
-        let left = self.cfg.left_hand;
-        let keys = if left {
-            crate::i18n::tr("D KEEP · S HIDE · W FAVORITE · A UNDO · Q EXIT")
-        } else {
-            "→ KEEP · ↓ HIDE · ↑ FAVORITE · ← UNDO · ESC EXIT"
-        };
         let text = format!(
-            "TRIAGE · {} OF {} · {keys}",
+            "TRIAGE · {} OF {}",
             (t.done as u64 + 1).min(t.start_total.max(1)),
             t.start_total
         );
+        let lh = self.cfg.left_hand;
+        let mut clicked = None;
         egui::Area::new(egui::Id::new("triage-strip"))
             .anchor(Align2::CENTER_TOP, vec2(0.0, 104.0))
             .order(egui::Order::Foreground)
@@ -879,9 +917,99 @@ impl JizzApp {
                     .stroke(Stroke::new(1.0, LINE_STRONG))
                     .inner_margin(egui::Margin::symmetric(12, 6))
                     .show(ui, |ui| {
-                        ui.label(theme::hud(&text, TEXT));
+                        ui.horizontal(|ui| {
+                            ui.label(theme::hud(&text, TEXT));
+                            for (label, cmd) in TRIAGE_BUTTONS {
+                                ui.add_space(8.0);
+                                let bind = keys::button_hint(keys::Ctx::Triage, lh, cmd, "{}");
+                                let label = crate::i18n::tr(label);
+                                let shown = match bind {
+                                    Some(b) => format!("{label} {}", b.keys),
+                                    None => label.to_owned(),
+                                };
+                                let mut r = widgets::toggle_chip(ui, &shown, false);
+                                if let Some(b) = bind {
+                                    r = r.on_hover_text(crate::i18n::tr(b.doc));
+                                }
+                                if r.clicked() {
+                                    clicked = Some(cmd);
+                                }
+                            }
+                        });
                     });
             });
+        if let Some(cmd) = clicked {
+            self.push(cmd, json!({}));
+        }
+    }
+
+    /// A chip for a command that also has a key in `ctx`: its hint gives the
+    /// shortcut's description and key, or `doc` when that context has none.
+    #[allow(clippy::too_many_arguments)]
+    fn command_chip(
+        &mut self,
+        ui: &mut Ui,
+        label: &'static str,
+        on: bool,
+        ctx: keys::Ctx,
+        cmd: &'static str,
+        args: &'static str,
+        doc: &'static str,
+    ) {
+        let hint = match keys::button_hint(ctx, self.cfg.left_hand, cmd, args) {
+            Some(b) => format!("{} · {}", crate::i18n::tr(b.doc), b.keys),
+            None => crate::i18n::tr(doc).to_owned(),
+        };
+        if widgets::toggle_chip(ui, crate::i18n::tr(label), on)
+            .on_hover_text(hint)
+            .clicked()
+        {
+            self.push(
+                cmd,
+                serde_json::from_str(args).unwrap_or_else(|_| json!({})),
+            );
+        }
+    }
+
+    /// Buttons for random pick, slideshow and triage, which used to be keys
+    /// only (the Library menu has them too, for narrow windows). Hidden while
+    /// triaging: the strip has its own buttons there.
+    fn reach_chips(&mut self, ui: &mut Ui, wide: bool) {
+        if self.triage.is_some() {
+            return;
+        }
+        let active = self.slideshow.active;
+        match &self.view {
+            View::Library if !wide => {}
+            View::Library => {
+                // Right to left: this reads "Random · Slideshow · Triage".
+                for (label, cmd, args, doc) in LIBRARY_BUTTONS {
+                    let on = cmd == "view.slideshow" && active;
+                    self.command_chip(ui, label, on, keys::Ctx::Library, cmd, args, doc);
+                }
+            }
+            View::Image(_) | View::Player(_) => {
+                let ctx = if matches!(self.view, View::Image(_)) {
+                    keys::Ctx::Viewer
+                } else {
+                    keys::Ctx::Player
+                };
+                if active {
+                    let pause = if self.slideshow.paused {
+                        "Resume"
+                    } else {
+                        "Pause"
+                    };
+                    // Right to left: "Slideshow · Pause".
+                    let [(scmd, sargs, sdoc), (pcmd, pargs, pdoc)] = SLIDESHOW_BUTTONS;
+                    self.command_chip(ui, pause, false, ctx, pcmd, pargs, pdoc);
+                    self.command_chip(ui, "Slideshow", true, ctx, scmd, sargs, sdoc);
+                } else if wide && ctx == keys::Ctx::Viewer {
+                    let (label, cmd, args, doc) = LIBRARY_BUTTONS[2];
+                    self.command_chip(ui, label, false, ctx, cmd, args, doc);
+                }
+            }
+        }
     }
 
     fn current_index(&self) -> Option<u64> {
@@ -1923,6 +2051,11 @@ impl JizzApp {
                                 {
                                     self.push("view.shuffle", json!({}));
                                 }
+                                // Room for the random, slideshow and triage
+                                // chips and for what still follows (sort,
+                                // counts); otherwise they stay in the menu.
+                                let wide = ui.available_width() >= 640.0;
+                                self.reach_chips(ui, wide);
                             }
                             let arrow = if self.sort_desc { "↓" } else { "↑" };
                             let label =
@@ -4716,5 +4849,45 @@ mod keymap_tests {
             missing.is_empty(),
             "keys bound to unknown commands: {missing:?}"
         );
+    }
+
+    /// The buttons that stand in for keys call registered commands with
+    /// valid arguments, show the key the keyboard would use, and carry a
+    /// description that every language translates.
+    #[test]
+    fn on_screen_buttons_match_their_keys() {
+        use crate::keys::{Ctx, button_hint};
+        let mut reg: Registry<JizzApp> = Registry::new();
+        register_ui_commands(&mut reg);
+        let translated = |s: &str| {
+            use crate::lang::{de, es, fr, it, pt};
+            [fr::TABLE, es::TABLE, de::TABLE, it::TABLE, pt::TABLE]
+                .iter()
+                .all(|t| t.iter().any(|(en, _)| *en == s))
+        };
+        for lh in [false, true] {
+            for (label, cmd, args, doc) in LIBRARY_BUTTONS {
+                assert!(reg.has(cmd), "{cmd} is not registered");
+                assert!(serde_json::from_str::<Value>(args).unwrap().is_object());
+                let b = button_hint(Ctx::Library, lh, cmd, args)
+                    .unwrap_or_else(|| panic!("no library key for {cmd} {args}"));
+                assert_eq!(b.doc, doc, "{cmd}: the menu shows the key's own text");
+                assert!(translated(label), "{label} is not translated");
+            }
+            for (cmd, args, doc) in SLIDESHOW_BUTTONS {
+                assert!(reg.has(cmd));
+                let b = button_hint(Ctx::Viewer, lh, cmd, args)
+                    .unwrap_or_else(|| panic!("no viewer key for {args}"));
+                assert_eq!(b.doc, doc);
+            }
+            for (label, cmd) in TRIAGE_BUTTONS {
+                assert!(reg.has(cmd), "{cmd} is not registered");
+                assert!(button_hint(Ctx::Triage, lh, cmd, "{}").is_some(), "{cmd}");
+                assert!(translated(label), "{label} is not translated");
+            }
+        }
+        for s in ["Pause", "Resume", "Slideshow"] {
+            assert!(translated(s), "{s} is not translated");
+        }
     }
 }

@@ -34,9 +34,8 @@ real screen, and validation on real Windows and macOS machines (issues #14,
   a read-only Stash GraphQL import (fixed query text, no mutation) and a
   read-only Jellyfin/Emby pull; each needs an AGENTS.md amendment first (the
   user's own LAN server).
-- **Reachability**: on-screen buttons for what is a key or a command today
-  (triage, random pick, slideshow); automatic fingerprinting of items that
-  carry user data.
+- **Reachability**: automatic fingerprinting of items that carry user data.
+  (On-screen buttons for triage, random pick and the slideshow have shipped.)
 - **Player**: NV12/I420 caps with YUV→RGB in a wgpu shader (skips the CPU
   `videoconvert`); embedded subtitles and an audio-track picker for local
   files; seamless segment loops.

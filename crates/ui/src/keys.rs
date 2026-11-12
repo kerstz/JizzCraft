@@ -1710,6 +1710,16 @@ pub fn active(ctx: Ctx, left_hand: bool) -> impl Iterator<Item = &'static Bindin
         .filter(move |x| (x.ctx == ctx || x.ctx == Ctx::Global) && x.preset.active(left_hand))
 }
 
+/// The binding an on-screen button names in its hint: the one for `cmd` with
+/// exactly `args` in `ctx`. With the left-hand preset its own letter wins;
+/// otherwise a key both presets share wins over a default-only one. Buttons
+/// read their key from here, so this table stays the only place for keys.
+pub fn button_hint(ctx: Ctx, left_hand: bool, cmd: &str, args: &str) -> Option<&'static Binding> {
+    let first = if left_hand { Lh } else { Both };
+    let rows = || active(ctx, left_hand).filter(|b| b.ctx == ctx && b.cmd == cmd && b.args == args);
+    rows().find(|b| b.preset == first).or_else(|| rows().next())
+}
+
 /// Bindings for the docs window, grouped in display order.
 pub fn docs(left_hand: bool) -> Vec<(Ctx, Vec<&'static Binding>)> {
     [
@@ -1906,6 +1916,46 @@ mod tests {
         assert!(!docs(false).is_empty() && !docs(true).is_empty());
         let rows: usize = docs(false).iter().map(|(_, r)| r.len()).sum();
         assert!(rows > 20);
+    }
+
+    #[test]
+    fn button_hints_name_the_key_of_the_active_preset() {
+        let hint = |ctx, lh, cmd, args| button_hint(ctx, lh, cmd, args).map(|b| b.keys);
+        for lh in [false, true] {
+            assert_eq!(hint(Ctx::Library, lh, "view.random", "{}"), Some("R"));
+            assert_eq!(hint(Ctx::Library, lh, "triage.start", "{}"), Some("V"));
+            assert_eq!(
+                hint(Ctx::Library, lh, "view.slideshow", r#"{"action":"toggle"}"#),
+                Some("T")
+            );
+            assert_eq!(
+                hint(Ctx::Viewer, lh, "view.slideshow", r#"{"action":"pause"}"#),
+                Some("Space")
+            );
+            // Arguments must match: the library has no "pause" binding.
+            assert_eq!(
+                hint(Ctx::Library, lh, "view.slideshow", r#"{"action":"pause"}"#),
+                None
+            );
+        }
+        let triage = [
+            "triage.keep",
+            "triage.hide",
+            "triage.fav",
+            "triage.undo",
+            "triage.exit",
+        ];
+        let keys = |lh| triage.map(|c| hint(Ctx::Triage, lh, c, "{}"));
+        // The same keys the triage strip has always listed.
+        assert_eq!(
+            keys(false),
+            [Some("→"), Some("↓"), Some("↑"), Some("←"), Some("Esc")]
+        );
+        assert_eq!(
+            keys(true),
+            [Some("D"), Some("S"), Some("W"), Some("A"), Some("Q")]
+        );
+        assert!(button_hint(Ctx::Library, false, "no.such.command", "{}").is_none());
     }
 
     #[test]

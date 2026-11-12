@@ -138,9 +138,9 @@ What changed in this version: [CHANGELOG.md](CHANGELOG.md).
 - **Views**: Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers, plus your own saved views and a folder tree with counts.
 - **Interop**: reads NFO files, Stash exports and funscripts, finds possible duplicates by look, writes NFO files outside your library; never a server. See [docs/interop.md](docs/interop.md).
 - **Organise**: 0–5 star ratings, a reversible *hide* (a database flag, nothing else), playlists, categories (a tree) and tags; private tags and categories are not indexed for search. Multi-select with bulk rate, favorite, hide and "Add to". See [docs/organise.md](docs/organise.md).
-- **Inbox triage**: review new imports one at a time with `V`: keep, hide, favorite, undo. Nothing is ever deleted. Tinder for files, without the matches and without the regrets.
+- **Inbox triage**: review new imports one at a time with `V` (or the Triage button): keep, hide, favorite, undo, with a button for each in the triage strip. Nothing is ever deleted. Tinder for files, without the matches and without the regrets.
 - **Moves are recognised**: once files are fingerprinted (size plus the first and last 64 KiB), a renamed or moved file keeps its rating, history and markers at the next rescan. It judges a file by its cover and its last page. You can rename `definitely_not_that.mp4` all you like; it will still know.
-- **Shuffle** that never repeats or skips while paging, a **random pick** (`R`) and a **slideshow** (`T`).
+- **Shuffle** that never repeats or skips while paging, a **random pick** (`R`) and a **slideshow** (`T`). All three, and triage, are also buttons above the grid (in the Library menu when the window is narrow), with pause and stop buttons while a slideshow runs.
 
 **Viewer and player.**
 

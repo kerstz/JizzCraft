@@ -124,6 +124,11 @@ source can generate harmless test pictures and videos with
 Prefer one hand? Press `?` and click *Left-hand keys*: everything moves
 around `WASD` (the [README](../README.md#one-hand-is-enough) has the table).
 
+No keyboard at hand? Random, Slideshow and Triage are also buttons above the
+grid (or in the *Library* menu when the window is narrow), the triage strip
+has a button per decision, and a running slideshow shows Pause and stop
+buttons. Hover a button to see its key.
+
 ## FAQ
 
 ### Where is my data?
