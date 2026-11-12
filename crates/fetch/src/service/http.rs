@@ -173,7 +173,7 @@ impl FetchService {
                         else {
                             continue;
                         };
-                        let Ok(body) = resp.bytes().await else {
+                        let Some(body) = read_body_capped(resp, MAX_DETECT_BODY).await else {
                             continue;
                         };
                         let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -201,6 +201,25 @@ impl FetchService {
         });
         rx
     }
+}
+
+/// Largest indexer list read from a local Prowlarr. Whatever answers on its
+/// port is only assumed to be Prowlarr, so its answer is bounded too.
+const MAX_DETECT_BODY: usize = 1 << 20;
+
+/// The whole body, or `None` when it is broken or longer than `max` bytes.
+async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Option<Vec<u8>> {
+    if resp.content_length().is_some_and(|l| l > max as u64) {
+        return None;
+    }
+    let mut body = Vec::new();
+    while let Some(c) = resp.chunk().await.ok()? {
+        if body.len() + c.len() > max {
+            return None;
+        }
+        body.extend_from_slice(&c);
+    }
+    Some(body)
 }
 
 /// Last request time per source id, for the per-minute rate limit.
@@ -601,4 +620,75 @@ pub(super) async fn http_stream_with(
         name,
         status: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_body_capped;
+    use std::io::{Read, Write};
+
+    /// One answer per connection: `head` then `body_len` bytes of body.
+    fn serve(head: &'static str, body_len: usize) -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().take(1) {
+                let Ok(mut s) = s else { continue };
+                let mut b = [0u8; 1024];
+                let _ = s.read(&mut b);
+                let _ = s.write_all(head.as_bytes());
+                let chunk = [b'x'; 8192];
+                let mut left = body_len;
+                while left > 0 {
+                    let n = left.min(chunk.len());
+                    if s.write_all(&chunk[..n]).is_err() {
+                        break;
+                    }
+                    left -= n;
+                }
+            }
+        });
+        port
+    }
+
+    fn read(port: u16, max: usize) -> Option<Vec<u8>> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let resp = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{port}/"))
+                .send()
+                .await
+                .unwrap();
+            read_body_capped(resp, max).await
+        })
+    }
+
+    #[test]
+    fn small_bodies_are_read_whole() {
+        let port = serve(
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n",
+            5,
+        );
+        assert_eq!(read(port, 64).as_deref(), Some(&b"xxxxx"[..]));
+    }
+
+    #[test]
+    fn a_declared_length_over_the_cap_is_refused() {
+        let port = serve(
+            "HTTP/1.1 200 OK\r\nContent-Length: 4194304\r\nConnection: close\r\n\r\n",
+            0,
+        );
+        assert!(read(port, 1 << 20).is_none());
+    }
+
+    /// No length and a body that never ends: reading stops at the cap
+    /// instead of filling memory.
+    #[test]
+    fn an_endless_body_stops_at_the_cap() {
+        let port = serve("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", 64 << 20);
+        assert!(read(port, 1 << 20).is_none());
+    }
 }

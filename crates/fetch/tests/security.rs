@@ -536,6 +536,40 @@ fn streams_that_are_already_open_recheck_the_kill_switch() {
     }
 }
 
+/// A response body is read chunk by chunk against a cap, never in one go:
+/// whatever answers (a source, an indexer, a process squatting a local port)
+/// must not be able to fill memory with an endless body.
+#[test]
+fn response_bodies_are_read_with_a_cap() {
+    let src = src_dir();
+    let mut files = Vec::new();
+    rs_files(&src, &mut files);
+    let mut problems = Vec::new();
+    for f in &files {
+        for (n, l) in prod_lines(f) {
+            let l: String = l.split_whitespace().collect();
+            if [
+                ".bytes().await",
+                ".text().await",
+                ".json().await",
+                ".json::<",
+                ".text_with_charset(",
+                ".bytes_stream(",
+            ]
+            .iter()
+            .any(|p| l.contains(p))
+            {
+                problems.push(format!("src/{}:{n}: uncapped body read", norm(f, &src)));
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "read bodies through a capped loop:\n{}",
+        problems.join("\n")
+    );
+}
+
 /// Production lines with comments dropped only when the line starts with one
 /// (so `https://` inside a literal survives), 1-based numbers.
 fn raw_prod_lines(p: &Path) -> Vec<(usize, String)> {
