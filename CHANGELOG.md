@@ -27,7 +27,6 @@ anything may change between minor versions.
   (schema v8), the file is never touched, the cache prune keeps the chosen
   thumbnail and automatic thumbnails keep their cache names. CLI
   `thumb-frame ID --at SECONDS | --auto`, command `media.thumb`.
-
 - A built-in "Unplayed" view: the videos never started, newest first
   (what is left to watch). Like the other history views it is hidden in
   discreet mode and when history is hidden; CLI `query --view unplayed`.

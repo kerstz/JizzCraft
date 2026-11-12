@@ -821,7 +821,24 @@ fn no_core_dumps() {
 #[cfg(not(target_os = "linux"))]
 fn no_core_dumps() {}
 
+/// Stack of the thread the CLI runs on. clap builds the whole command tree
+/// on the stack, which in a debug build is close to 1 MiB: more than the
+/// main thread of a Windows program gets (it overflowed there).
+const CLI_STACK: usize = 16 << 20;
+
 fn main() -> ExitCode {
+    match std::thread::Builder::new()
+        .name("jizzcraft-cli".into())
+        .stack_size(CLI_STACK)
+        .spawn(cli_main)
+    {
+        // A panic was already reported by the crash hook: exit like one.
+        Ok(t) => t.join().unwrap_or(ExitCode::from(101)),
+        Err(_) => cli_main(),
+    }
+}
+
+fn cli_main() -> ExitCode {
     // Crash note without the panic message; no core dumps with library data.
     jizzcraft_core::report::install_crash_hook("jizzcraft-cli", env!("CARGO_PKG_VERSION"));
     no_core_dumps();

@@ -772,3 +772,27 @@ fn thumb_frame_sets_and_clears_the_chosen_frame() {
     }
     assert_eq!(tree_bytes(lib.path()), before, "files untouched");
 }
+
+/// Windows gives a program's main thread 1 MiB of stack, which clap's command
+/// tree outgrew in a debug build. The CLI must start whatever the main
+/// thread's stack: here it is squeezed to 256 KiB.
+#[cfg(unix)]
+#[test]
+fn starts_with_a_small_main_thread_stack() {
+    let home = tempfile::tempdir().unwrap();
+    let o = Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -s 256 && exec \"$0\" --home \"$1\" stats --json")
+        .arg(env!("CARGO_BIN_EXE_jizzcraft-cli"))
+        .arg(home.path())
+        .env_remove("JIZZCRAFT_DB")
+        .env_remove("JIZZCRAFT_HOME")
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "exit {:?}: {}",
+        o.status.code(),
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
