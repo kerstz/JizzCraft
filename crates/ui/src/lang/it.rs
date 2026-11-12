@@ -1382,4 +1382,56 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} files written · {} empty · {} skipped",
         "{} file scritti · {} vuoti · {} saltati",
     ),
+    // Moving a library folder.
+    (
+        "This folder's files moved…",
+        "I file di questa cartella sono stati spostati…",
+    ),
+    (
+        "Where are this folder's files now?",
+        "Dove sono ora i file di questa cartella?",
+    ),
+    ("FOLDER MOVED", "CARTELLA SPOSTATA"),
+    (
+        "{} of {} items are at the new place.",
+        "{} elementi su {} sono nel nuovo percorso.",
+    ),
+    (
+        "{} are other files there and {} are not there: they stay in Missing.",
+        "{} sono altri file e {} non ci sono: restano in Mancanti.",
+    ),
+    (
+        "Ratings, history, markers, tags and playlists follow the items. No file is changed, and a backup of the library is kept.",
+        "Valutazioni, cronologia, marcatori, tag e playlist seguono gli elementi. Nessun file viene modificato e viene conservato un backup della libreria.",
+    ),
+    ("Move the items", "Sposta gli elementi"),
+    ("Folder moved", "Cartella spostata"),
+    (
+        "{} moved · {} different · {} not found",
+        "{} spostati · {} diversi · {} non trovati",
+    ),
+    (
+        "none of this folder's items is at the new place: nothing was changed",
+        "nessun elemento di questa cartella è nel nuovo percorso: non è cambiato nulla",
+    ),
+    (
+        "the new folder is, contains or lies inside a library folder",
+        "la nuova cartella è, contiene o si trova in una cartella della libreria",
+    ),
+    (
+        "the new folder cannot be opened",
+        "impossibile aprire la nuova cartella",
+    ),
+    (
+        "the new place is not a folder",
+        "il nuovo percorso non è una cartella",
+    ),
+    (
+        "the library folder changed meanwhile: nothing was changed",
+        "la cartella della libreria è cambiata nel frattempo: non è cambiato nulla",
+    ),
+    (
+        "this folder is no longer in the library",
+        "questa cartella non è più nella libreria",
+    ),
 ];

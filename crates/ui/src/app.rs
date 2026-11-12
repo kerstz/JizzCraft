@@ -26,6 +26,7 @@ mod downloads;
 mod duplicates;
 mod interop;
 mod meta_ui;
+mod move_folder;
 mod onboarding;
 mod organize;
 #[cfg(feature = "network")]
@@ -146,6 +147,19 @@ enum JobMsg {
     Done {
         label: &'static str,
         result: Result<String, String>,
+    },
+    /// The "where are the files now" dialog closed (None: cancelled).
+    MovePicked {
+        from: PathBuf,
+        name: String,
+        to: Option<PathBuf>,
+    },
+    /// The dry run of a folder move ended: counts, or a fixed sentence.
+    MoveCounted {
+        from: PathBuf,
+        to: PathBuf,
+        name: String,
+        result: Result<jizzcraft_core::relocate::MoveReport, String>,
     },
 }
 
@@ -330,6 +344,8 @@ pub struct JizzApp {
     remove_folder: Option<(PathBuf, String, u64)>,
     /// Cancel flag of the running folder-removal job, if any.
     remove_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// A counted folder move waiting for confirmation.
+    move_folder: Option<move_folder::MoveAsk>,
     sidebar: Option<sidebar::SidebarCache>,
     /// Playlists, categories, tags: marks, picker, undo (in memory only).
     org: organize::OrgState,
@@ -676,6 +692,7 @@ impl JizzApp {
         register_core::<JizzApp>(&mut registry);
         register_ui_commands(&mut registry);
         tools::register_tool_commands(&mut registry);
+        move_folder::register(&mut registry);
         interop::register(&mut registry);
         duplicates::register(&mut registry);
         settings::register(&mut registry);
@@ -742,6 +759,7 @@ impl JizzApp {
             triage: None,
             save_view: None,
             remove_folder: None,
+            move_folder: None,
             remove_cancel: None,
             sidebar: None,
             org: organize::OrgState::default(),
@@ -1515,6 +1533,13 @@ impl JizzApp {
                 JobMsg::Folder(Some(dir)) => self.start_scan(Some(dir)),
                 JobMsg::Folder(None) => {}
                 JobMsg::InteropFolder(f) => self.interop_folder_chosen(f),
+                JobMsg::MovePicked { from, name, to } => self.move_folder_picked(from, name, to),
+                JobMsg::MoveCounted {
+                    from,
+                    to,
+                    name,
+                    result,
+                } => self.move_folder_counted(from, to, name, result),
                 JobMsg::OrgExport(id, dest) => self.org_export_to(id, dest),
                 JobMsg::Codecs => self.toast(
                     ToastKind::Info,
@@ -3121,6 +3146,7 @@ impl eframe::App for JizzApp {
         self.central(ui);
         self.save_view_dialog(&ctx);
         self.remove_folder_dialog(&ctx);
+        self.move_folder_dialog(&ctx);
         self.picker_window(&ctx);
         self.org_confirm_window(&ctx);
         self.tag_alias_window(&ctx);
@@ -4693,6 +4719,68 @@ mod tests {
         assert!(app.take_lock_request());
     }
 
+    /// The moved-folder flow without the folder dialog: count as a job, ask,
+    /// then move as a job; the items keep their rating.
+    #[test]
+    fn a_moved_folder_is_counted_asked_and_moved_by_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("library.db");
+        let old = dir.path().join("drive-a");
+        std::fs::create_dir(&old).unwrap();
+        for (i, n) in ["a.png", "b.png"].iter().enumerate() {
+            image::RgbImage::from_pixel(8 + i as u32, 8, image::Rgb([9, 9, 9]))
+                .save(old.join(n))
+                .unwrap();
+        }
+        let old = jizzcraft_core::pathbytes::canonical(&old).unwrap();
+        {
+            let mut db = Db::open(&db_path).unwrap();
+            jizzcraft_core::scan::import_folder(&mut db, &old).unwrap();
+            db.set_rating(1, 5).unwrap();
+        }
+        let new = dir.path().join("drive-b");
+        std::fs::rename(&old, &new).unwrap();
+        let lib = Library::open_plain(&db_path).unwrap();
+        let mut app = JizzApp::open(
+            &egui::Context::default(),
+            None,
+            scripted_opts(&db_path),
+            lib,
+        )
+        .unwrap();
+        let wait = |app: &mut JizzApp, done: &dyn Fn(&JizzApp) -> bool| {
+            let end = Instant::now() + Duration::from_secs(20);
+            while !done(app) {
+                assert!(Instant::now() < end, "the job never reported");
+                app.poll_jobs();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        // The picker answered: a dry run, then the question.
+        app.move_folder_picked(old.clone(), "drive-a".into(), Some(new.clone()));
+        wait(&mut app, &|a| a.move_folder.is_some());
+        assert_eq!(app.busy, 0);
+        assert_eq!(
+            app.db.folders().unwrap()[0].1,
+            old,
+            "a dry run moves nothing"
+        );
+
+        // "Move the items".
+        app.run("library.move_root.apply", json!({ "from": old, "to": new }));
+        wait(&mut app, &|a| a.busy == 0 && a.jobs_finished());
+        let canon = jizzcraft_core::pathbytes::canonical(&new).unwrap();
+        assert_eq!(app.db.folders().unwrap()[0].1, canon);
+        let m = app.db.get(1).unwrap().unwrap();
+        assert!(!m.missing && m.path.starts_with(&canon) && m.rating == 5);
+        // A cancelled picker does nothing.
+        app.move_folder = None;
+        app.move_folder_picked(canon, String::new(), None);
+        assert_eq!(app.busy, 0);
+        assert!(app.move_folder.is_none());
+    }
+
     #[test]
     fn vault_settings_command_clamps_and_updates() {
         let dir = tempfile::tempdir().unwrap();
@@ -4830,6 +4918,7 @@ mod keymap_tests {
         register_core::<JizzApp>(&mut reg);
         register_ui_commands(&mut reg);
         tools::register_tool_commands(&mut reg);
+        move_folder::register(&mut reg);
         settings::register(&mut reg);
         #[cfg(feature = "network")]
         {

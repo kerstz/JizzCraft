@@ -737,6 +737,18 @@ enum Cmd {
     },
     /// Merge a vanished entry into its new location.
     Relink { from: i64, to: i64 },
+    /// A library folder whose files are now somewhere else (a drive that
+    /// mounts at another path, a folder moved or renamed): its items follow,
+    /// with their ratings, history and tags. A dry run unless --apply.
+    MoveFolder {
+        /// The library folder, as listed by `tree` (it may be gone).
+        from: PathBuf,
+        /// Where its files are now.
+        to: PathBuf,
+        /// Make the change (without it, only count what would follow).
+        #[arg(long)]
+        apply: bool,
+    },
     /// Decode-test files and flag damaged ones.
     Check {
         #[arg(long)]
@@ -1173,6 +1185,14 @@ fn run(cli: &Cli) -> Result<(), Fail> {
             json!({ "id": id, "buckets": buckets }),
         ),
         Cmd::Relink { from, to } => ("media.relink".to_owned(), json!({ "from": from, "to": to })),
+        Cmd::MoveFolder { from, to, apply } => (
+            "library.move_root".to_owned(),
+            json!({
+                "from": from.to_string_lossy(),
+                "to": to.to_string_lossy(),
+                "dry_run": !apply,
+            }),
+        ),
         Cmd::Check {
             full,
             checksum,
@@ -1640,6 +1660,24 @@ fn print_human(cmd: &str, v: &Value) {
                 extra
             );
         }
+        "library.move_root" => println!(
+            "{}: {} items · {} found ({} checked by fingerprint) · {} different · {} not found{}",
+            if v["dry_run"] == true {
+                "dry run"
+            } else {
+                "moved"
+            },
+            v["items"],
+            v["found"],
+            v["verified"],
+            v["different"],
+            v["not_found"],
+            if v["backed_up"] == true {
+                " · backup kept beside the library"
+            } else {
+                ""
+            }
+        ),
         "media.by_hash" => {
             for id in v["ids"].as_array().into_iter().flatten() {
                 println!("{id}");

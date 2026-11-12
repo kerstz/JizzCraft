@@ -14,6 +14,13 @@ anything may change between minor versions.
   player, which has no key for it), and Keep, Hide, Favorite, Undo and Exit
   in the triage strip. Each button shows the key of the active preset, read
   from the same table as the shortcuts.
+- A library folder whose files moved (a drive that mounts at another path, a
+  folder renamed outside the app) can be pointed at the new place: its items
+  keep their ratings, history, markers, tags and playlists. Dry run first,
+  counts only, a `pre-move` backup, no file written. An item follows only if
+  the same file is there (size, and fingerprint when it has one). Sidebar
+  menu "This folder's files moved…", CLI `move-folder FROM TO [--apply]`,
+  command `library.move_root`. See [docs/organise.md](docs/organise.md#a-whole-folder-moved).
 
 ### Changed
 - French: "Triage" reads "Triage" instead of "Tri", which also meant "Sort"

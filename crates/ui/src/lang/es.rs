@@ -1391,4 +1391,56 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} files written · {} empty · {} skipped",
         "{} archivos escritos · {} vacíos · {} omitidos",
     ),
+    // Moving a library folder.
+    (
+        "This folder's files moved…",
+        "Los archivos de esta carpeta se movieron…",
+    ),
+    (
+        "Where are this folder's files now?",
+        "¿Dónde están ahora los archivos de esta carpeta?",
+    ),
+    ("FOLDER MOVED", "CARPETA MOVIDA"),
+    (
+        "{} of {} items are at the new place.",
+        "{} de {} elementos están en el nuevo lugar.",
+    ),
+    (
+        "{} are other files there and {} are not there: they stay in Missing.",
+        "{} son otros archivos y {} no están allí: siguen en Ausentes.",
+    ),
+    (
+        "Ratings, history, markers, tags and playlists follow the items. No file is changed, and a backup of the library is kept.",
+        "Valoraciones, historial, marcadores, etiquetas y listas de reproducción siguen a los elementos. No se modifica ningún archivo y se guarda una copia de seguridad de la biblioteca.",
+    ),
+    ("Move the items", "Mover los elementos"),
+    ("Folder moved", "Carpeta movida"),
+    (
+        "{} moved · {} different · {} not found",
+        "{} movidos · {} distintos · {} no encontrados",
+    ),
+    (
+        "none of this folder's items is at the new place: nothing was changed",
+        "ningún elemento de esta carpeta está en el nuevo lugar: no se cambió nada",
+    ),
+    (
+        "the new folder is, contains or lies inside a library folder",
+        "la nueva carpeta es, contiene o está dentro de una carpeta de la biblioteca",
+    ),
+    (
+        "the new folder cannot be opened",
+        "no se puede abrir la nueva carpeta",
+    ),
+    (
+        "the new place is not a folder",
+        "el nuevo lugar no es una carpeta",
+    ),
+    (
+        "the library folder changed meanwhile: nothing was changed",
+        "la carpeta de la biblioteca cambió mientras tanto: no se cambió nada",
+    ),
+    (
+        "this folder is no longer in the library",
+        "esta carpeta ya no está en la biblioteca",
+    ),
 ];

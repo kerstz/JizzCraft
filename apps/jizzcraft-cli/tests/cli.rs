@@ -668,3 +668,75 @@ fn import_stash_is_a_dry_run_unless_applied() {
     );
     assert!(!bad.status.success());
 }
+
+#[test]
+fn move_folder_is_a_dry_run_unless_applied() {
+    let home = tempfile::tempdir().unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let old = t.path().join("drive-a");
+    make_library(&old);
+    let old = std::fs::canonicalize(&old).unwrap();
+    json(&cli(
+        home.path(),
+        &["--json", "scan", old.to_str().unwrap()],
+    ));
+    let id = json(&cli(home.path(), &["--json", "query"]))["items"][0]["id"].clone();
+    json(&cli(home.path(), &["--json", "rate", &id.to_string(), "5"]));
+    let new = t.path().join("drive-b");
+    std::fs::rename(&old, &new).unwrap();
+    let before = tree_bytes(&new);
+    let args = |apply: bool| {
+        let mut a = vec![
+            "--json",
+            "move-folder",
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+        ];
+        if apply {
+            a.push("--apply");
+        }
+        a.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let run = |a: Vec<String>| {
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        json(&cli(home.path(), &a))
+    };
+    let dry = run(args(false));
+    assert_eq!(
+        (dry["dry_run"].clone(), dry["found"].clone()),
+        (true.into(), 3.into()),
+        "{dry}"
+    );
+    let done = run(args(true));
+    assert_eq!(
+        (done["found"].clone(), done["backed_up"].clone()),
+        (3.into(), true.into()),
+        "{done}"
+    );
+    let items = json(&cli(home.path(), &["--json", "query"]));
+    let new_c = std::fs::canonicalize(&new).unwrap();
+    let all = items["items"].as_array().unwrap();
+    assert_eq!(all.len(), 3);
+    for m in all {
+        assert!(
+            Path::new(m["path"].as_str().unwrap()).starts_with(&new_c),
+            "{m}"
+        );
+    }
+    let rated = all.iter().find(|m| m["id"] == id).unwrap();
+    assert_eq!(rated["rating"], 5, "{rated}");
+    assert_eq!(tree_bytes(&new), before, "files untouched");
+    // A destination that holds the library folder itself is refused.
+    let o = cli(
+        home.path(),
+        &[
+            "move-folder",
+            new.to_str().unwrap(),
+            t.path().to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !o.status.success(),
+        "a destination above the folder is refused"
+    );
+}

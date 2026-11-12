@@ -40,8 +40,8 @@ real screen, and validation on real Windows and macOS machines (issues #14,
   `videoconvert`); embedded subtitles and an audio-track picker for local
   files; seamless segment loops.
 - **Library**: file watching instead
-  of manual rescan, a relink picker for moved library roots, a
-  restore-from-backup flow.
+  of manual rescan, a restore-from-backup flow. (Moved library folders can
+  be pointed at their new place: `move-folder`, sidebar menu.)
 - **Privacy**: vault follow-ups (issue #13): hand validation of the unlocked
   Settings flow, encrypting `config.json` and the online state, and a
   passphrase change that does not rewrite the database. The vault itself ships

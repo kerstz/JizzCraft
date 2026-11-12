@@ -1397,4 +1397,56 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} files written · {} empty · {} skipped",
         "{} fichiers écrits · {} vides · {} ignorés",
     ),
+    // Moving a library folder.
+    (
+        "This folder's files moved…",
+        "Les fichiers de ce dossier ont été déplacés…",
+    ),
+    (
+        "Where are this folder's files now?",
+        "Où sont les fichiers de ce dossier maintenant ?",
+    ),
+    ("FOLDER MOVED", "DOSSIER DÉPLACÉ"),
+    (
+        "{} of {} items are at the new place.",
+        "{} éléments sur {} sont au nouvel emplacement.",
+    ),
+    (
+        "{} are other files there and {} are not there: they stay in Missing.",
+        "{} y sont d'autres fichiers et {} n'y sont pas : ils restent dans Manquants.",
+    ),
+    (
+        "Ratings, history, markers, tags and playlists follow the items. No file is changed, and a backup of the library is kept.",
+        "Notes, historique, repères, étiquettes et listes de lecture suivent les éléments. Aucun fichier n'est modifié et une sauvegarde de la bibliothèque est conservée.",
+    ),
+    ("Move the items", "Déplacer les éléments"),
+    ("Folder moved", "Dossier déplacé"),
+    (
+        "{} moved · {} different · {} not found",
+        "{} déplacés · {} différents · {} introuvables",
+    ),
+    (
+        "none of this folder's items is at the new place: nothing was changed",
+        "aucun élément de ce dossier n'est au nouvel emplacement : rien n'a été modifié",
+    ),
+    (
+        "the new folder is, contains or lies inside a library folder",
+        "le nouveau dossier est, contient ou se trouve dans un dossier de la bibliothèque",
+    ),
+    (
+        "the new folder cannot be opened",
+        "le nouveau dossier ne peut pas être ouvert",
+    ),
+    (
+        "the new place is not a folder",
+        "le nouvel emplacement n'est pas un dossier",
+    ),
+    (
+        "the library folder changed meanwhile: nothing was changed",
+        "le dossier de la bibliothèque a changé entre-temps : rien n'a été modifié",
+    ),
+    (
+        "this folder is no longer in the library",
+        "ce dossier n'est plus dans la bibliothèque",
+    ),
 ];

@@ -315,6 +315,29 @@ pub fn register_core<C: HasLibrary>(reg: &mut Registry<C>) {
         },
     );
     reg.register(
+        "library.move_root",
+        "Point a library folder at the place its files moved to (dry run unless dry_run is false): {from, to, dry_run?=true}",
+        |c, a| {
+            let from = str_arg(&a, "from")?;
+            let to = str_arg(&a, "to")?;
+            let dry_run = match a.get("dry_run") {
+                None | Some(Value::Null) => true,
+                Some(v) => v
+                    .as_bool()
+                    .ok_or_else(|| Error::Invalid("`dry_run` must be a boolean".into()))?,
+            };
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let rep = crate::relocate::move_root(
+                c.db(),
+                std::path::Path::new(&from),
+                std::path::Path::new(&to),
+                dry_run,
+                &cancel,
+            )?;
+            Ok(serde_json::to_value(rep).expect("report"))
+        },
+    );
+    reg.register(
         "media.relink",
         "Merge a vanished entry into its new location: {from, to}",
         |c, a| {

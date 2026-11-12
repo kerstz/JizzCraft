@@ -1373,4 +1373,56 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} files written · {} empty · {} skipped",
         "{} ficheiros escritos · {} vazios · {} ignorados",
     ),
+    // Moving a library folder.
+    (
+        "This folder's files moved…",
+        "Os ficheiros desta pasta foram movidos…",
+    ),
+    (
+        "Where are this folder's files now?",
+        "Onde estão agora os ficheiros desta pasta?",
+    ),
+    ("FOLDER MOVED", "PASTA MOVIDA"),
+    (
+        "{} of {} items are at the new place.",
+        "{} de {} itens estão no novo local.",
+    ),
+    (
+        "{} are other files there and {} are not there: they stay in Missing.",
+        "{} são outros ficheiros e {} não estão lá: ficam em Em falta.",
+    ),
+    (
+        "Ratings, history, markers, tags and playlists follow the items. No file is changed, and a backup of the library is kept.",
+        "Classificações, histórico, marcadores, etiquetas e listas de reprodução seguem os itens. Nenhum ficheiro é alterado e é guardada uma cópia de segurança da biblioteca.",
+    ),
+    ("Move the items", "Mover os itens"),
+    ("Folder moved", "Pasta movida"),
+    (
+        "{} moved · {} different · {} not found",
+        "{} movidos · {} diferentes · {} não encontrados",
+    ),
+    (
+        "none of this folder's items is at the new place: nothing was changed",
+        "nenhum item desta pasta está no novo local: nada foi alterado",
+    ),
+    (
+        "the new folder is, contains or lies inside a library folder",
+        "a nova pasta é, contém ou está dentro de uma pasta da biblioteca",
+    ),
+    (
+        "the new folder cannot be opened",
+        "não é possível abrir a nova pasta",
+    ),
+    (
+        "the new place is not a folder",
+        "o novo local não é uma pasta",
+    ),
+    (
+        "the library folder changed meanwhile: nothing was changed",
+        "a pasta da biblioteca mudou entretanto: nada foi alterado",
+    ),
+    (
+        "this folder is no longer in the library",
+        "esta pasta já não está na biblioteca",
+    ),
 ];

@@ -107,6 +107,31 @@ stays in its playlists, greyed out, so it comes back in place if the file
 returns. `relink` merges a vanished entry into its new location and carries
 its playlist position and labels with it.
 
+### A whole folder moved
+
+When a library folder is now somewhere else (an external drive that mounts at
+another path, a folder renamed or moved outside the app), a rescan cannot
+match its files: they all show as missing. Right-click the folder in the
+sidebar, choose **This folder's files moved…** and pick where they are now.
+The app first counts, without changing anything, how many items are at the
+new place, then asks. Its items follow with their ratings, history, markers,
+tags and playlists. From the CLI:
+
+```sh
+jizzcraft-cli move-folder /media/old-drive/videos /run/media/me/new-drive/videos          # dry run
+jizzcraft-cli move-folder /media/old-drive/videos /run/media/me/new-drive/videos --apply
+```
+
+An item follows only when the same file is at the same place below the new
+folder: same size and, for fingerprinted items, the same first and last
+64 KiB. Another file under the same name, or no file, leaves the item behind
+as missing, and the next rescan adds what is there as a new item, so data is
+never put on the wrong file. The new folder must not be, contain or lie inside
+a library folder, and a folder holding none of the files is refused. Nothing
+is read beyond that, no file is written, and a `pre-move` backup of the
+library is kept beside it (`library.pre-move-<time>.db`, the last three).
+Thumbnails are made again for the new paths.
+
 ## Discreet mode and privacy
 
 Playlist, tag and category names can say a lot. Anything can be flagged

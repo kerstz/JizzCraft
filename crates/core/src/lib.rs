@@ -21,6 +21,7 @@ pub mod paths;
 pub mod phash;
 pub mod portability;
 pub mod privacy;
+pub mod relocate;
 pub mod report;
 pub mod scan;
 pub mod search;

@@ -1376,4 +1376,56 @@ pub const TABLE: &[(&str, &str)] = &[
         "{} files written · {} empty · {} skipped",
         "{} Dateien geschrieben · {} leer · {} übersprungen",
     ),
+    // Moving a library folder.
+    (
+        "This folder's files moved…",
+        "Die Dateien dieses Ordners wurden verschoben…",
+    ),
+    (
+        "Where are this folder's files now?",
+        "Wo liegen die Dateien dieses Ordners jetzt?",
+    ),
+    ("FOLDER MOVED", "ORDNER VERSCHOBEN"),
+    (
+        "{} of {} items are at the new place.",
+        "{} von {} Einträgen liegen am neuen Ort.",
+    ),
+    (
+        "{} are other files there and {} are not there: they stay in Missing.",
+        "{} sind dort andere Dateien und {} fehlen dort: Sie bleiben unter Fehlend.",
+    ),
+    (
+        "Ratings, history, markers, tags and playlists follow the items. No file is changed, and a backup of the library is kept.",
+        "Bewertungen, Verlauf, Marker, Tags und Wiedergabelisten folgen den Einträgen. Keine Datei wird geändert, und eine Sicherung der Bibliothek wird aufbewahrt.",
+    ),
+    ("Move the items", "Einträge verschieben"),
+    ("Folder moved", "Ordner verschoben"),
+    (
+        "{} moved · {} different · {} not found",
+        "{} verschoben · {} anders · {} nicht gefunden",
+    ),
+    (
+        "none of this folder's items is at the new place: nothing was changed",
+        "kein Eintrag dieses Ordners liegt am neuen Ort: nichts wurde geändert",
+    ),
+    (
+        "the new folder is, contains or lies inside a library folder",
+        "der neue Ordner ist, enthält oder liegt in einem Bibliotheksordner",
+    ),
+    (
+        "the new folder cannot be opened",
+        "der neue Ordner lässt sich nicht öffnen",
+    ),
+    (
+        "the new place is not a folder",
+        "der neue Ort ist kein Ordner",
+    ),
+    (
+        "the library folder changed meanwhile: nothing was changed",
+        "der Bibliotheksordner hat sich inzwischen geändert: nichts wurde geändert",
+    ),
+    (
+        "this folder is no longer in the library",
+        "dieser Ordner ist nicht mehr in der Bibliothek",
+    ),
 ];

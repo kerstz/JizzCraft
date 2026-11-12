@@ -381,6 +381,16 @@ fn tree_rows(
     if depth == 0 {
         r.context_menu(|ui| {
             if ui
+                .button(crate::i18n::tr("This folder's files moved…"))
+                .clicked()
+            {
+                cmds.push((
+                    "library.move_root.ask",
+                    json!({ "path": node.path, "name": node.name }),
+                ));
+                ui.close();
+            }
+            if ui
                 .button(crate::i18n::tr("Remove this folder from the library"))
                 .clicked()
             {
