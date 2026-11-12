@@ -275,3 +275,52 @@ fn saved_views_and_random_pick_through_registry() {
             .is_err()
     );
 }
+
+/// "Unplayed": videos never started, newest first. Images, played videos and
+/// videos with a resume point are left out; it is a history view.
+#[test]
+fn unplayed_lists_the_videos_never_started() {
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    for n in ["old.mp4", "seen.mp4", "started.mp4", "new.mp4"] {
+        fs::write(r.join(n), n.as_bytes()).unwrap();
+    }
+    png(&r.join("picture.png"), 8, 8);
+    let mut db = Db::open_in_memory().unwrap();
+    scan::import_folder(&mut db, r).unwrap();
+    let mut reg: Registry<Db> = Registry::new();
+    register_core(&mut reg);
+    let (seen, started) = (id_of(&db, "seen.mp4"), id_of(&db, "started.mp4"));
+    reg.run(
+        &mut db,
+        "history.progress",
+        json!({ "id": seen, "pos_ms": 900_000, "duration_ms": 900_000, "count_play": true }),
+    )
+    .unwrap();
+    reg.run(
+        &mut db,
+        "history.progress",
+        json!({ "id": started, "pos_ms": 30_000, "duration_ms": 900_000, "count_play": false }),
+    )
+    .unwrap();
+    let b = jizzcraft_core::view::builtin("unplayed").expect("built-in view");
+    assert!(b.sensitive, "derived from history: hidden in discreet mode");
+    let mut got = names(&db, &(b.spec)());
+    got.sort();
+    assert_eq!(got, ["new.mp4", "old.mp4"]);
+    // Listed and resolvable like every built-in view.
+    let list = reg.run(&mut db, "views.list", json!({})).unwrap();
+    assert!(
+        list["builtin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["key"] == "unplayed" && v["sensitive"] == true)
+    );
+    let spec = reg
+        .run(&mut db, "views.get", json!({ "name": "unplayed" }))
+        .unwrap();
+    let f = Filter::from_json(&spec["spec"]).unwrap();
+    assert_eq!(f.sort, SortKey::Added);
+    assert!(f.desc);
+}

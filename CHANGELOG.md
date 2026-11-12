@@ -28,6 +28,10 @@ anything may change between minor versions.
   thumbnail and automatic thumbnails keep their cache names. CLI
   `thumb-frame ID --at SECONDS | --auto`, command `media.thumb`.
 
+- A built-in "Unplayed" view: the videos never started, newest first
+  (what is left to watch). Like the other history views it is hidden in
+  discreet mode and when history is hidden; CLI `query --view unplayed`.
+
 ### Upgrading from 0.3.0
 - The first start migrates the library to schema v8 (one new column); 0.3.0
   cannot open it again, so keep a copy of the library file if you may want

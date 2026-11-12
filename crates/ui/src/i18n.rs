@@ -288,6 +288,23 @@ mod tests {
         }
     }
 
+    /// The sidebar shows the engine's built-in view labels through `tr`.
+    #[test]
+    fn built_in_view_labels_are_translated_in_every_language() {
+        for l in ALL.into_iter().filter(|l| *l != Lang::En) {
+            for b in jizzcraft_core::view::BUILTINS {
+                assert!(
+                    l.table()
+                        .iter()
+                        .any(|(en, t)| *en == b.label && !t.is_empty()),
+                    "{}: {}",
+                    l.code(),
+                    b.label
+                );
+            }
+        }
+    }
+
     #[test]
     fn catalogs_keep_their_placeholders_and_have_no_duplicates() {
         for l in ALL {

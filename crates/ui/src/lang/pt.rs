@@ -495,6 +495,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Continue", "Continuar"),
     ("Recently played", "Reproduzido recentemente"),
     ("Top rated", "Mais bem classificados"),
+    ("Unplayed", "Por reproduzir"),
     ("Unrated", "Sem classificação"),
     ("Inbox", "Caixa de entrada"),
     ("Hidden", "Ocultos"),

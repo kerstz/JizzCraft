@@ -135,7 +135,7 @@ What changed in this version: [CHANGELOG.md](CHANGELOG.md).
 
 **Library.** Import a folder (native dialog) and JizzCraft indexes images and videos recursively. Symbolic links and hidden folders are skipped, Unicode names are fine, duplicate imports are no-ops, and a file that went missing stays flagged instead of silently dropped. Search is full text (SQLite FTS5) over file names, tags, categories and marker labels: case and accent insensitive, every word a prefix. Filter by Images / Videos / Favorites, sort by name, date added, size, duration, rating or play history.
 
-- **Views**: Continue, Recently played, Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers, plus your own saved views and a folder tree with counts.
+- **Views**: Continue, Recently played, Unplayed (videos never started, newest first), Top rated, Unrated, Inbox, Hidden, Damaged, Missing, With markers, plus your own saved views and a folder tree with counts.
 - **Interop**: reads NFO files, Stash exports and funscripts, finds possible duplicates by look, writes NFO files outside your library; never a server. See [docs/interop.md](docs/interop.md).
 - **Organise**: 0–5 star ratings, a reversible *hide* (a database flag, nothing else), playlists, categories (a tree) and tags; private tags and categories are not indexed for search. Multi-select with bulk rate, favorite, hide and "Add to". See [docs/organise.md](docs/organise.md).
 - **Inbox triage**: review new imports one at a time with `V` (or the Triage button): keep, hide, favorite, undo, with a button for each in the triage strip. Nothing is ever deleted. Tinder for files, without the matches and without the regrets.

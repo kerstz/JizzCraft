@@ -289,6 +289,20 @@ pub const BUILTINS: &[Builtin] = &[
         },
     },
     Builtin {
+        key: "unplayed",
+        label: "Unplayed",
+        sensitive: true,
+        // Videos never started, newest first: what is left to watch.
+        spec: || Filter {
+            kind: Some(MediaKind::Video),
+            played: Some(false),
+            in_progress: false,
+            sort: SortKey::Added,
+            desc: true,
+            ..Default::default()
+        },
+    },
+    Builtin {
         key: "top-rated",
         label: "Top rated",
         sensitive: false,
