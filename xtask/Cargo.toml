@@ -9,5 +9,5 @@ publish = false
 
 [dependencies]
 image.workspace = true
-resvg = "0.48"
+resvg = "0.49"
 serde_json.workspace = true
