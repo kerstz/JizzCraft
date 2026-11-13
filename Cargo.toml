@@ -21,7 +21,7 @@ jizzcraft-bridge = { path = "crates/bridge" }
 quick-xml = "0.41"
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "default_fonts", "accesskit"] }
 egui = "0.36"
-egui-wgpu = "0.36"
+egui-wgpu = "0.37"
 rfd = "0.17"
 rayon = "1.10"
 blake3 = "1"
